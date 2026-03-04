@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ResearchOS — Scientific Workflow Suite</title>
+
+  <!-- Syntax highlighting (dark theme) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css">
+  <!-- App styles -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="inspector-closed">
+
+  <!-- ── SIDEBAR ─────────────────────────────────────────── -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <span class="logo-icon">⬡</span>
+        <div>
+          <span class="logo-name">ResearchOS</span>
+          <span class="logo-version">v1.0 · local-first</span>
+        </div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">Workspace</div>
+      <a class="nav-item active" data-view="dashboard">
+        <span class="nav-icon">◈</span><span>Dashboard</span>
+      </a>
+      <a class="nav-item" data-view="kanban">
+        <span class="nav-icon">⊞</span><span>Kanban Board</span>
+      </a>
+      <a class="nav-item" data-view="projects">
+        <span class="nav-icon">◉</span><span>Proyectos</span>
+      </a>
+      <a class="nav-item" data-view="timeline">
+        <span class="nav-icon">⏱</span><span>Timeline</span>
+      </a>
+
+      <div class="nav-section-label">Knowledge</div>
+      <a class="nav-item" data-view="ideas">
+        <span class="nav-icon">◎</span><span>Ideas Inbox</span>
+        <span class="nav-badge" id="ideasBadge">0</span>
+      </a>
+      <a class="nav-item" data-view="snippets">
+        <span class="nav-icon">⟨/⟩</span><span>Snippets</span>
+      </a>
+      <a class="nav-item" data-view="starred">
+        <span class="nav-icon">★</span><span>Favoritos</span>
+        <span class="nav-badge" id="starredBadge">0</span>
+      </a>
+
+      <div class="nav-section-label">Tools</div>
+      <a class="nav-item" data-view="filesystem">
+        <span class="nav-icon">⊟</span><span>FS Bridge</span>
+      </a>
+      <a class="nav-item" data-view="archived">
+        <span class="nav-icon">⊟</span><span>Archivados</span>
+        <span class="nav-badge" id="archivedBadge">0</span>
+      </a>
+      <a class="nav-item" data-view="settings">
+        <span class="nav-icon">⚙</span><span>Settings &amp; Export</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="nav-history-btns">
+        <button class="nav-hist-btn" id="navBack"    title="Atrás (Alt+←)"    disabled>←</button>
+        <button class="nav-hist-btn" id="navForward" title="Adelante (Alt+→)"  disabled>→</button>
+      </div>
+      <button class="theme-toggle" id="themeToggle" title="Toggle theme">◑</button>
+      <div class="save-indicator" id="saveIndicator">
+        <span class="status-dot"></span>
+        <span id="saveIndicatorText">Local Only</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── MAIN CONTENT ────────────────────────────────────── -->
+  <main class="main-content" id="mainContent">
+    <!-- Views are rendered here by app.js -->
+    <div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-3);font-family:var(--font-mono);font-size:.8rem;">
+      Iniciando ResearchOS…
+    </div>
+  </main>
+
+  <!-- ── INSPECTOR PANEL ─────────────────────────────────── -->
+  <aside class="inspector-panel" id="inspectorPanel">
+    <div class="inspector-header">
+      <span class="inspector-title">Inspector</span>
+      <button class="inspector-close" id="closeInspector">✕</button>
+    </div>
+    <div class="inspector-body" id="inspectorBody">
+      <div class="inspector-empty">
+        <span class="empty-icon">◈</span>
+        <p>Selecciona un elemento para inspeccionar</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── PRESENTATION EXIT BUTTON ───────────────────────── -->
+  <button class="pres-overlay-btn" id="presExitBtn">✕ Salir de presentación</button>
+
+  <!-- ── MODAL ───────────────────────────────────────────── -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modalTitle"></h3>
+        <button class="modal-close" id="modalClose">✕</button>
+      </div>
+      <div id="modalContent"></div>
+    </div>
+  </div>
+
+  <!-- ── TOASTS ──────────────────────────────────────────── -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- ── SCRIPTS ─────────────────────────────────────────── -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/3.2.4/dexie.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="db.js"></script>
+  <script src="app.js"></script>
+
+  <!-- ── COMMAND PALETTE ─────────────────────────────────── -->
+  <div class="palette-overlay" id="paletteOverlay">
+    <div class="palette">
+      <div class="palette-search-row">
+        <span class="palette-search-icon">⌕</span>
+        <input class="palette-input" id="paletteInput"
+               placeholder="Buscar proyectos, ideas, snippets… o escribe una vista"
+               autocomplete="off" spellcheck="false">
+        <kbd class="palette-kbd">ESC</kbd>
+      </div>
+      <div class="palette-results" id="paletteResults"></div>
+      <div class="palette-hint-row">
+        <span><kbd>↑↓</kbd> navegar</span>
+        <span><kbd>↵</kbd> abrir</span>
+        <span><kbd>⌘K</kbd> cerrar</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── POMODORO WIDGET ──────────────────────────────────── -->
+  <div class="pomodoro-widget" id="pomodoroWidget">
+    <div class="pom-header">
+      <span class="pom-mode-label" id="pomModeLabel">Enfoque</span>
+      <button class="pom-close" id="pomClose" title="Cerrar">✕</button>
+    </div>
+    <div class="pom-display" id="pomDisplay">25:00</div>
+    <div class="pom-progress-track">
+      <div class="pom-progress-bar" id="pomProgressBar" style="width:0%"></div>
+    </div>
+    <div class="pom-controls">
+      <button class="pom-btn" id="pomStartStop">▶ Iniciar</button>
+      <button class="pom-btn pom-btn-sm" id="pomReset" title="Reset">↺</button>
+    </div>
+    <div class="pom-sessions" id="pomSessions">● ● ● ●</div>
+  </div>
+  <button class="pom-fab" id="pomFAB" title="Pomodoro / Modo Focus (⌘P)">⏱</button>
+</body>
+</html>
