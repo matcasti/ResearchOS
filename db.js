@@ -49,76 +49,76 @@ async function seedDefaults() {
     ]);
   }
 
-  const projCount = await db.projects.count();
-  if (projCount === 0) {
-    const cols = await db.kanbanColumns.orderBy('order').toArray();
-    const colId = (n) => cols[n]?.id ?? 1;
-    const now   = new Date().toISOString();
-
-    await db.projects.bulkAdd([
-      {
-        title: 'Impacto del Cambio Climático en Biodiversidad',
-        type: 'Paper', status: 'active', columnId: colId(2),
-        responsible: 'Dr. García', coauthors: ['Dr. Martínez', 'Lic. López'],
-        deadline: '2025-09-30', priority: 'Alta',
-        description: 'Análisis de series temporales de datos de biodiversidad correlacionados con variables climáticas en ecosistemas andinos usando GAMs y modelos mixtos en R.',
-        tags: ['climate', 'biodiversity', 'R', 'GAM'], createdAt: now, updatedAt: now
-      },
-      {
-        title: 'Grant: Fondecyt Regular 2025',
-        type: 'Grant', status: 'active', columnId: colId(3),
-        responsible: 'Dr. García', coauthors: ['Dr. Vega'],
-        deadline: '2025-03-15', priority: 'Alta',
-        description: 'Postulación a Fondecyt Regular para financiamiento de investigación en ecología cuantitativa.',
-        tags: ['funding', 'grant', 'writing'], createdAt: now, updatedAt: now
-      },
-      {
-        title: 'Pipeline de Datos GBIF → SDM',
-        type: 'Análisis', status: 'active', columnId: colId(1),
-        responsible: 'Lic. López', coauthors: [],
-        deadline: '2025-07-01', priority: 'Media',
-        description: 'Automatizar la descarga, limpieza y modelado de distribución de especies usando datos GBIF.',
-        tags: ['Python', 'SDM', 'GBIF', 'automation'], createdAt: now, updatedAt: now
-      }
-    ]);
-
-    await db.ideas.bulkAdd([
-      { title: 'Usar GAMs para respuesta no lineal temperatura-diversidad', content: 'Probar mgcv::gam() con thin plate splines. Ver Wood (2017). Comparar con modelos lineales mixtos.', status: 'unread',    projectId: 1, tags: ['R','GAM','stats'], createdAt: now, updatedAt: now },
-      { title: 'Dataset CHELSA V2 para variables climáticas',               content: 'https://chelsa-climate.org — bioclim variables a 1km. Descargar bio1, bio4, bio12, bio15.', status: 'reviewed',  projectId: 1, tags: ['climate','data'], createdAt: now, updatedAt: now },
-      { title: 'Revisar criterios AIC vs BIC para selección de modelos',    content: 'AIC penaliza menos, BIC prefiere modelos parsimoniosos. Para n grande BIC es más conservador.',  status: 'unread', projectId: null, tags: ['stats','theory'], createdAt: now, updatedAt: now },
-    ]);
-
-    await db.snippets.bulkAdd([
-      {
-        title: 'Load & Clean Species Occurrences',
-        language: 'R',
-        code: `library(tidyverse)\nlibrary(janitor)\n\n# Load raw occurrence data\nspecies_raw <- read_csv("data-raw/species_occurrences.csv") |>\n  clean_names() |>\n  filter(!is.na(latitude), !is.na(longitude)) |>\n  distinct(species, latitude, longitude, .keep_all = TRUE)\n\n# Remove spatial duplicates at 0.1° resolution\nspecies_clean <- species_raw |>\n  mutate(\n    lat_r = round(latitude, 1),\n    lon_r = round(longitude, 1)\n  ) |>\n  distinct(species, lat_r, lon_r, .keep_all = TRUE)\n\ncat("Records after cleaning:", nrow(species_clean), "\\n")`,
-        description: 'Loads species occurrence CSV, cleans names, removes NA and spatial duplicates.',
-        projectId: 1, tags: ['R','tidyverse','cleaning'], createdAt: now, updatedAt: now
-      },
-      {
-        title: 'Fit GAM — Biodiversity ~ Climate',
-        language: 'R',
-        code: `library(mgcv)\nlibrary(gratia)\n\n# Fit GAM with thin-plate splines\nmod_gam <- gam(\n  species_richness ~ s(bio1, k = 8) + s(bio12, k = 8) +\n                     s(bio1, bio12, k = 20) +\n                     s(site_id, bs = "re"),\n  data   = analysis_df,\n  family = nb(),     # Negative binomial for count data\n  method = "REML"\n)\n\nsummary(mod_gam)\ndraw(mod_gam)  # gratia::draw for smooth plots`,
-        description: 'GAM with negative binomial family for species richness modelling.',
-        projectId: 1, tags: ['R','GAM','mgcv'], createdAt: now, updatedAt: now
-      },
-      {
-        title: 'Download CHELSA Bioclim Variables',
-        language: 'Bash',
-        code: `#!/bin/bash\nBASE="https://os.zhdk.cloud.switch.ch/envicloud/chelsa/chelsa_V2/GLOBAL/climatologies/1981-2010/bio"\nVARS=("bio1" "bio4" "bio12" "bio15")\nmkdir -p data-raw/climate\n\nfor VAR in "\${VARS[@]}"; do\n  echo "⬇ Downloading \$VAR..."\n  wget -q "\${BASE}/CHELSA_\${VAR}_1981-2010_V.2.1.tif" \\\n    -O "data-raw/climate/\${VAR}.tif" && echo "  ✓ \$VAR"\ndone\necho "Done."`,
-        description: 'Downloads CHELSA V2 bioclimatic rasters via wget.',
-        projectId: 1, tags: ['bash','climate','wget'], createdAt: now, updatedAt: now
-      },
-      {
-        title: 'GBIF Occurrence Download (rgbif)',
-        language: 'R',
-        code: `library(rgbif)\n\n# Trigger a download (requires GBIF account in .Renviron)\nocc_download(\n  pred("taxonKey", 212),          # Birds\n  pred("country",  "CL"),          # Chile\n  pred_gte("year", 2000),\n  pred("occurrenceStatus", "PRESENT"),\n  format = "SIMPLE_CSV"\n)\n\n# After download completes:\ndata <- occ_download_get("DOWNLOAD_KEY") |>\n  occ_download_import()`,
-        description: 'Downloads species occurrences from GBIF using the Darwin Core Archive.',
-        projectId: 3, tags: ['R','GBIF','rgbif'], createdAt: now, updatedAt: now
-      }
-    ]);
-  }
+  // const projCount = await db.projects.count();
+  // if (projCount === 0) {
+  //   const cols = await db.kanbanColumns.orderBy('order').toArray();
+  //   const colId = (n) => cols[n]?.id ?? 1;
+  //   const now   = new Date().toISOString();
+  //
+  //   await db.projects.bulkAdd([
+  //     {
+  //       title: 'Impacto del Cambio Climático en Biodiversidad',
+  //       type: 'Paper', status: 'active', columnId: colId(2),
+  //       responsible: 'Dr. García', coauthors: ['Dr. Martínez', 'Lic. López'],
+  //       deadline: '2025-09-30', priority: 'Alta',
+  //       description: 'Análisis de series temporales de datos de biodiversidad correlacionados con variables climáticas en ecosistemas andinos usando GAMs y modelos mixtos en R.',
+  //       tags: ['climate', 'biodiversity', 'R', 'GAM'], createdAt: now, updatedAt: now
+  //     },
+  //     {
+  //       title: 'Grant: Fondecyt Regular 2025',
+  //       type: 'Grant', status: 'active', columnId: colId(3),
+  //       responsible: 'Dr. García', coauthors: ['Dr. Vega'],
+  //       deadline: '2025-03-15', priority: 'Alta',
+  //       description: 'Postulación a Fondecyt Regular para financiamiento de investigación en ecología cuantitativa.',
+  //       tags: ['funding', 'grant', 'writing'], createdAt: now, updatedAt: now
+  //     },
+  //     {
+  //       title: 'Pipeline de Datos GBIF → SDM',
+  //       type: 'Análisis', status: 'active', columnId: colId(1),
+  //       responsible: 'Lic. López', coauthors: [],
+  //       deadline: '2025-07-01', priority: 'Media',
+  //       description: 'Automatizar la descarga, limpieza y modelado de distribución de especies usando datos GBIF.',
+  //       tags: ['Python', 'SDM', 'GBIF', 'automation'], createdAt: now, updatedAt: now
+  //     }
+  //   ]);
+  //
+  //   await db.ideas.bulkAdd([
+  //     { title: 'Usar GAMs para respuesta no lineal temperatura-diversidad', content: 'Probar mgcv::gam() con thin plate splines. Ver Wood (2017). Comparar con modelos lineales mixtos.', status: 'unread',    projectId: 1, tags: ['R','GAM','stats'], createdAt: now, updatedAt: now },
+  //     { title: 'Dataset CHELSA V2 para variables climáticas',               content: 'https://chelsa-climate.org — bioclim variables a 1km. Descargar bio1, bio4, bio12, bio15.', status: 'reviewed',  projectId: 1, tags: ['climate','data'], createdAt: now, updatedAt: now },
+  //     { title: 'Revisar criterios AIC vs BIC para selección de modelos',    content: 'AIC penaliza menos, BIC prefiere modelos parsimoniosos. Para n grande BIC es más conservador.',  status: 'unread', projectId: null, tags: ['stats','theory'], createdAt: now, updatedAt: now },
+  //   ]);
+  //
+  //   await db.snippets.bulkAdd([
+  //     {
+  //       title: 'Load & Clean Species Occurrences',
+  //       language: 'R',
+  //       code: `library(tidyverse)\nlibrary(janitor)\n\n# Load raw occurrence data\nspecies_raw <- read_csv("data-raw/species_occurrences.csv") |>\n  clean_names() |>\n  filter(!is.na(latitude), !is.na(longitude)) |>\n  distinct(species, latitude, longitude, .keep_all = TRUE)\n\n# Remove spatial duplicates at 0.1° resolution\nspecies_clean <- species_raw |>\n  mutate(\n    lat_r = round(latitude, 1),\n    lon_r = round(longitude, 1)\n  ) |>\n  distinct(species, lat_r, lon_r, .keep_all = TRUE)\n\ncat("Records after cleaning:", nrow(species_clean), "\\n")`,
+  //       description: 'Loads species occurrence CSV, cleans names, removes NA and spatial duplicates.',
+  //       projectId: 1, tags: ['R','tidyverse','cleaning'], createdAt: now, updatedAt: now
+  //     },
+  //     {
+  //       title: 'Fit GAM — Biodiversity ~ Climate',
+  //       language: 'R',
+  //       code: `library(mgcv)\nlibrary(gratia)\n\n# Fit GAM with thin-plate splines\nmod_gam <- gam(\n  species_richness ~ s(bio1, k = 8) + s(bio12, k = 8) +\n                     s(bio1, bio12, k = 20) +\n                     s(site_id, bs = "re"),\n  data   = analysis_df,\n  family = nb(),     # Negative binomial for count data\n  method = "REML"\n)\n\nsummary(mod_gam)\ndraw(mod_gam)  # gratia::draw for smooth plots`,
+  //       description: 'GAM with negative binomial family for species richness modelling.',
+  //       projectId: 1, tags: ['R','GAM','mgcv'], createdAt: now, updatedAt: now
+  //     },
+  //     {
+  //       title: 'Download CHELSA Bioclim Variables',
+  //       language: 'Bash',
+  //       code: `#!/bin/bash\nBASE="https://os.zhdk.cloud.switch.ch/envicloud/chelsa/chelsa_V2/GLOBAL/climatologies/1981-2010/bio"\nVARS=("bio1" "bio4" "bio12" "bio15")\nmkdir -p data-raw/climate\n\nfor VAR in "\${VARS[@]}"; do\n  echo "⬇ Downloading \$VAR..."\n  wget -q "\${BASE}/CHELSA_\${VAR}_1981-2010_V.2.1.tif" \\\n    -O "data-raw/climate/\${VAR}.tif" && echo "  ✓ \$VAR"\ndone\necho "Done."`,
+  //       description: 'Downloads CHELSA V2 bioclimatic rasters via wget.',
+  //       projectId: 1, tags: ['bash','climate','wget'], createdAt: now, updatedAt: now
+  //     },
+  //     {
+  //       title: 'GBIF Occurrence Download (rgbif)',
+  //       language: 'R',
+  //       code: `library(rgbif)\n\n# Trigger a download (requires GBIF account in .Renviron)\nocc_download(\n  pred("taxonKey", 212),          # Birds\n  pred("country",  "CL"),          # Chile\n  pred_gte("year", 2000),\n  pred("occurrenceStatus", "PRESENT"),\n  format = "SIMPLE_CSV"\n)\n\n# After download completes:\ndata <- occ_download_get("DOWNLOAD_KEY") |>\n  occ_download_import()`,
+  //       description: 'Downloads species occurrences from GBIF using the Darwin Core Archive.',
+  //       projectId: 3, tags: ['R','GBIF','rgbif'], createdAt: now, updatedAt: now
+  //     }
+  //   ]);
+  // }
 }
 
 // ── Query helpers ────────────────────────────────────────────
