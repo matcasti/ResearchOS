@@ -8,16 +8,16 @@
 
 // ── App state ────────────────────────────────────────────────
 const App = {
-  view:          'dashboard',
-  draggedId:     null,
-  filterLang:    'all',
-  lastDirHandle: null,
-  // Navigation history
-  navHistory:    [],
-  navIndex:      -1,
-  // Cross-filters for Projects
-  filters:       { type: 'all', priority: 'all', column: 'all' },
-  filterCollection:  'all',   // Feature 8
+  view:             'dashboard',
+  draggedId:        null,
+  filterLang:       'all',
+  lastDirHandle:    null,
+  navHistory:       [],
+  navIndex:         -1,
+  filters:          { type: 'all', priority: 'all', column: 'all' },
+  filterCollection: 'all',
+  bulkSelected:     new Set(),   // ← NUEVO: IDs seleccionados en bulk
+  bulkMode:         false,       // ← NUEVO: toggle del modo selección
 };
 
 // ── DOM refs ─────────────────────────────────────────────────
@@ -57,6 +57,63 @@ const SaveIndicator = {
   }
 };
 
+// ── INSERTAR: Deadline Reminder Module ───────────────────────
+const DeadlineReminder = {
+  _interval: null,
+
+  async requestPermission() {
+    if (!('Notification' in window)) return false;
+    if (Notification.permission === 'granted') return true;
+    if (Notification.permission === 'denied') return false;
+    const p = await Notification.requestPermission();
+    return p === 'granted';
+  },
+
+  async checkDeadlines() {
+    if (Notification.permission !== 'granted') return;
+    const today = new Date(); today.setHours(0,0,0,0);
+    const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+    const projects = await db.projects.filter(p =>
+      !p.archived && !!p.deadline
+    ).toArray();
+
+    for (const p of projects) {
+      const d = new Date(p.deadline + 'T00:00:00');
+      const daysLeft = Math.ceil((d - today) / 86400000);
+      // Notificar si vence hoy o mañana (y no se notificó ya hoy)
+      const notifKey = `notif_${p.id}_${today.toISOString().split('T')[0]}`;
+      if (daysLeft <= 1 && daysLeft >= 0 && !sessionStorage.getItem(notifKey)) {
+        const label = daysLeft === 0 ? 'VENCE HOY' : 'vence mañana';
+        new Notification(`⏱ ResearchOS — ${label}`, {
+          body: `"${p.title}" ${daysLeft === 0 ? 'tiene fecha límite hoy.' : 'tiene deadline mañana.'}`,
+          icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><text y="28" font-size="28">⬡</text></svg>',
+          tag: notifKey,
+        });
+        sessionStorage.setItem(notifKey, '1');
+      }
+      // Alerta de overdue (sólo una vez al día)
+      if (daysLeft < 0) {
+        const overdueKey = `overdue_${p.id}_${today.toISOString().split('T')[0]}`;
+        if (!sessionStorage.getItem(overdueKey)) {
+          new Notification(`🔴 ResearchOS — Proyecto vencido`, {
+            body: `"${p.title}" venció hace ${Math.abs(daysLeft)} día(s).`,
+            tag: overdueKey,
+          });
+          sessionStorage.setItem(overdueKey, '1');
+        }
+      }
+    }
+  },
+
+  start() {
+    // Comprobar al iniciar y cada 30 min
+    this.checkDeadlines();
+    this._interval = setInterval(() => this.checkDeadlines(), 30 * 60 * 1000);
+  },
+
+  stop() { clearInterval(this._interval); }
+};
+
 /** Wraps any IndexedDB write: shows saving → saved indicator. */
 async function dbWrite(fn) {
   SaveIndicator.show();
@@ -82,6 +139,31 @@ function breadcrumbHTML(items) {
         : `${sep}<span class="bc-item link" data-bc-nav="${it.view}">${esc(it.label)}</span>`;
     }).join('')}
   </div>`;
+}
+
+// ── Render Markdown seguro ─────────────────────────
+function renderMd(text) {
+  if (!text || typeof marked === 'undefined') return esc(text || '');
+  // Configurar marked para no escapar HTML ya escapado
+  marked.setOptions({ breaks: true, gfm: true });
+  // Sanitizar: stripped de tags peligrosos
+  const raw = marked.parse(text);
+  return raw.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
+            .replace(/on\w+="[^"]*"/gi, '');
+}
+
+// ── Render LaTeX con KaTeX ─────────────────────────
+function renderLatex(container) {
+  if (typeof renderMathInElement === 'undefined') return;
+  renderMathInElement(container, {
+    delimiters: [
+      { left: '$$', right: '$$', display: true },
+      { left: '$',  right: '$',  display: false },
+      { left: '\\[', right: '\\]', display: true },
+      { left: '\\(', right: '\\)', display: false },
+    ],
+    throwOnError: false,
+  });
 }
 
 function attachBreadcrumbHandlers() {
@@ -141,7 +223,13 @@ async function renderView(view) {
     settings:   [{label:'Dashboard', view:'dashboard'}, {label:'Settings', view:'settings'}],
     timeline:   [{label:'Dashboard', view:'dashboard'}, {label:'Timeline', view:'timeline'}],
     archived:   [{label:'Dashboard', view:'dashboard'}, {label:'Archivados', view:'archived'}],
-    starred:    [{label:'Dashboard', view:'dashboard'}, {label:'Favoritos',  view:'starred'}],
+    starred:      [{label:'Dashboard', view:'dashboard'}, {label:'Favoritos',   view:'starred'}],
+    nested:       [{label:'Dashboard', view:'dashboard'}, {label:'Anidados',    view:'nested'}],
+    weekly:       [{label:'Dashboard', view:'dashboard'}, {label:'Agenda',      view:'weekly'}],
+    submissions:  [{label:'Dashboard', view:'dashboard'}, {label:'Submissions', view:'submissions'}],
+    meetings:     [{label:'Dashboard', view:'dashboard'}, {label:'Reuniones',   view:'meetings'}],
+    references:   [{label:'Dashboard', view:'dashboard'}, {label:'Referencias', view:'references'}],
+    collaborators:[{label:'Dashboard', view:'dashboard'}, {label:'Colaboradores',view:'collaborators'}],
   };
 
   // Render first, then inject BC at top so innerHTML overwrites don't destroy it
@@ -156,7 +244,13 @@ async function renderView(view) {
     case 'archived':   await renderArchived();   break;
     case 'starred':    await renderStarred();    break;
     case 'timeline':   await renderTimeline();   break;
-    default:           await renderDashboard();
+    case 'nested':       await renderNestedProjects();  break;
+    case 'weekly':       await renderWeeklyAgenda();    break;
+    case 'submissions':  await renderSubmissions();     break;
+    case 'meetings':     await renderMeetings();        break;
+    case 'references':   await renderReferences();      break;
+    case 'collaborators':await renderCollaborators();   break;
+    default:             await renderDashboard();
   }
 
   const bcHTML = breadcrumbHTML(bcMap[view] || []);
@@ -217,22 +311,104 @@ async function renderDashboard() {
         <button class="btn btn-primary" id="dashAddProject">+ Nuevo Proyecto</button>
       </div>
 
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-label">Proyectos</div>
-          <div class="stat-value stat-accent">${projects}</div>
+      <div class="stats-grid-v2">
+        <div class="stat-card-v2">
+          <div class="stat-card-v2-bg" style="--sc:var(--accent)"></div>
+          <div class="stat-card-v2-icon">◉</div>
+          <div class="stat-card-v2-content">
+            <div class="stat-card-v2-value">${projects}</div>
+            <div class="stat-card-v2-label">Proyectos</div>
+          </div>
+          <svg class="stat-card-v2-arc" viewBox="0 0 40 40">
+            <circle cx="20" cy="20" r="16" fill="none" stroke="var(--accent)"
+                    stroke-width="2" stroke-dasharray="${Math.min(projects*10,100)} 100"
+                    stroke-linecap="round" transform="rotate(-90 20 20)" opacity=".35"/>
+          </svg>
         </div>
-        <div class="stat-card">
-          <div class="stat-label">Ideas</div>
-          <div class="stat-value stat-purple">${ideas}</div>
+        <div class="stat-card-v2">
+          <div class="stat-card-v2-bg" style="--sc:#a78bfa"></div>
+          <div class="stat-card-v2-icon" style="color:#a78bfa">◎</div>
+          <div class="stat-card-v2-content">
+            <div class="stat-card-v2-value" style="color:#a78bfa">${ideas}</div>
+            <div class="stat-card-v2-label">Ideas</div>
+          </div>
+          <svg class="stat-card-v2-arc" viewBox="0 0 40 40">
+            <circle cx="20" cy="20" r="16" fill="none" stroke="#a78bfa"
+                    stroke-width="2" stroke-dasharray="${Math.min(ideas*8,100)} 100"
+                    stroke-linecap="round" transform="rotate(-90 20 20)" opacity=".35"/>
+          </svg>
         </div>
-        <div class="stat-card">
-          <div class="stat-label">Sin Revisar</div>
-          <div class="stat-value stat-amber">${ideaUnread}</div>
+        <div class="stat-card-v2">
+          <div class="stat-card-v2-bg" style="--sc:var(--amber)"></div>
+          <div class="stat-card-v2-icon" style="color:var(--amber)">⚠</div>
+          <div class="stat-card-v2-content">
+            <div class="stat-card-v2-value" style="color:var(--amber)">${ideaUnread}</div>
+            <div class="stat-card-v2-label">Sin revisar</div>
+          </div>
+          <svg class="stat-card-v2-arc" viewBox="0 0 40 40">
+            <circle cx="20" cy="20" r="16" fill="none" stroke="var(--amber)"
+                    stroke-width="2" stroke-dasharray="${Math.min(ideaUnread*20,100)} 100"
+                    stroke-linecap="round" transform="rotate(-90 20 20)" opacity=".35"/>
+          </svg>
         </div>
-        <div class="stat-card">
-          <div class="stat-label">Snippets</div>
-          <div class="stat-value stat-green">${snippets}</div>
+        <div class="stat-card-v2">
+          <div class="stat-card-v2-bg" style="--sc:var(--green)"></div>
+          <div class="stat-card-v2-icon" style="color:var(--green)">⟨/⟩</div>
+          <div class="stat-card-v2-content">
+            <div class="stat-card-v2-value" style="color:var(--green)">${snippets}</div>
+            <div class="stat-card-v2-label">Snippets</div>
+          </div>
+          <svg class="stat-card-v2-arc" viewBox="0 0 40 40">
+            <circle cx="20" cy="20" r="16" fill="none" stroke="var(--green)"
+                    stroke-width="2" stroke-dasharray="${Math.min(snippets*10,100)} 100"
+                    stroke-linecap="round" transform="rotate(-90 20 20)" opacity=".35"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Mini chart distribución por tipo y por columna -->
+      <div class="dash-charts-row">
+        <div class="dash-chart-card">
+          <div class="dash-chart-title">Distribución por tipo</div>
+          <div class="dash-chart-bars" id="typeDistChart">
+            ${(() => {
+              const types = {};
+              allProjects.forEach(p => { types[p.type] = (types[p.type]||0)+1; });
+              const max = Math.max(...Object.values(types), 1);
+              return Object.entries(types)
+                .sort((a,b) => b[1]-a[1])
+                .map(([t, n]) => `
+                  <div class="dash-bar-row">
+                    <span class="dash-bar-label">${esc(t)}</span>
+                    <div class="dash-bar-track">
+                      <div class="dash-bar-fill" style="width:${(n/max*100).toFixed(1)}%;
+                           background:var(--accent)"></div>
+                    </div>
+                    <span class="dash-bar-val">${n}</span>
+                  </div>`).join('') || '<span style="color:var(--text-3);font-size:.75rem">Sin datos</span>';
+            })()}
+          </div>
+        </div>
+        <div class="dash-chart-card">
+          <div class="dash-chart-title">Proyectos por columna</div>
+          <div class="dash-chart-bars" id="colDistChart">
+            ${(() => {
+              const colCount = {};
+              allProjects.forEach(p => { colCount[p.columnId] = (colCount[p.columnId]||0)+1; });
+              const max = Math.max(...Object.values(colCount), 1);
+              return cols
+                .filter(c => colCount[c.id])
+                .map(c => `
+                  <div class="dash-bar-row">
+                    <span class="dash-bar-label">${esc(c.title)}</span>
+                    <div class="dash-bar-track">
+                      <div class="dash-bar-fill" style="width:${((colCount[c.id]||0)/max*100).toFixed(1)}%;
+                           background:${c.color}"></div>
+                    </div>
+                    <span class="dash-bar-val">${colCount[c.id]||0}</span>
+                  </div>`).join('') || '<span style="color:var(--text-3);font-size:.75rem">Sin datos</span>';
+            })()}
+          </div>
         </div>
       </div>
 
@@ -374,7 +550,9 @@ async function renderKanban() {
       <div class="kanban-col-header">
         <span class="kanban-col-dot" style="background:${col.color}"></span>
         <span class="kanban-col-title">${esc(col.title)}</span>
-        <span class="kanban-col-count">${col.cards.length}</span>
+        <span class="kanban-col-count ${col.wip && col.cards.length > col.wip ? 'kanban-wip-exceeded' : ''}">
+          ${col.cards.length}${col.wip ? `<span class="kanban-wip-badge">/${col.wip}</span>` : ''}
+        </span>
       </div>
       <div class="kanban-cards" id="cards-${col.id}"
            data-col="${col.id}"
@@ -395,12 +573,14 @@ async function renderKanban() {
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-ghost" id="kanbanPresBtn" title="Modo presentación (F5)">⛶ Presentación</button>
+        <button class="btn btn-ghost" id="kanbanManageCols">⚙ Columnas</button>
         <button class="btn btn-primary" id="kanbanAddProject">+ Nuevo Proyecto</button>
       </div>
     </div>
     <div class="kanban-board">${boardHTML}</div>`;
 
   $('kanbanAddProject').addEventListener('click', showAddProjectModal);
+  $('kanbanManageCols')?.addEventListener('click', showManageColumnsModal);
 
   $('kanbanPresBtn').addEventListener('click', () => {
     document.body.classList.add('presentation-mode');
@@ -417,6 +597,109 @@ async function renderKanban() {
     });
     card.addEventListener('dragstart', kanbanDragStart);
     card.addEventListener('dragend', kanbanDragEnd);
+  });
+}
+
+// ── Gestionar columnas Kanban ───────────────────────
+async function showManageColumnsModal() {
+  const cols = await db.kanbanColumns.orderBy('order').toArray();
+
+  const renderRows = () => cols.map((c, i) => `
+    <div class="col-manage-row" data-col-id="${c.id}">
+      <span class="col-manage-handle" title="Reordenar">⠿</span>
+      <input class="form-input col-manage-title"
+             value="${esc(c.title)}" data-col-id="${c.id}"
+             style="flex:1;padding:5px 8px;font-size:.82rem">
+      <input type="color" class="col-manage-color"
+             value="${c.color}" data-col-id="${c.id}"
+             style="width:32px;height:32px;border:none;background:none;cursor:pointer;border-radius:6px">
+      <input type="number" class="form-input col-manage-wip"
+             value="${c.wip||''}" placeholder="WIP" data-col-id="${c.id}"
+             style="width:64px;padding:5px 8px;font-size:.82rem"
+             title="Límite de trabajo en curso (dejar vacío = sin límite)">
+      <button class="btn btn-ghost btn-sm col-manage-del" data-col-id="${c.id}"
+              style="color:var(--red)" ${cols.length <= 1 ? 'disabled' : ''}>✕</button>
+    </div>`).join('');
+
+  showModal('⚙ Gestionar columnas Kanban', `
+    <div class="modal-body">
+      <div style="font-size:.75rem;color:var(--text-3);margin-bottom:10px">
+        Edita títulos, colores y límites WIP. Los cambios se aplican al guardar.
+      </div>
+      <div id="colManageList">${renderRows()}</div>
+      <button class="btn btn-ghost btn-sm" id="colAddNew" style="margin-top:10px;width:100%">
+        + Nueva columna
+      </button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="colManageCancel">Cancelar</button>
+      <button class="btn btn-primary" id="colManageSave">Guardar cambios</button>
+    </div>`);
+
+  $('colManageCancel').addEventListener('click', closeModal);
+
+  $('colAddNew').addEventListener('click', () => {
+    cols.push({
+      id: null, title: 'Nueva columna',
+      order: cols.length, color: '#38bdf8', wip: null
+    });
+    $('colManageList').innerHTML = renderRows();
+    attachColRowHandlers();
+  });
+
+  const attachColRowHandlers = () => {
+    document.querySelectorAll('.col-manage-del').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const cid = +btn.dataset.colId;
+        if (!cid) { cols.splice(cols.findIndex(c => !c.id), 1); $('colManageList').innerHTML = renderRows(); attachColRowHandlers(); return; }
+        const count = await db.projects.where('columnId').equals(cid).count();
+        if (count > 0 && !confirm(`Esta columna tiene ${count} proyectos. ¿Eliminarla de todos modos?`)) return;
+        cols.splice(cols.findIndex(c => c.id === cid), 1);
+        $('colManageList').innerHTML = renderRows();
+        attachColRowHandlers();
+      });
+    });
+  };
+  attachColRowHandlers();
+
+  $('colManageSave').addEventListener('click', async () => {
+    // Leer valores editados
+    document.querySelectorAll('.col-manage-title').forEach(inp => {
+      const cid = +inp.dataset.colId || null;
+      const col = cols.find(c => c.id === (cid || null));
+      if (col) col.title = inp.value.trim() || col.title;
+    });
+    document.querySelectorAll('.col-manage-color').forEach(inp => {
+      const cid = +inp.dataset.colId || null;
+      const col = cols.find(c => c.id === (cid || null));
+      if (col) col.color = inp.value;
+    });
+    document.querySelectorAll('.col-manage-wip').forEach(inp => {
+      const cid = +inp.dataset.colId || null;
+      const col = cols.find(c => c.id === (cid || null));
+      if (col) col.wip = +inp.value || null;
+    });
+
+    await dbWrite(async () => {
+      for (let i = 0; i < cols.length; i++) {
+        const c = cols[i];
+        c.order = i;
+        if (c.id) {
+          await db.kanbanColumns.update(c.id, { title: c.title, color: c.color, order: c.order, wip: c.wip });
+        } else {
+          await db.kanbanColumns.add({ title: c.title, color: c.color, order: c.order, wip: c.wip, isDefault: false });
+        }
+      }
+      // Eliminar columnas borradas
+      const existingIds = cols.filter(c => c.id).map(c => c.id);
+      const allIds = (await db.kanbanColumns.toArray()).map(c => c.id);
+      const toDelete = allIds.filter(id => !existingIds.includes(id));
+      if (toDelete.length) await db.kanbanColumns.bulkDelete(toDelete);
+    });
+
+    closeModal();
+    showToast('Columnas actualizadas ✓', 'success');
+    renderView('kanban');
   });
 }
 
@@ -512,7 +795,13 @@ async function renderProjects() {
           <div class="view-title">Proyectos</div>
           <div class="view-subtitle">${projects.length} de ${allProjects.length} proyecto(s)</div>
         </div>
-        <button class="btn btn-primary" id="projAddBtn">+ Nuevo Proyecto</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost" id="bulkToggleBtn"
+            style="color:${App.bulkMode ? 'var(--accent)' : 'var(--text-2)'}">
+            ${App.bulkMode ? '✕ Cancelar selección' : '⊞ Seleccionar'}
+          </button>
+          <button class="btn btn-primary" id="projAddBtn">+ Nuevo Proyecto</button>
+        </div>
       </div>
 
       <div class="cross-filter-bar">
@@ -588,8 +877,160 @@ async function renderProjects() {
     );
     grid.innerHTML = cards.join('');
     grid.querySelectorAll('[data-inspect-project]').forEach(el => {
-      el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject));
+      el.addEventListener('click', (e) => {
+        if (App.bulkMode) return; // En modo selección, no abrir inspector
+        inspectProject(+el.dataset.inspectProject);
+      });
     });
+
+    // ── Bulk Actions Bar (insertar al final de renderProjects) ────
+    $('bulkToggleBtn')?.addEventListener('click', () => {
+      App.bulkMode = !App.bulkMode;
+      App.bulkSelected.clear();
+      renderView('projects');
+    });
+
+    if (App.bulkMode) {
+      const bulkBar = document.createElement('div');
+      bulkBar.id = 'bulkBar';
+      bulkBar.style.cssText = `
+        position:sticky; bottom:16px; left:0; right:0; margin:16px 0 0;
+        background:var(--bg-card); border:1px solid var(--accent);
+        border-radius:var(--radius-lg); padding:10px 16px;
+        display:flex; align-items:center; gap:10px;
+        box-shadow:0 4px 24px rgba(0,0,0,.4); z-index:50;
+      `;
+      bulkBar.innerHTML = `
+        <span id="bulkCount" style="font-size:.78rem;color:var(--text-2);
+              font-family:var(--font-mono);min-width:80px">
+          0 seleccionados
+        </span>
+        <button class="btn btn-ghost btn-sm" id="bkSelectAll">Selec. todos</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-ghost btn-sm" id="bkMoveCol">⬡ Mover columna</button>
+        <button class="btn btn-ghost btn-sm" id="bkPrio">⚑ Prioridad</button>
+        <button class="btn btn-ghost btn-sm" id="bkArchive">⊟ Archivar</button>
+        <button class="btn btn-ghost btn-sm" id="bkStar">★ Favorito</button>
+        <button class="btn btn-ghost btn-sm" id="bkDelete"
+          style="color:var(--red)">✕ Eliminar</button>
+      `;
+      mainContent.querySelector('.view').appendChild(bulkBar);
+
+      const updateBulkCount = () => {
+        const el = $('bulkCount');
+        if (el) el.textContent = `${App.bulkSelected.size} seleccionados`;
+      };
+
+      // Poner checkboxes en las tarjetas ya renderizadas
+      const patchCards = () => {
+        mainContent.querySelectorAll('[data-inspect-project]').forEach(card => {
+          const pid = +card.dataset.inspectProject;
+          if (card.querySelector('.bulk-check')) return;
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.className = 'bulk-check';
+          cb.checked = App.bulkSelected.has(pid);
+          cb.style.cssText = 'position:absolute;top:10px;left:10px;accent-color:var(--accent);width:16px;height:16px;cursor:pointer;z-index:5';
+          card.style.position = 'relative';
+          card.prepend(cb);
+          cb.addEventListener('change', (e) => {
+            e.stopPropagation();
+            if (cb.checked) App.bulkSelected.add(pid);
+            else App.bulkSelected.delete(pid);
+            updateBulkCount();
+          });
+          // En modo bulk, click en la tarjeta = toggle checkbox
+          card.addEventListener('click', (e) => {
+            if (!e.target.closest('.bulk-check') && App.bulkMode) {
+              cb.checked = !cb.checked;
+              cb.dispatchEvent(new Event('change'));
+            }
+          }, { once: false });
+        });
+      };
+
+      // Observar cuando el grid async se puebla
+      const grid = $('projectsGrid');
+      if (grid) {
+        const mo = new MutationObserver(patchCards);
+        mo.observe(grid, { childList: true });
+        patchCards();
+      }
+
+      $('bkSelectAll')?.addEventListener('click', async () => {
+        const all = await db.projects.toArray();
+        all.filter(p => !p.archived).forEach(p => App.bulkSelected.add(p.id));
+        mainContent.querySelectorAll('.bulk-check').forEach(cb => cb.checked = true);
+        updateBulkCount();
+      });
+
+      $('bkArchive')?.addEventListener('click', async () => {
+        if (!App.bulkSelected.size) return showToast('Selecciona al menos un proyecto', 'error');
+        await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).modify({ archived: true }));
+        showToast(`${App.bulkSelected.size} proyectos archivados`, 'success');
+        App.bulkSelected.clear(); App.bulkMode = false; renderView('projects');
+      });
+
+      $('bkStar')?.addEventListener('click', async () => {
+        if (!App.bulkSelected.size) return showToast('Selecciona al menos un proyecto', 'error');
+        await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).modify({ starred: true }));
+        showToast(`${App.bulkSelected.size} marcados como favorito`, 'success');
+        App.bulkSelected.clear(); App.bulkMode = false; renderView('projects');
+      });
+
+      $('bkDelete')?.addEventListener('click', async () => {
+        if (!App.bulkSelected.size) return showToast('Selecciona al menos un proyecto', 'error');
+        if (!confirm(`¿Eliminar ${App.bulkSelected.size} proyectos permanentemente?`)) return;
+        await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).delete());
+        showToast(`${App.bulkSelected.size} proyectos eliminados`, 'success');
+        App.bulkSelected.clear(); App.bulkMode = false; renderView('projects');
+      });
+
+      $('bkMoveCol')?.addEventListener('click', async () => {
+        if (!App.bulkSelected.size) return showToast('Selecciona al menos un proyecto', 'error');
+        const cols = await db.kanbanColumns.orderBy('order').toArray();
+        showModal('Mover a columna', `
+          <div class="modal-body">
+            <select class="form-select" id="bkColSel">
+              ${cols.map(c => `<option value="${c.id}">${esc(c.title)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" id="bkColCancel">Cancelar</button>
+            <button class="btn btn-primary" id="bkColOk">Mover</button>
+          </div>`);
+        $('bkColCancel').addEventListener('click', closeModal);
+        $('bkColOk').addEventListener('click', async () => {
+          const colId = +$('bkColSel').value;
+          await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).modify({ columnId: colId }));
+          closeModal();
+          showToast(`${App.bulkSelected.size} proyectos movidos`, 'success');
+          App.bulkSelected.clear(); App.bulkMode = false; renderView('projects');
+        });
+      });
+
+      $('bkPrio')?.addEventListener('click', async () => {
+        if (!App.bulkSelected.size) return showToast('Selecciona al menos un proyecto', 'error');
+        showModal('Cambiar prioridad', `
+          <div class="modal-body">
+            <select class="form-select" id="bkPrioSel">
+              ${['Alta','Media','Baja'].map(p => `<option>${p}</option>`).join('')}
+            </select>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" id="bkPrioCancel">Cancelar</button>
+            <button class="btn btn-primary" id="bkPrioOk">Aplicar</button>
+          </div>`);
+        $('bkPrioCancel').addEventListener('click', closeModal);
+        $('bkPrioOk').addEventListener('click', async () => {
+          const prio = $('bkPrioSel').value;
+          await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).modify({ priority: prio }));
+          closeModal();
+          showToast(`Prioridad actualizada en ${App.bulkSelected.size} proyectos`, 'success');
+          App.bulkSelected.clear(); App.bulkMode = false; renderView('projects');
+        });
+      });
+    }
   })();
 }
 
@@ -648,12 +1089,47 @@ async function renderIdeas() {
         <input class="inbox-input" id="ideaTitleInput" placeholder="Título de la idea…" maxlength="200">
         <textarea class="inbox-input inbox-textarea" id="ideaContentInput" placeholder="Contenido, URL, nota… (opcional)"></textarea>
         <div class="inbox-row">
-          <select class="inbox-select" id="ideaProjectSelect">
-            <option value="">Sin proyecto</option>
+          <select class="inbox-select" id="ideaProjectSelect" multiple
+            style="height:auto;min-height:36px;max-height:80px" title="Ctrl+click para múltiples">
             ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
           </select>
+          <div style="font-size:.65rem;color:var(--text-3);margin-top:2px">Ctrl+click = múltiples proyectos</div>
           <button class="btn btn-primary" id="saveIdeaBtn">Guardar</button>
         </div>
+      </div>
+
+      <!-- Panel de ecuaciones LaTeX -->
+      <div class="inbox-capture" id="latexPanel" style="margin-top:0">
+        <div class="inbox-capture-title" style="display:flex;align-items:center;justify-content:space-between">
+          <span>∑ Ecuaciones LaTeX</span>
+          <button class="btn btn-ghost btn-sm" id="latexToggleBtn" style="font-size:.7rem">
+            ${App._latexOpen ? '▲ Ocultar' : '▼ Mostrar'}
+          </button>
+        </div>
+        ${App._latexOpen ? `
+          <div style="display:flex;gap:8px;margin-bottom:8px">
+            <textarea class="inbox-input inbox-textarea" id="latexInput"
+              style="font-family:var(--font-mono);font-size:.8rem;min-height:64px"
+              placeholder="Escribe LaTeX: \\frac{d}{dx} f(x) o $$E = mc^2$$"></textarea>
+          </div>
+          <div class="latex-preview" id="latexPreview"
+            style="background:var(--bg-elevated);padding:12px;border-radius:var(--radius-md);
+                   min-height:48px;font-size:1rem;color:var(--text-1);text-align:center">
+            <span style="color:var(--text-3);font-size:.78rem">Vista previa aquí…</span>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+            <button class="btn btn-ghost btn-sm" data-latex-preset="\\frac{a}{b}">Fracción</button>
+            <button class="btn btn-ghost btn-sm" data-latex-preset="\\sum_{i=0}^{n} x_i">Suma</button>
+            <button class="btn btn-ghost btn-sm" data-latex-preset="\\int_{a}^{b} f(x)\\,dx">Integral</button>
+            <button class="btn btn-ghost btn-sm" data-latex-preset="\\sqrt{x^2 + y^2}">Raíz</button>
+            <button class="btn btn-ghost btn-sm" data-latex-preset="\\lim_{x \\to \\infty}">Límite</button>
+            <button class="btn btn-ghost btn-sm" data-latex-preset="\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}">Matriz</button>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <button class="btn btn-primary btn-sm" id="latexSaveBtn">💾 Guardar como idea</button>
+            <button class="btn btn-ghost btn-sm" id="latexCopyBtn">📋 Copiar</button>
+          </div>
+        ` : ''}
       </div>
 
       <!-- Ideas list -->
@@ -666,6 +1142,54 @@ async function renderIdeas() {
 
   $('saveIdeaBtn').addEventListener('click', saveQuickIdea);
   $('ideaTitleInput').addEventListener('keydown', e => { if (e.key === 'Enter') saveQuickIdea(); });
+  // ── Listeners del panel LaTeX ──────────────────────
+  if (!App._latexOpen) App._latexOpen = false;
+
+  $('latexToggleBtn')?.addEventListener('click', () => {
+    App._latexOpen = !App._latexOpen;
+    renderView('ideas');
+  });
+
+  const latexInput = $('latexInput');
+  const latexPreview = $('latexPreview');
+
+  latexInput?.addEventListener('input', () => {
+    const val = latexInput.value.trim();
+    latexPreview.innerHTML = val
+      ? `\\[${val.replace(/^\$\$?|\$\$?$/g, '')}\\]`
+      : '<span style="color:var(--text-3);font-size:.78rem">Vista previa aquí…</span>';
+    if (val) renderLatex(latexPreview);
+  });
+
+  mainContent.querySelectorAll('[data-latex-preset]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!latexInput) return;
+      latexInput.value = btn.dataset.latexPreset;
+      latexInput.dispatchEvent(new Event('input'));
+    });
+  });
+
+  $('latexCopyBtn')?.addEventListener('click', () => {
+    navigator.clipboard.writeText(latexInput?.value || '');
+    showToast('LaTeX copiado ✓', 'success');
+  });
+
+  $('latexSaveBtn')?.addEventListener('click', async () => {
+    const latex = latexInput?.value.trim();
+    if (!latex) return showToast('Escribe una ecuación primero', 'error');
+    await dbWrite(() => db.ideas.add({
+      title:     `Ecuación: ${latex.slice(0,40)}`,
+      content:   `$$${latex}$$`,
+      status:    'unread', projectId: null,
+      tags:      ['latex', 'ecuación'],
+      subtasks:  [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }));
+    showToast('Ecuación guardada como idea ✓', 'success');
+    if (latexInput) latexInput.value = '';
+    renderView('ideas');
+  });
 
   mainContent.querySelectorAll('.idea-status-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
@@ -701,6 +1225,12 @@ async function renderIdeas() {
       updateBadges();
     });
   });
+
+  // ── renderizar LaTeX en ideas del listado ───────────
+  setTimeout(() => {
+    const list = $('ideasList');
+    if (list) renderLatex(list);
+  }, 80);
 }
 
 function ideaItemHTML(idea, projMap) {
@@ -716,7 +1246,11 @@ function ideaItemHTML(idea, projMap) {
         ${idea.content ? `<div class="idea-content">${esc(idea.content)}</div>` : ''}
         <div class="idea-footer">
           ${(idea.tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
-          ${proj ? `<span class="idea-linked">⬡ ${esc(proj.title)}</span>` : ''}
+          ${(idea.projectIds||[idea.projectId]).filter(Boolean).map(pid => {
+            const p = projMap[pid];
+            return p ? `<span class="idea-linked" data-inspect-project="${pid}" style="cursor:pointer"
+              title="Ver proyecto">⬡ ${esc(p.title)}</span>` : '';
+          }).join('')}
           ${stCount ? `<span class="subtask-count-badge">${stDone}/${stCount} ✓</span>` : ''}
           <span style="font-size:.65rem;color:var(--text-3);font-family:var(--font-mono);margin-left:auto">${relativeDate(idea.createdAt)}</span>
         </div>
@@ -732,9 +1266,13 @@ async function saveQuickIdea() {
   const title   = $('ideaTitleInput').value.trim();
   if (!title) { showToast('Escribe un título', 'error'); return; }
   const content   = $('ideaContentInput').value.trim();
-  const projectId = +$('ideaProjectSelect').value || null;
+  const selEl = $('ideaProjectSelect');
+  const projectIds = selEl
+    ? [...selEl.selectedOptions].map(o => +o.value).filter(Boolean)
+    : [];
+  const projectId = projectIds[0] || null; // compatibilidad legacy
   await dbWrite(() => db.ideas.add({
-    title, content, status: 'unread', projectId,
+    title, content, status: 'unread', projectId, projectIds,
     tags: [], subtasks: [],
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   }));
@@ -1324,6 +1862,1276 @@ async function renderArchived() {
   });
 }
 
+// ── Vista Proyectos Anidados ────────────────────────
+async function renderNestedProjects() {
+  const all  = await db.projects.filter(p => !p.archived).toArray();
+  const cols = await db.kanbanColumns.toArray();
+  const colMap = Object.fromEntries(cols.map(c => [c.id, c]));
+
+  // Separar raíz (sin parentId) de hijos
+  const roots    = all.filter(p => !p.parentId);
+  const childMap = {};
+  all.filter(p => p.parentId).forEach(p => {
+    if (!childMap[p.parentId]) childMap[p.parentId] = [];
+    childMap[p.parentId].push(p);
+  });
+
+  function nodeHTML(p, depth = 0) {
+    const children = childMap[p.id] || [];
+    const col = colMap[p.columnId];
+    const indent = depth * 20;
+    return `
+      <div class="nested-node" data-depth="${depth}" style="margin-left:${indent}px">
+        <div class="nested-node-row" data-inspect-project="${p.id}">
+          <span class="nested-expand ${children.length ? '' : 'no-children'}"
+                data-nest-toggle="${p.id}">${children.length ? '▶' : '·'}</span>
+          <span class="nested-dot" style="background:${col?.color||'#888'}"></span>
+          <span class="nested-title">${esc(p.title)}</span>
+          <span class="badge ${typeBadgeClass(p.type)} nested-badge">${esc(p.type)}</span>
+          <span class="badge ${prioBadgeClass(p.priority)} nested-badge">${esc(p.priority)}</span>
+          ${p.deadline ? `<span class="nested-deadline">⏱ ${formatDate(p.deadline)}</span>` : ''}
+          <span class="nested-col">${esc(col?.title||'—')}</span>
+          <span class="nested-actions">
+            <button class="btn btn-ghost btn-sm" data-nest-add-child="${p.id}" title="Añadir subproyecto">+</button>
+          </span>
+        </div>
+        ${children.length ? `
+          <div class="nested-children" id="nestChildren-${p.id}">
+            ${children.map(ch => nodeHTML(ch, depth + 1)).join('')}
+          </div>` : ''}
+      </div>`;
+  }
+
+  mainContent.innerHTML = `
+    <div class="view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">⬡ Proyectos Anidados</div>
+          <div class="view-subtitle">${roots.length} proyectos raíz · ${all.length} total</div>
+        </div>
+        <button class="btn btn-primary" id="nestAddRoot">+ Proyecto Raíz</button>
+      </div>
+      <div class="nested-tree" id="nestedTree">
+        ${roots.length
+          ? roots.map(r => nodeHTML(r, 0)).join('')
+          : `<div class="empty-state">
+               <span class="empty-state-icon">⬡</span>
+               <h3>Sin proyectos</h3>
+               <p>Crea tu primer proyecto raíz</p>
+             </div>`}
+      </div>
+    </div>`;
+
+  // Inspect al hacer click en la fila
+  mainContent.querySelectorAll('[data-inspect-project]').forEach(el => {
+    el.addEventListener('click', e => {
+      if (!e.target.closest('[data-nest-toggle]') && !e.target.closest('[data-nest-add-child]'))
+        inspectProject(+el.dataset.inspectProject);
+    });
+  });
+
+  // Toggle colapsar/expandir hijos
+  mainContent.querySelectorAll('[data-nest-toggle]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const pid  = +btn.dataset.nestToggle;
+      const cont = document.getElementById(`nestChildren-${pid}`);
+      if (!cont) return;
+      const collapsed = cont.style.display === 'none';
+      cont.style.display = collapsed ? '' : 'none';
+      btn.textContent = collapsed ? '▶' : '▼';
+    });
+  });
+
+  // Añadir subproyecto
+  mainContent.querySelectorAll('[data-nest-add-child]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const parentId = +btn.dataset.nestAddChild;
+      showAddProjectModal(null, parentId); // ver 6.c
+    });
+  });
+
+  $('nestAddRoot')?.addEventListener('click', () => showAddProjectModal(null, null));
+}
+
+// ══════════════════════════════════════════════════════════════
+//  VIEW: AGENDA SEMANAL (solo lectura — agrega deadlines,
+//        submissions, reuniones y recordatorios de la semana)
+// ══════════════════════════════════════════════════════════════
+async function renderWeeklyAgenda() {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const days  = Array.from({length: 7}, (_, i) => {
+    const d = new Date(today); d.setDate(today.getDate() + i); return d;
+  });
+  const isoDay = d => d.toISOString().split('T')[0];
+
+  // Recoger datos
+  const [projects, submissions, meetings] = await Promise.all([
+    db.projects.filter(p => !p.archived && !!p.deadline).toArray(),
+    db.submissions.toArray(),
+    db.meetings.toArray(),
+  ]);
+
+  // Indexar por día
+  const byDay = {};
+  days.forEach(d => { byDay[isoDay(d)] = { deadlines:[], submissions:[], meetings:[] }; });
+
+  projects.forEach(p => {
+    if (byDay[p.deadline]) byDay[p.deadline].deadlines.push(p);
+  });
+  submissions.forEach(s => {
+    if (s.deadlineAt && byDay[s.deadlineAt]) byDay[s.deadlineAt].submissions.push(s);
+    if (s.submittedAt && byDay[s.submittedAt]) byDay[s.submittedAt].submissions.push({...s, _submitted:true});
+  });
+  meetings.forEach(m => {
+    if (byDay[m.date]) byDay[m.date].meetings.push(m);
+  });
+
+  const dayLabels = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+  const monthNames = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+
+  const dayHTML = (d) => {
+    const iso   = isoDay(d);
+    const data  = byDay[iso];
+    const isToday = iso === isoDay(today);
+    const total = data.deadlines.length + data.submissions.length + data.meetings.length;
+    return `
+      <div class="weekly-day ${isToday ? 'weekly-today' : ''} ${total === 0 ? 'weekly-empty' : ''}">
+        <div class="weekly-day-header">
+          <span class="weekly-day-name">${dayLabels[d.getDay()]}</span>
+          <span class="weekly-day-num ${isToday ? 'weekly-day-num-today' : ''}">
+            ${d.getDate()} ${monthNames[d.getMonth()]}
+          </span>
+        </div>
+        <div class="weekly-events">
+          ${data.deadlines.map(p => `
+            <div class="weekly-event weekly-event-deadline" data-inspect-project="${p.id}">
+              <span class="weekly-event-dot" style="background:var(--red)"></span>
+              <span class="weekly-event-text">⏱ ${esc(p.title)}</span>
+              <span class="badge ${typeBadgeClass(p.type)}" style="font-size:.58rem">${esc(p.type)}</span>
+            </div>`).join('')}
+          ${data.submissions.map(s => `
+            <div class="weekly-event weekly-event-submission" data-inspect-submission="${s.id}">
+              <span class="weekly-event-dot" style="background:var(--amber)"></span>
+              <span class="weekly-event-text">📤 ${esc(s.title)}</span>
+              <span class="weekly-event-badge">${s._submitted ? 'Enviado' : 'Deadline'}</span>
+            </div>`).join('')}
+          ${data.meetings.map(m => `
+            <div class="weekly-event weekly-event-meeting" data-inspect-meeting="${m.id}">
+              <span class="weekly-event-dot" style="background:var(--teal)"></span>
+              <span class="weekly-event-text">🗓 ${esc(m.title)}</span>
+            </div>`).join('')}
+          ${total === 0 ? `<div class="weekly-free">—</div>` : ''}
+        </div>
+      </div>`;
+  };
+
+  const weekLabel = `${days[0].getDate()} ${monthNames[days[0].getMonth()]} — ${days[6].getDate()} ${monthNames[days[6].getMonth()]} ${days[6].getFullYear()}`;
+
+  mainContent.innerHTML = `
+    <div class="view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">📅 Agenda Semanal</div>
+          <div class="view-subtitle">${weekLabel}</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" id="weeklyAddMeeting">+ Reunión</button>
+          <button class="btn btn-ghost btn-sm" id="weeklyAddSubmission">+ Submission</button>
+        </div>
+      </div>
+      <div class="weekly-grid">
+        ${days.map(dayHTML).join('')}
+      </div>
+    </div>`;
+
+  // Handlers
+  mainContent.querySelectorAll('[data-inspect-project]').forEach(el =>
+    el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+  mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
+    el.addEventListener('click', () => inspectSubmission(+el.dataset.inspectSubmission)));
+  mainContent.querySelectorAll('[data-inspect-meeting]').forEach(el =>
+    el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
+
+  $('weeklyAddMeeting')?.addEventListener('click', showAddMeetingModal);
+  $('weeklyAddSubmission')?.addEventListener('click', showAddSubmissionModal);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  VIEW: SUBMISSION TRACKER
+// ══════════════════════════════════════════════════════════════
+const SUB_STATUSES = [
+  { key: 'preparacion',       label: 'En preparación', color: 'var(--text-3)' },
+  { key: 'enviado',           label: 'Enviado',        color: 'var(--accent)' },
+  { key: 'en_revision',       label: 'En revisión',    color: 'var(--amber)'  },
+  { key: 'revision_solicitada', label: 'Rev. solicitada', color: 'var(--purple)'},
+  { key: 'aceptado',          label: 'Aceptado ✓',    color: 'var(--green)'  },
+  { key: 'rechazado',         label: 'Rechazado',      color: 'var(--red)'    },
+];
+const SUB_TYPES = ['Paper','Grant','Ponencia','Capítulo','Reporte','Otro'];
+
+function subStatusBadge(status) {
+  const s = SUB_STATUSES.find(s => s.key === status) || SUB_STATUSES[0];
+  return `<span class="badge" style="background:color-mix(in srgb,${s.color} 18%,transparent);
+          color:${s.color};border:1px solid color-mix(in srgb,${s.color} 35%,transparent)">${s.label}</span>`;
+}
+
+async function renderSubmissions() {
+  const [subs, projects] = await Promise.all([
+    db.submissions.orderBy('createdAt').reverse().toArray(),
+    db.projects.toArray()
+  ]);
+  const projMap = Object.fromEntries(projects.map(p => [p.id, p]));
+
+  // Pipeline counts
+  const counts = {};
+  SUB_STATUSES.forEach(s => { counts[s.key] = subs.filter(sub => sub.status === s.key).length; });
+
+  mainContent.innerHTML = `
+    <div class="view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">📤 Submission Tracker</div>
+          <div class="view-subtitle">${subs.length} envío(s) registrado(s)</div>
+        </div>
+        <button class="btn btn-primary" id="addSubmissionBtn">+ Nuevo envío</button>
+      </div>
+
+      <!-- Pipeline overview -->
+      <div class="sub-pipeline">
+        ${SUB_STATUSES.map(s => `
+          <div class="sub-pipeline-stage">
+            <div class="sub-pipeline-count" style="color:${s.color}">${counts[s.key]}</div>
+            <div class="sub-pipeline-label">${s.label}</div>
+          </div>`).join('')}
+      </div>
+
+      <!-- Submissions list -->
+      <div class="sub-list">
+        ${subs.length ? subs.map(s => {
+          const proj = s.projectId ? projMap[s.projectId] : null;
+          const today = new Date(); today.setHours(0,0,0,0);
+          const daysToDeadline = s.deadlineAt
+            ? Math.ceil((new Date(s.deadlineAt + 'T00:00:00') - today) / 86400000) : null;
+          return `
+            <div class="sub-card" data-inspect-submission="${s.id}">
+              <div class="sub-card-top">
+                <div class="sub-card-title">${esc(s.title)}</div>
+                ${subStatusBadge(s.status)}
+              </div>
+              <div class="sub-card-meta">
+                <span class="badge" style="background:var(--bg-elevated);color:var(--text-2)">
+                  ${esc(s.type || 'Paper')}
+                </span>
+                ${s.targetVenue ? `<span style="color:var(--text-2);font-size:.75rem">→ ${esc(s.targetVenue)}</span>` : ''}
+                ${proj ? `<span style="color:var(--accent);font-size:.72rem;cursor:pointer"
+                  data-inspect-project="${proj.id}">⬡ ${esc(proj.title)}</span>` : ''}
+              </div>
+              <div class="sub-card-dates">
+                ${s.deadlineAt ? `<span style="font-size:.72rem;font-family:var(--font-mono);
+                  color:${daysToDeadline !== null && daysToDeadline <= 7 ? 'var(--red)' : 'var(--text-3)'}">
+                  ⏱ Deadline: ${formatDate(s.deadlineAt)}
+                  ${daysToDeadline !== null && daysToDeadline >= 0 && daysToDeadline <= 30 ? `(${daysToDeadline}d)` : ''}
+                </span>` : ''}
+                ${s.submittedAt ? `<span style="font-size:.72rem;font-family:var(--font-mono);color:var(--text-3)">
+                  ✓ Enviado: ${formatDate(s.submittedAt)}
+                </span>` : ''}
+              </div>
+            </div>`;
+        }).join('')
+        : `<div class="empty-state">
+             <span class="empty-state-icon">📤</span>
+             <h3>Sin envíos registrados</h3>
+             <p>Registra papers, grants y ponencias para hacer seguimiento</p>
+           </div>`}
+      </div>
+    </div>`;
+
+  $('addSubmissionBtn').addEventListener('click', showAddSubmissionModal);
+  mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-inspect-project]')) return;
+      inspectSubmission(+el.dataset.inspectSubmission);
+    }));
+  mainContent.querySelectorAll('[data-inspect-project]').forEach(el =>
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      inspectProject(+el.dataset.inspectProject);
+    }));
+}
+
+async function showAddSubmissionModal(prefillDate = null) {
+  const projects = await db.projects.toArray();
+  showModal('📤 Nuevo Envío', `
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Título *</label>
+        <input class="form-input" id="asub-title" placeholder="Título del paper, grant o ponencia…">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Tipo</label>
+        <select class="form-select" id="asub-type">
+          ${SUB_TYPES.map(t => `<option>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Venue / Journal / Fondo objetivo</label>
+        <input class="form-input" id="asub-venue" placeholder="Nature, FONDECYT, ISMIR 2025…">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Estado inicial</label>
+        <select class="form-select" id="asub-status">
+          ${SUB_STATUSES.map(s => `<option value="${s.key}">${s.label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Deadline de envío</label>
+        <input class="form-input" type="date" id="asub-deadline" value="${prefillDate || ''}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Fecha de envío efectivo</label>
+        <input class="form-input" type="date" id="asub-submitted">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Vincular a proyecto</label>
+        <select class="form-select" id="asub-project">
+          <option value="">Sin proyecto</option>
+          ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notas</label>
+        <textarea class="form-textarea" id="asub-notes" rows="2" placeholder="Factor de impacto, contexto, ronda…"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="asubCancel">Cancelar</button>
+      <button class="btn btn-primary" id="asubSave">Guardar</button>
+    </div>`);
+  setTimeout(() => $('asub-title')?.focus(), 60);
+  $('asubCancel').addEventListener('click', closeModal);
+  $('asubSave').addEventListener('click', async () => {
+    const title = $('asub-title').value.trim();
+    if (!title) { showToast('El título es requerido', 'error'); return; }
+    const now = new Date().toISOString();
+    await dbWrite(() => db.submissions.add({
+      title,
+      type:        $('asub-type').value,
+      targetVenue: $('asub-venue').value.trim(),
+      status:      $('asub-status').value,
+      deadlineAt:  $('asub-deadline').value || null,
+      submittedAt: $('asub-submitted').value || null,
+      projectId:   +$('asub-project').value || null,
+      notes:       $('asub-notes').value.trim(),
+      rounds:      [],
+      createdAt:   now, updatedAt: now
+    }));
+    closeModal();
+    showToast('Envío registrado ✓', 'success');
+    if (App.view === 'submissions') renderSubmissions();
+    updateBadges();
+  });
+}
+
+async function inspectSubmission(id) {
+  const s = await db.submissions.get(id);
+  if (!s) return;
+  const proj = s.projectId ? await db.projects.get(s.projectId) : null;
+
+  inspectorBody.innerHTML = `
+    <div>
+      <div style="margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        ${subStatusBadge(s.status)}
+        <span class="badge" style="background:var(--bg-elevated);color:var(--text-2)">${esc(s.type||'Paper')}</span>
+      </div>
+      <div class="inspector-project-title">${esc(s.title)}</div>
+      <div class="inspector-meta">
+        ${s.targetVenue ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">Venue</span>
+          <span class="inspector-meta-val">${esc(s.targetVenue)}</span>
+        </div>` : ''}
+        ${proj ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">Proyecto</span>
+          <span class="inspector-meta-val" style="cursor:pointer;color:var(--accent)"
+                id="subNavProj">${esc(proj.title)}</span>
+        </div>` : ''}
+        <div class="inspector-meta-row">
+          <span class="inspector-meta-key">Deadline</span>
+          <span class="inspector-meta-val">${s.deadlineAt ? formatDate(s.deadlineAt) : '—'}</span>
+        </div>
+        <div class="inspector-meta-row">
+          <span class="inspector-meta-key">Enviado</span>
+          <span class="inspector-meta-val">${s.submittedAt ? formatDate(s.submittedAt) : '—'}</span>
+        </div>
+        <div class="inspector-meta-row">
+          <span class="inspector-meta-key">Creado</span>
+          <span class="inspector-meta-val">${relativeDate(s.createdAt)}</span>
+        </div>
+      </div>
+      ${s.notes ? `<div class="inspector-desc">${esc(s.notes)}</div>` : ''}
+
+      <div class="inspector-related-title">Cambiar estado</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
+        ${SUB_STATUSES.map(st => `
+          <button class="btn btn-ghost btn-sm sub-status-btn ${s.status === st.key ? 'active' : ''}"
+                  data-status="${st.key}"
+                  style="${s.status === st.key ? `border-color:${st.color};color:${st.color}` : ''}">
+            ${st.label}
+          </button>`).join('')}
+      </div>
+
+      <!-- Rondas de revisión -->
+      <div class="inspector-related-title">
+        Rondas de revisión (${(s.rounds||[]).length})
+      </div>
+      <div class="sub-rounds-list">
+        ${(s.rounds||[]).map((r, i) => `
+          <div class="sub-round-item">
+            <span class="history-ts">${formatDate(r.date)}</span>
+            <span class="badge" style="font-size:.65rem">${esc(r.status)}</span>
+            <span style="font-size:.75rem;color:var(--text-2)">${esc(r.notes||'')}</span>
+          </div>`).join('')}
+      </div>
+      <div class="subtask-add-row" style="margin-top:6px">
+        <input class="subtask-add-input" id="roundNotes" placeholder="Notas de nueva ronda…">
+        <select class="form-select" id="roundStatus" style="width:130px;padding:4px 6px;font-size:.75rem">
+          ${SUB_STATUSES.map(st => `<option value="${st.key}">${st.label}</option>`).join('')}
+        </select>
+        <button class="btn btn-ghost btn-sm" id="addRoundBtn">+</button>
+      </div>
+
+      <div class="inspector-actions" style="margin-top:14px">
+        <button class="btn btn-ghost btn-sm" id="subEditBtn">✎ Editar</button>
+        <button class="btn btn-danger btn-sm" id="subDeleteBtn">✕ Eliminar</button>
+      </div>
+    </div>`;
+
+  openInspector();
+
+  $('subNavProj')?.addEventListener('click', () => {
+    navigate('projects'); setTimeout(() => inspectProject(proj.id), 120);
+  });
+
+  inspectorBody.querySelectorAll('.sub-status-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await dbWrite(() => db.submissions.update(id, {
+        status: btn.dataset.status, updatedAt: new Date().toISOString()
+      }));
+      showToast('Estado actualizado ✓', 'success');
+      inspectSubmission(id);
+      if (App.view === 'submissions') renderSubmissions();
+      updateBadges();
+    });
+  });
+
+  $('addRoundBtn').addEventListener('click', async () => {
+    const notes  = $('roundNotes').value.trim();
+    const status = $('roundStatus').value;
+    const rounds = [...(s.rounds||[]), {
+      date: new Date().toISOString().split('T')[0], status, notes
+    }];
+    await dbWrite(() => db.submissions.update(id, { rounds, updatedAt: new Date().toISOString() }));
+    showToast('Ronda registrada ✓', 'success');
+    inspectSubmission(id);
+  });
+
+  $('subEditBtn').addEventListener('click', () => showEditSubmissionModal(s));
+  $('subDeleteBtn').addEventListener('click', async () => {
+    if (!confirm(`¿Eliminar "${s.title}"?`)) return;
+    await db.submissions.delete(id);
+    closeInspector();
+    showToast('Envío eliminado', 'info');
+    if (App.view === 'submissions') renderSubmissions();
+    updateBadges();
+  });
+}
+
+async function showEditSubmissionModal(s) {
+  const projects = await db.projects.toArray();
+  showModal('✎ Editar Envío', `
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Título *</label>
+        <input class="form-input" id="esub-title" value="${esc(s.title)}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Tipo</label>
+        <select class="form-select" id="esub-type">
+          ${SUB_TYPES.map(t => `<option ${t===s.type?'selected':''}>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Venue / Journal / Fondo</label>
+        <input class="form-input" id="esub-venue" value="${esc(s.targetVenue||'')}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Estado</label>
+        <select class="form-select" id="esub-status">
+          ${SUB_STATUSES.map(st => `<option value="${st.key}" ${st.key===s.status?'selected':''}>${st.label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Deadline</label>
+        <input class="form-input" type="date" id="esub-deadline" value="${s.deadlineAt||''}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Fecha de envío</label>
+        <input class="form-input" type="date" id="esub-submitted" value="${s.submittedAt||''}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Proyecto</label>
+        <select class="form-select" id="esub-project">
+          <option value="">Sin proyecto</option>
+          ${projects.map(p => `<option value="${p.id}" ${p.id===s.projectId?'selected':''}>${esc(p.title)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notas</label>
+        <textarea class="form-textarea" id="esub-notes" rows="2">${esc(s.notes||'')}</textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="esubCancel">Cancelar</button>
+      <button class="btn btn-primary" id="esubSave">Guardar</button>
+    </div>`);
+  $('esubCancel').addEventListener('click', closeModal);
+  $('esubSave').addEventListener('click', async () => {
+    const title = $('esub-title').value.trim();
+    if (!title) { showToast('Título requerido', 'error'); return; }
+    await dbWrite(() => db.submissions.update(s.id, {
+      title, type: $('esub-type').value,
+      targetVenue: $('esub-venue').value.trim(),
+      status:      $('esub-status').value,
+      deadlineAt:  $('esub-deadline').value || null,
+      submittedAt: $('esub-submitted').value || null,
+      projectId:   +$('esub-project').value || null,
+      notes:       $('esub-notes').value.trim(),
+      updatedAt:   new Date().toISOString()
+    }));
+    closeModal();
+    showToast('Envío actualizado ✓', 'success');
+    inspectSubmission(s.id);
+    if (App.view === 'submissions') renderSubmissions();
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  VIEW: LOG DE REUNIONES
+// ══════════════════════════════════════════════════════════════
+async function renderMeetings() {
+  const [meetings, projects] = await Promise.all([
+    db.meetings.orderBy('date').reverse().toArray(),
+    db.projects.toArray()
+  ]);
+  const projMap = Object.fromEntries(projects.map(p => [p.id, p]));
+
+  mainContent.innerHTML = `
+    <div class="view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">🗓 Log de Reuniones</div>
+          <div class="view-subtitle">${meetings.length} reunión(es) registrada(s)</div>
+        </div>
+        <button class="btn btn-primary" id="addMeetingBtn">+ Reunión</button>
+      </div>
+      <div class="meetings-list">
+        ${meetings.length ? meetings.map(m => {
+          const proj = m.projectId ? projMap[m.projectId] : null;
+          const ais  = (m.actionItems || []).filter(a => !a.done);
+          return `
+            <div class="meeting-card" data-inspect-meeting="${m.id}">
+              <div class="meeting-card-date">${formatDate(m.date)}</div>
+              <div class="meeting-card-title">${esc(m.title)}</div>
+              ${m.participants ? `<div class="meeting-card-meta">👤 ${esc(m.participants)}</div>` : ''}
+              ${proj ? `<div class="meeting-card-meta" style="color:var(--accent)">⬡ ${esc(proj.title)}</div>` : ''}
+              ${ais.length ? `<div class="meeting-card-meta" style="color:var(--amber)">
+                ⚑ ${ais.length} acción(es) pendiente(s)
+              </div>` : ''}
+            </div>`;
+        }).join('')
+        : `<div class="empty-state">
+             <span class="empty-state-icon">🗓</span>
+             <h3>Sin reuniones registradas</h3>
+             <p>Registra reuniones con colaboradores, comités o directores</p>
+           </div>`}
+      </div>
+    </div>`;
+
+  $('addMeetingBtn').addEventListener('click', showAddMeetingModal);
+  mainContent.querySelectorAll('[data-inspect-meeting]').forEach(el =>
+    el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
+}
+
+async function showAddMeetingModal(prefillDate = null) {
+  const projects = await db.projects.toArray();
+  showModal('🗓 Nueva Reunión', `
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Título / Propósito *</label>
+        <input class="form-input" id="am-title" placeholder="Reunión de avance, Defensa capítulo 3…">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Fecha *</label>
+        <input class="form-input" type="date" id="am-date" value="${prefillDate || new Date().toISOString().split('T')[0]}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Participantes</label>
+        <input class="form-input" id="am-participants" placeholder="Dr. García, Dr. Vega…">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Vincular a proyecto</label>
+        <select class="form-select" id="am-project">
+          <option value="">Sin proyecto</option>
+          ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Acuerdos / Resumen</label>
+        <textarea class="form-textarea" id="am-agreements" rows="3"
+          placeholder="Se acordó enviar borrador antes del 15…"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Próximos pasos (uno por línea)</label>
+        <textarea class="form-textarea" id="am-actions" rows="3"
+          placeholder="Revisar sección 2&#10;Enviar datos a Dr. Vega&#10;Preparar slides"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="amCancel">Cancelar</button>
+      <button class="btn btn-primary" id="amSave">Guardar</button>
+    </div>`);
+  setTimeout(() => $('am-title')?.focus(), 60);
+  $('amCancel').addEventListener('click', closeModal);
+  $('amSave').addEventListener('click', async () => {
+    const title = $('am-title').value.trim();
+    const date  = $('am-date').value;
+    if (!title || !date) { showToast('Título y fecha son requeridos', 'error'); return; }
+    const actionItems = $('am-actions').value.split('\n')
+      .map(s => s.trim()).filter(Boolean)
+      .map(text => ({ id: Date.now() + Math.random(), text, done: false }));
+    const now = new Date().toISOString();
+    await dbWrite(() => db.meetings.add({
+      title, date,
+      participants: $('am-participants').value.trim(),
+      projectId:    +$('am-project').value || null,
+      agreements:   $('am-agreements').value.trim(),
+      actionItems,
+      createdAt: now, updatedAt: now
+    }));
+    closeModal();
+    showToast('Reunión guardada ✓', 'success');
+    if (App.view === 'meetings') renderMeetings();
+    if (App.view === 'weekly') renderWeeklyAgenda();
+  });
+}
+
+async function inspectMeeting(id) {
+  const m    = await db.meetings.get(id);
+  if (!m) return;
+  const proj = m.projectId ? await db.projects.get(m.projectId) : null;
+  const ais  = m.actionItems || [];
+
+  inspectorBody.innerHTML = `
+    <div>
+      <div class="inspector-project-title">${esc(m.title)}</div>
+      <div class="inspector-meta">
+        <div class="inspector-meta-row">
+          <span class="inspector-meta-key">Fecha</span>
+          <span class="inspector-meta-val">${formatDate(m.date)}</span>
+        </div>
+        ${m.participants ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">Participantes</span>
+          <span class="inspector-meta-val">${esc(m.participants)}</span>
+        </div>` : ''}
+        ${proj ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">Proyecto</span>
+          <span class="inspector-meta-val" style="cursor:pointer;color:var(--accent)"
+                id="meetNavProj">${esc(proj.title)}</span>
+        </div>` : ''}
+      </div>
+      ${m.agreements ? `
+        <div class="inspector-related-title">Acuerdos / Resumen</div>
+        <div class="inspector-desc">${esc(m.agreements)}</div>` : ''}
+
+      <div class="inspector-related-title">
+        Próximos pasos
+        ${ais.length ? `<span class="subtask-count-badge">${ais.filter(a=>a.done).length}/${ais.length}</span>` : ''}
+      </div>
+      <div class="subtask-list">
+        ${ais.map(a => `
+          <div class="subtask-item">
+            <button class="subtask-check ${a.done?'done':''}" data-toggle-ai="${a.id}">${a.done?'✓':''}</button>
+            <span class="subtask-text ${a.done?'done':''}">${esc(a.text)}</span>
+          </div>`).join('')}
+      </div>
+
+      <div class="inspector-actions" style="margin-top:14px">
+        <button class="btn btn-ghost btn-sm" id="meetEditBtn">✎ Editar</button>
+        <button class="btn btn-danger btn-sm" id="meetDeleteBtn">✕ Eliminar</button>
+      </div>
+    </div>`;
+
+  openInspector();
+
+  $('meetNavProj')?.addEventListener('click', () => {
+    navigate('projects'); setTimeout(() => inspectProject(proj.id), 120);
+  });
+
+  inspectorBody.querySelectorAll('[data-toggle-ai]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const aid = btn.dataset.toggleAi;
+      const updated = ais.map(a => a.id == aid ? {...a, done: !a.done} : a);
+      await dbWrite(() => db.meetings.update(id, { actionItems: updated, updatedAt: new Date().toISOString() }));
+      inspectMeeting(id);
+    });
+  });
+
+  $('meetEditBtn').addEventListener('click', async () => {
+    const projects = await db.projects.toArray();
+    showModal('✎ Editar Reunión', `
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Título *</label>
+          <input class="form-input" id="em-title" value="${esc(m.title)}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Fecha *</label>
+          <input class="form-input" type="date" id="em-date" value="${m.date}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Participantes</label>
+          <input class="form-input" id="em-participants" value="${esc(m.participants||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Proyecto</label>
+          <select class="form-select" id="em-project">
+            <option value="">Sin proyecto</option>
+            ${projects.map(p => `<option value="${p.id}" ${p.id===m.projectId?'selected':''}>${esc(p.title)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Acuerdos</label>
+          <textarea class="form-textarea" id="em-agreements" rows="3">${esc(m.agreements||'')}</textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="emCancel">Cancelar</button>
+        <button class="btn btn-primary" id="emSave">Guardar</button>
+      </div>`);
+    $('emCancel').addEventListener('click', closeModal);
+    $('emSave').addEventListener('click', async () => {
+      const title = $('em-title').value.trim();
+      if (!title) { showToast('Título requerido', 'error'); return; }
+      await dbWrite(() => db.meetings.update(id, {
+        title, date: $('em-date').value,
+        participants: $('em-participants').value.trim(),
+        projectId:    +$('em-project').value || null,
+        agreements:   $('em-agreements').value.trim(),
+        updatedAt:    new Date().toISOString()
+      }));
+      closeModal(); showToast('Reunión actualizada ✓', 'success');
+      inspectMeeting(id);
+      if (App.view === 'meetings') renderMeetings();
+    });
+  });
+
+  $('meetDeleteBtn').addEventListener('click', async () => {
+    if (!confirm(`¿Eliminar esta reunión?`)) return;
+    await db.meetings.delete(id);
+    closeInspector(); showToast('Reunión eliminada', 'info');
+    if (App.view === 'meetings') renderMeetings();
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  VIEW: GESTOR DE REFERENCIAS / BibTeX
+// ══════════════════════════════════════════════════════════════
+async function renderReferences() {
+  const [refs, projects] = await Promise.all([
+    db.references.orderBy('year').reverse().toArray(),
+    db.projects.toArray()
+  ]);
+  const projMap = Object.fromEntries(projects.map(p => [p.id, p]));
+
+  // Filter by project if set
+  const filterProjId = App._refFilterProject || 'all';
+  const visible = filterProjId === 'all' ? refs
+    : refs.filter(r => r.projectId === +filterProjId);
+
+  mainContent.innerHTML = `
+    <div class="view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">📚 Referencias</div>
+          <div class="view-subtitle">${visible.length} de ${refs.length} referencia(s)</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost" id="exportBibtexBtn">⬇ .bib</button>
+          <button class="btn btn-primary" id="addRefBtn">+ Referencia</button>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
+        <select class="form-select" id="refProjectFilter" style="max-width:240px;font-size:.8rem">
+          <option value="all">Todos los proyectos</option>
+          ${projects.map(p => `<option value="${p.id}" ${p.id == filterProjId?'selected':''}>${esc(p.title)}</option>`).join('')}
+        </select>
+      </div>
+
+      <div class="ref-list">
+        ${visible.length ? visible.map(r => {
+          const proj = r.projectId ? projMap[r.projectId] : null;
+          return `
+            <div class="ref-card" data-inspect-ref="${r.id}">
+              <div class="ref-card-main">
+                <div class="ref-card-title">${esc(r.title)}</div>
+                <div class="ref-card-authors">${esc(r.authors||'')}${r.year ? ` (${r.year})` : ''}</div>
+                ${r.journal ? `<div class="ref-card-journal">${esc(r.journal)}</div>` : ''}
+              </div>
+              <div class="ref-card-side">
+                ${r.doi ? `<a class="ref-doi-link" href="https://doi.org/${r.doi}" target="_blank"
+                  onclick="event.stopPropagation()">DOI ↗</a>` : ''}
+                ${proj ? `<span style="font-size:.65rem;color:var(--accent)">⬡ ${esc(proj.title)}</span>` : ''}
+              </div>
+            </div>`;
+        }).join('')
+        : `<div class="empty-state">
+             <span class="empty-state-icon">📚</span>
+             <h3>Sin referencias</h3>
+             <p>Agrega papers y fuentes vinculadas a tus proyectos</p>
+           </div>`}
+      </div>
+    </div>`;
+
+  $('addRefBtn').addEventListener('click', showAddReferenceModal);
+
+  $('exportBibtexBtn').addEventListener('click', async () => {
+    const pid = filterProjId !== 'all' ? +filterProjId : null;
+    const bib = await exportBibtex(pid);
+    if (!bib.trim()) { showToast('Sin referencias para exportar', 'error'); return; }
+    const blob = new Blob([bib], { type: 'text/plain' });
+    const url  = URL.createObjectURL(blob);
+    const a    = Object.assign(document.createElement('a'), {
+      href: url, download: `references-${new Date().toISOString().split('T')[0]}.bib`
+    });
+    a.click(); URL.revokeObjectURL(url);
+    showToast('.bib exportado ✓', 'success');
+  });
+
+  $('refProjectFilter').addEventListener('change', (e) => {
+    App._refFilterProject = e.target.value;
+    renderReferences();
+  });
+
+  mainContent.querySelectorAll('[data-inspect-ref]').forEach(el =>
+    el.addEventListener('click', () => inspectReference(+el.dataset.inspectRef)));
+}
+
+async function showAddReferenceModal() {
+  const projects = await db.projects.toArray();
+  showModal('📚 Nueva Referencia', `
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Título *</label>
+        <input class="form-input" id="ar-title" placeholder="A unifying framework for…">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Autores</label>
+        <input class="form-input" id="ar-authors" placeholder="García, J., Vega, M.">
+      </div>
+      <div class="form-group" style="display:flex;gap:10px">
+        <div style="flex:1">
+          <label class="form-label">Año</label>
+          <input class="form-input" type="number" id="ar-year" min="1900" max="2100"
+            placeholder="${new Date().getFullYear()}">
+        </div>
+        <div style="flex:2">
+          <label class="form-label">Journal / Conferencia</label>
+          <input class="form-input" id="ar-journal" placeholder="Nature, PLOS ONE…">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">DOI</label>
+        <input class="form-input" id="ar-doi" placeholder="10.1038/s41586-...">
+      </div>
+      <div class="form-group">
+        <label class="form-label">URL alternativa</label>
+        <input class="form-input" id="ar-url" placeholder="https://...">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Vincular a proyecto</label>
+        <select class="form-select" id="ar-project">
+          <option value="">Sin proyecto</option>
+          ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notas personales</label>
+        <textarea class="form-textarea" id="ar-notes" rows="2"
+          placeholder="Metodología relevante, cita clave, crítica…"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Etiquetas (separadas por coma)</label>
+        <input class="form-input" id="ar-tags" placeholder="methods, review, R">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="arCancel">Cancelar</button>
+      <button class="btn btn-primary" id="arSave">Guardar</button>
+    </div>`);
+  setTimeout(() => $('ar-title')?.focus(), 60);
+  $('arCancel').addEventListener('click', closeModal);
+  $('arSave').addEventListener('click', async () => {
+    const title = $('ar-title').value.trim();
+    if (!title) { showToast('Título requerido', 'error'); return; }
+    const now = new Date().toISOString();
+    await dbWrite(() => db.references.add({
+      title,
+      authors:   $('ar-authors').value.trim(),
+      year:      +$('ar-year').value || null,
+      journal:   $('ar-journal').value.trim(),
+      doi:       $('ar-doi').value.trim(),
+      url:       $('ar-url').value.trim(),
+      projectId: +$('ar-project').value || null,
+      notes:     $('ar-notes').value.trim(),
+      tags:      $('ar-tags').value.split(',').map(s => s.trim()).filter(Boolean),
+      createdAt: now, updatedAt: now
+    }));
+    closeModal(); showToast('Referencia guardada ✓', 'success');
+    if (App.view === 'references') renderReferences();
+  });
+}
+
+async function inspectReference(id) {
+  const r    = await db.references.get(id);
+  if (!r) return;
+  const proj = r.projectId ? await db.projects.get(r.projectId) : null;
+  const bibtexKey = `${(r.authors||'').split(',')[0].trim().split(' ').pop()}${r.year||'xxxx'}`;
+  const bibtexStr = `@article{${bibtexKey},\n  author  = {${r.authors||''}},\n  title   = {${r.title}},\n  journal = {${r.journal||''}},\n  year    = {${r.year||''}},\n  doi     = {${r.doi||''}}\n}`;
+
+  inspectorBody.innerHTML = `
+    <div>
+      <div class="inspector-project-title">${esc(r.title)}</div>
+      <div class="inspector-meta">
+        <div class="inspector-meta-row">
+          <span class="inspector-meta-key">Autores</span>
+          <span class="inspector-meta-val">${esc(r.authors||'—')}</span>
+        </div>
+        <div class="inspector-meta-row">
+          <span class="inspector-meta-key">Año</span>
+          <span class="inspector-meta-val">${r.year || '—'}</span>
+        </div>
+        <div class="inspector-meta-row">
+          <span class="inspector-meta-key">Journal</span>
+          <span class="inspector-meta-val">${esc(r.journal||'—')}</span>
+        </div>
+        ${r.doi ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">DOI</span>
+          <span class="inspector-meta-val">
+            <a href="https://doi.org/${esc(r.doi)}" target="_blank"
+               style="color:var(--accent)">${esc(r.doi)} ↗</a>
+          </span>
+        </div>` : ''}
+        ${proj ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">Proyecto</span>
+          <span class="inspector-meta-val" style="cursor:pointer;color:var(--accent)"
+                id="refNavProj">${esc(proj.title)}</span>
+        </div>` : ''}
+      </div>
+      ${r.notes ? `<div class="inspector-related-title">Notas</div>
+        <div class="inspector-desc">${esc(r.notes)}</div>` : ''}
+      ${(r.tags||[]).length ? `
+        <div class="inspector-related-title">Etiquetas</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px">
+          ${r.tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}
+        </div>` : ''}
+      <div class="inspector-related-title">BibTeX</div>
+      <div class="ref-bibtex-block">
+        <pre style="font-size:.7rem;font-family:var(--font-mono);color:var(--text-2);
+                    white-space:pre-wrap;margin:0">${esc(bibtexStr)}</pre>
+        <button class="btn btn-ghost btn-sm" id="copyBibtexBtn"
+                style="margin-top:6px;font-size:.7rem">📋 Copiar BibTeX</button>
+      </div>
+      <div class="inspector-actions" style="margin-top:14px">
+        <button class="btn btn-ghost btn-sm" id="refEditBtn">✎ Editar</button>
+        <button class="btn btn-danger btn-sm" id="refDeleteBtn">✕ Eliminar</button>
+      </div>
+    </div>`;
+
+  openInspector();
+  $('refNavProj')?.addEventListener('click', () => {
+    navigate('projects'); setTimeout(() => inspectProject(proj.id), 120);
+  });
+  $('copyBibtexBtn').addEventListener('click', () => {
+    navigator.clipboard.writeText(bibtexStr);
+    showToast('BibTeX copiado ✓', 'success');
+  });
+  $('refEditBtn').addEventListener('click', async () => {
+    const projects = await db.projects.toArray();
+    showModal('✎ Editar Referencia', `
+      <div class="modal-body">
+        <div class="form-group"><label class="form-label">Título *</label>
+          <input class="form-input" id="er-title" value="${esc(r.title)}"></div>
+        <div class="form-group"><label class="form-label">Autores</label>
+          <input class="form-input" id="er-authors" value="${esc(r.authors||'')}"></div>
+        <div class="form-group" style="display:flex;gap:10px">
+          <div style="flex:1"><label class="form-label">Año</label>
+            <input class="form-input" type="number" id="er-year" value="${r.year||''}"></div>
+          <div style="flex:2"><label class="form-label">Journal</label>
+            <input class="form-input" id="er-journal" value="${esc(r.journal||'')}"></div>
+        </div>
+        <div class="form-group"><label class="form-label">DOI</label>
+          <input class="form-input" id="er-doi" value="${esc(r.doi||'')}"></div>
+        <div class="form-group"><label class="form-label">Proyecto</label>
+          <select class="form-select" id="er-project">
+            <option value="">Sin proyecto</option>
+            ${projects.map(p => `<option value="${p.id}" ${p.id===r.projectId?'selected':''}>${esc(p.title)}</option>`).join('')}
+          </select></div>
+        <div class="form-group"><label class="form-label">Notas</label>
+          <textarea class="form-textarea" id="er-notes" rows="2">${esc(r.notes||'')}</textarea></div>
+        <div class="form-group"><label class="form-label">Etiquetas</label>
+          <input class="form-input" id="er-tags" value="${(r.tags||[]).join(', ')}"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="erCancel">Cancelar</button>
+        <button class="btn btn-primary" id="erSave">Guardar</button>
+      </div>`);
+    $('erCancel').addEventListener('click', closeModal);
+    $('erSave').addEventListener('click', async () => {
+      const title = $('er-title').value.trim();
+      if (!title) { showToast('Título requerido', 'error'); return; }
+      await dbWrite(() => db.references.update(r.id, {
+        title, authors: $('er-authors').value.trim(),
+        year: +$('er-year').value || null,
+        journal: $('er-journal').value.trim(),
+        doi: $('er-doi').value.trim(),
+        projectId: +$('er-project').value || null,
+        notes: $('er-notes').value.trim(),
+        tags: $('er-tags').value.split(',').map(s => s.trim()).filter(Boolean),
+        updatedAt: new Date().toISOString()
+      }));
+      closeModal(); showToast('Referencia actualizada ✓', 'success');
+      inspectReference(r.id);
+      if (App.view === 'references') renderReferences();
+    });
+  });
+  $('refDeleteBtn').addEventListener('click', async () => {
+    if (!confirm(`¿Eliminar "${r.title}"?`)) return;
+    await db.references.delete(id);
+    closeInspector(); showToast('Referencia eliminada', 'info');
+    if (App.view === 'references') renderReferences();
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  VIEW: COLABORADORES
+// ══════════════════════════════════════════════════════════════
+async function renderCollaborators() {
+  const [collabs, projects] = await Promise.all([
+    db.collaborators.orderBy('name').toArray(),
+    db.projects.toArray()
+  ]);
+
+  mainContent.innerHTML = `
+    <div class="view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">👥 Colaboradores</div>
+          <div class="view-subtitle">${collabs.length} colaborador(es)</div>
+        </div>
+        <button class="btn btn-primary" id="addCollabBtn">+ Colaborador</button>
+      </div>
+      <div class="collabs-grid">
+        ${collabs.length ? collabs.map(c => {
+          // Proyectos donde aparece como responsable o coautor
+          const linked = projects.filter(p =>
+            p.responsible === c.name ||
+            (p.coauthors||[]).includes(c.name)
+          );
+          return `
+            <div class="collab-card" data-inspect-collab="${c.id}">
+              <div class="collab-avatar">${(c.name||'?')[0].toUpperCase()}</div>
+              <div class="collab-info">
+                <div class="collab-name">${esc(c.name)}</div>
+                ${c.role ? `<div class="collab-role">${esc(c.role)}</div>` : ''}
+                ${c.affiliation ? `<div class="collab-affil">${esc(c.affiliation)}</div>` : ''}
+                ${c.email ? `<a class="collab-email" href="mailto:${esc(c.email)}"
+                  onclick="event.stopPropagation()">${esc(c.email)}</a>` : ''}
+                ${linked.length ? `<div class="collab-projects">
+                  ${linked.slice(0,3).map(p =>
+                    `<span class="tag" style="cursor:pointer" data-inspect-project="${p.id}">⬡ ${esc(p.title)}</span>`
+                  ).join('')}
+                  ${linked.length > 3 ? `<span class="tag">+${linked.length-3}</span>` : ''}
+                </div>` : ''}
+              </div>
+            </div>`;
+        }).join('')
+        : `<div class="empty-state" style="grid-column:1/-1">
+             <span class="empty-state-icon">👥</span>
+             <h3>Sin colaboradores</h3>
+             <p>Registra coautores, directores y contactos de investigación</p>
+           </div>`}
+      </div>
+    </div>`;
+
+  $('addCollabBtn').addEventListener('click', showAddCollaboratorModal);
+  mainContent.querySelectorAll('[data-inspect-collab]').forEach(el =>
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-inspect-project]')) return;
+      inspectCollaborator(+el.dataset.inspectCollab);
+    }));
+  mainContent.querySelectorAll('[data-inspect-project]').forEach(el =>
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      inspectProject(+el.dataset.inspectProject);
+    }));
+}
+
+async function showAddCollaboratorModal() {
+  showModal('👥 Nuevo Colaborador', `
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Nombre completo *</label>
+        <input class="form-input" id="ac-name" placeholder="Dr. Juan García">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Rol</label>
+        <input class="form-input" id="ac-role"
+          placeholder="Co-investigador, Director de tesis, Revisor externo…">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Institución / Afiliación</label>
+        <input class="form-input" id="ac-affiliation"
+          placeholder="Universidad de Chile, CONICET…">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Email</label>
+        <input class="form-input" type="email" id="ac-email"
+          placeholder="jgarcia@universidad.cl">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notas de relación</label>
+        <textarea class="form-textarea" id="ac-notes" rows="2"
+          placeholder="Especialista en modelos GAM. Contactar antes de congresos."></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="acCancel">Cancelar</button>
+      <button class="btn btn-primary" id="acSave">Guardar</button>
+    </div>`);
+  setTimeout(() => $('ac-name')?.focus(), 60);
+  $('acCancel').addEventListener('click', closeModal);
+  $('acSave').addEventListener('click', async () => {
+    const name = $('ac-name').value.trim();
+    if (!name) { showToast('Nombre requerido', 'error'); return; }
+    await dbWrite(() => db.collaborators.add({
+      name,
+      role:        $('ac-role').value.trim(),
+      affiliation: $('ac-affiliation').value.trim(),
+      email:       $('ac-email').value.trim(),
+      notes:       $('ac-notes').value.trim(),
+      createdAt:   new Date().toISOString()
+    }));
+    closeModal(); showToast('Colaborador guardado ✓', 'success');
+    if (App.view === 'collaborators') renderCollaborators();
+  });
+}
+
+async function inspectCollaborator(id) {
+  const c = await db.collaborators.get(id);
+  if (!c) return;
+  const projects = await db.projects.toArray();
+  const linked = projects.filter(p =>
+    p.responsible === c.name || (p.coauthors||[]).includes(c.name)
+  );
+
+  inspectorBody.innerHTML = `
+    <div>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+        <div class="collab-avatar" style="width:48px;height:48px;font-size:1.4rem">
+          ${(c.name||'?')[0].toUpperCase()}
+        </div>
+        <div>
+          <div class="inspector-project-title" style="margin:0">${esc(c.name)}</div>
+          ${c.role ? `<div style="font-size:.78rem;color:var(--text-3)">${esc(c.role)}</div>` : ''}
+        </div>
+      </div>
+      <div class="inspector-meta">
+        ${c.affiliation ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">Institución</span>
+          <span class="inspector-meta-val">${esc(c.affiliation)}</span>
+        </div>` : ''}
+        ${c.email ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">Email</span>
+          <span class="inspector-meta-val">
+            <a href="mailto:${esc(c.email)}" style="color:var(--accent)">${esc(c.email)}</a>
+          </span>
+        </div>` : ''}
+        <div class="inspector-meta-row">
+          <span class="inspector-meta-key">Registrado</span>
+          <span class="inspector-meta-val">${relativeDate(c.createdAt)}</span>
+        </div>
+      </div>
+      ${c.notes ? `<div class="inspector-related-title">Notas</div>
+        <div class="inspector-desc">${esc(c.notes)}</div>` : ''}
+      ${linked.length ? `
+        <div class="inspector-related-title">Proyectos compartidos (${linked.length})</div>
+        ${linked.map(p => `
+          <div class="inspector-related-item" data-inspect-project="${p.id}" style="cursor:pointer">
+            ⬡ ${esc(p.title)}
+          </div>`).join('')}` : ''}
+      <div class="inspector-actions" style="margin-top:14px">
+        <button class="btn btn-ghost btn-sm" id="collabEditBtn">✎ Editar</button>
+        <button class="btn btn-danger btn-sm" id="collabDeleteBtn">✕ Eliminar</button>
+      </div>
+    </div>`;
+
+  openInspector();
+  inspectorBody.querySelectorAll('[data-inspect-project]').forEach(el =>
+    el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+
+  $('collabEditBtn').addEventListener('click', () => {
+    showModal('✎ Editar Colaborador', `
+      <div class="modal-body">
+        <div class="form-group"><label class="form-label">Nombre *</label>
+          <input class="form-input" id="ec-name" value="${esc(c.name)}"></div>
+        <div class="form-group"><label class="form-label">Rol</label>
+          <input class="form-input" id="ec-role" value="${esc(c.role||'')}"></div>
+        <div class="form-group"><label class="form-label">Institución</label>
+          <input class="form-input" id="ec-affiliation" value="${esc(c.affiliation||'')}"></div>
+        <div class="form-group"><label class="form-label">Email</label>
+          <input class="form-input" type="email" id="ec-email" value="${esc(c.email||'')}"></div>
+        <div class="form-group"><label class="form-label">Notas</label>
+          <textarea class="form-textarea" id="ec-notes" rows="2">${esc(c.notes||'')}</textarea></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="ecCancel">Cancelar</button>
+        <button class="btn btn-primary" id="ecSave">Guardar</button>
+      </div>`);
+    $('ecCancel').addEventListener('click', closeModal);
+    $('ecSave').addEventListener('click', async () => {
+      const name = $('ec-name').value.trim();
+      if (!name) { showToast('Nombre requerido', 'error'); return; }
+      await dbWrite(() => db.collaborators.update(id, {
+        name, role: $('ec-role').value.trim(),
+        affiliation: $('ec-affiliation').value.trim(),
+        email: $('ec-email').value.trim(),
+        notes: $('ec-notes').value.trim()
+      }));
+      closeModal(); showToast('Colaborador actualizado ✓', 'success');
+      inspectCollaborator(id);
+      if (App.view === 'collaborators') renderCollaborators();
+    });
+  });
+  $('collabDeleteBtn').addEventListener('click', async () => {
+    if (!confirm(`¿Eliminar a "${c.name}"?`)) return;
+    await db.collaborators.delete(id);
+    closeInspector(); showToast('Colaborador eliminado', 'info');
+    if (App.view === 'collaborators') renderCollaborators();
+  });
+}
+
 async function renderStarred() {
   const projects = (await db.projects.toArray()).filter(p => p.starred && !p.archived);
   const cols     = await db.kanbanColumns.toArray();
@@ -1493,6 +3301,26 @@ async function renderSettings() {
         </div>
       </div>
 
+      <div class="settings-section">
+        <div class="settings-section-title">🔔 Notificaciones de Deadline</div>
+        <div class="settings-body">
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Recordatorios del navegador</div>
+              <div class="settings-desc">Notificación el día anterior y el día del deadline</div>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="notifToggle"
+                ${localStorage.getItem('ros-notif-enabled') === 'true' ? 'checked' : ''}>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="testNotifBtn" style="margin-top:8px">
+            🧪 Probar notificación
+          </button>
+        </div>
+      </div>
+
       <!-- About -->
       <div class="settings-section">
         <div class="settings-section-title">ℹ Acerca de ResearchOS</div>
@@ -1521,17 +3349,70 @@ async function renderSettings() {
     showToast('Backup exportado ✓', 'success');
   });
 
+  // ── Import con opción merge vs. reemplazar ─────────
   $('importJsonInput').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (!confirm('⚠ Esto reemplazará TODOS tus datos actuales. ¿Continuar?')) return;
+    e.target.value = ''; // reset para volver a disparar si mismo archivo
+
     try {
       const text = await file.text();
-      await importAllData(text);
-      showToast('Datos importados ✓', 'success');
-      navigate('dashboard');
+      const data = JSON.parse(text);
+      const counts = {
+        projects:  (data.projects  || []).length,
+        ideas:     (data.ideas     || []).length,
+        snippets:  (data.snippets  || []).length,
+      };
+
+      showModal('📥 Importar datos', `
+        <div class="modal-body">
+          <p style="color:var(--text-2);font-size:.85rem;margin-bottom:14px">
+            El archivo contiene <strong style="color:var(--text-1)">${counts.projects}</strong> proyectos,
+            <strong style="color:var(--text-1)">${counts.ideas}</strong> ideas y
+            <strong style="color:var(--text-1)">${counts.snippets}</strong> snippets.
+          </p>
+          <p style="font-size:.82rem;color:var(--text-2);margin-bottom:16px">¿Cómo deseas importarlos?</p>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <label class="import-option-card" id="importOptMerge" style="cursor:pointer">
+              <input type="radio" name="importMode" value="merge" checked style="margin-right:8px">
+              <div>
+                <strong style="color:var(--text-1)">⊕ Merge (recomendado)</strong>
+                <p style="font-size:.75rem;color:var(--text-3);margin:2px 0 0">
+                  Añade sólo los registros nuevos. No borra ni modifica los datos existentes.
+                </p>
+              </div>
+            </label>
+            <label class="import-option-card" id="importOptReplace" style="cursor:pointer">
+              <input type="radio" name="importMode" value="replace" style="margin-right:8px">
+              <div>
+                <strong style="color:var(--red)">⚠ Reemplazar todo</strong>
+                <p style="font-size:.75rem;color:var(--text-3);margin:2px 0 0">
+                  Borra todos los datos actuales y los sustituye. Esta acción es irreversible.
+                </p>
+              </div>
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" id="importModeCancel">Cancelar</button>
+          <button class="btn btn-primary" id="importModeOk">Importar</button>
+        </div>`);
+
+      $('importModeCancel').addEventListener('click', closeModal);
+      $('importModeOk').addEventListener('click', async () => {
+        const mode = document.querySelector('input[name="importMode"]:checked')?.value;
+        if (mode === 'replace') {
+          if (!confirm('⚠ ¿Seguro? Esto eliminará TODOS tus datos actuales.')) return;
+          await importAllData(text);
+        } else {
+          await mergeAllData(text);
+        }
+        closeModal();
+        showToast(`Datos importados en modo "${mode}" ✓`, 'success');
+        navigate('dashboard');
+      });
     } catch (err) {
-      showToast('Error al importar: ' + err.message, 'error');
+      showToast('Error al leer el archivo: ' + err.message, 'error');
     }
   });
 
@@ -1549,12 +3430,93 @@ async function renderSettings() {
     showToast('Datos eliminados', 'info');
     navigate('dashboard');
   });
+
+  // ── Listeners del toggle de notificaciones ─────────
+  $('notifToggle')?.addEventListener('change', async (e) => {
+    const enabled = e.target.checked;
+    localStorage.setItem('ros-notif-enabled', String(enabled));
+    if (enabled) {
+      const ok = await DeadlineReminder.requestPermission();
+      if (ok) { DeadlineReminder.start(); showToast('Notificaciones activadas ✓', 'success'); }
+      else { e.target.checked = false; localStorage.setItem('ros-notif-enabled', 'false');
+             showToast('Permiso denegado en el navegador', 'error'); }
+    } else {
+      DeadlineReminder.stop();
+      showToast('Notificaciones desactivadas', 'info');
+    }
+  });
+
+  $('testNotifBtn')?.addEventListener('click', async () => {
+    const ok = await DeadlineReminder.requestPermission();
+    if (!ok) return showToast('Permiso denegado', 'error');
+    new Notification('⬡ ResearchOS — Prueba', {
+      body: 'Las notificaciones de deadline funcionan correctamente.',
+    });
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
 //  MODALS — Add / Edit
 // ══════════════════════════════════════════════════════════════
-async function showAddProjectModal(defaultColId) {
+const PROJECT_TEMPLATES = {
+  paper: {
+    label: '📄 Paper', type: 'Paper', priority: 'Alta',
+    tags: ['writing', 'review'],
+    description: 'Objetivo: publicar en revista indexada.\n\n## Estructura\n- Introducción\n- Métodos\n- Resultados\n- Discusión\n- Conclusiones',
+  },
+  grant: {
+    label: '💰 Grant FONDECYT', type: 'Grant', priority: 'Alta',
+    tags: ['grant', 'funding', 'deadline-hard'],
+    description: 'Postulación a concurso de financiamiento.\n\n## Secciones requeridas\n- Resumen ejecutivo\n- Objetivos\n- Metodología\n- Presupuesto\n- Equipo',
+  },
+  course: {
+    label: '🎓 Curso / Asignatura', type: 'Análisis', priority: 'Media',
+    tags: ['docencia', 'curso'],
+    description: '## Información del curso\n- Código:\n- Semestre:\n- Créditos:\n\n## Contenidos mínimos',
+  },
+  talk: {
+    label: '🎤 Ponencia / Congreso', type: 'Presentación', priority: 'Media',
+    tags: ['congreso', 'slides'],
+    description: '## Detalles\n- Evento:\n- Fecha:\n- Duración:\n\n## Estructura de la presentación',
+  },
+  dataset: {
+    label: '🗄 Dataset / Pipeline', type: 'Dataset', priority: 'Media',
+    tags: ['data', 'pipeline'],
+    description: '## Descripción de datos\n- Fuente:\n- Formato:\n- Período:\n\n## Pipeline de procesamiento',
+  },
+  blank: { label: '⬡ En blanco', type: 'Paper', priority: 'Media', tags: [], description: '' },
+};
+
+async function showAddProjectModal(defaultColId, defaultParentId = null) {
+  // ── Paso 0: elegir template ────────────────────────
+  if (!App._skipTemplateStep) {
+    showModal('Nuevo Proyecto — Plantilla', `
+      <div class="modal-body">
+        <div style="font-size:.8rem;color:var(--text-2);margin-bottom:14px">
+          Elige una plantilla para pre-rellenar el formulario:
+        </div>
+        <div class="template-grid">
+          ${Object.entries(PROJECT_TEMPLATES).map(([k, t]) => `
+            <button class="template-card" data-tpl="${k}">
+              <div class="template-card-label">${t.label}</div>
+            </button>`).join('')}
+        </div>
+      </div>`);
+    modalContent.querySelectorAll('[data-tpl]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        App._projectTemplate = btn.dataset.tpl;
+        App._skipTemplateStep = true;
+        closeModal();
+        setTimeout(() => showAddProjectModal(defaultColId, defaultParentId), 80);
+      });
+    });
+    return;
+  }
+  // Limpiar flag
+  App._skipTemplateStep = false;
+  const tpl = PROJECT_TEMPLATES[App._projectTemplate || 'blank'];
+  App._projectTemplate = null;
+
   const cols = await db.kanbanColumns.orderBy('order').toArray();
   const body = `
     <div class="modal-body">
@@ -1565,7 +3527,8 @@ async function showAddProjectModal(defaultColId) {
       <div class="form-group">
         <label class="form-label">Tipo</label>
         <select class="form-select" id="mp-type">
-          ${['Grant','Paper','Análisis','Dataset','Presentación'].map(t => `<option>${t}</option>`).join('')}
+          ${['Grant','Paper','Análisis','Dataset','Presentación'].map(t =>
+            `<option ${t === tpl.type ? 'selected' : ''}>${t}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -1589,23 +3552,24 @@ async function showAddProjectModal(defaultColId) {
       <div class="form-group">
         <label class="form-label">Prioridad</label>
         <select class="form-select" id="mp-priority">
-          <option>Alta</option><option selected>Media</option><option>Baja</option>
+          ${['Alta','Media','Baja'].map(pr => `<option ${pr===tpl.priority?'selected':''}>${pr}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
         <label class="form-label">Descripción</label>
-        <textarea class="form-textarea" id="mp-desc" rows="3" placeholder="Descripción breve del proyecto…"></textarea>
+        <textarea class="form-textarea" id="mp-desc" rows="3" placeholder="Soporta **Markdown**…">${esc(tpl.description)}</textarea>
       </div>
       <div class="form-group">
         <label class="form-label">Etiquetas (separadas por coma)</label>
-        <input class="form-input" id="mp-tags" placeholder="R, ecology, time-series">
+        <input class="form-input" id="mp-tags" placeholder="R, ecology, time-series"
+             value="${tpl.tags.join(', ')}">
       </div>
       <div class="form-group">
         <label class="form-label">Proyecto padre (subproyecto de…)</label>
         <select class="form-select" id="mp-parent">
           <option value="">— Proyecto raíz —</option>
           ${(await db.projects.toArray()).filter(p => !p.parentId)
-            .map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+            .map(p => `<option value="${p.id}" ${p.id === defaultParentId ? 'selected' : ''}>${esc(p.title)}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -1840,7 +3804,8 @@ async function showAddSnippetModal() {
     await dbWrite(() => db.snippets.add({
       title, language: $('ms-lang').value, code,
       description: $('ms-desc').value.trim(),
-      projectId:   +$('ms-project').value || null,
+      projectIds: [...($('ms-project')?.selectedOptions || [])].map(o => +o.value).filter(Boolean),
+      projectId:  +($('ms-project')?.selectedOptions[0]?.value) || null,
       tags:         $('ms-tags').value.split(',').map(s => s.trim()).filter(Boolean),
       collectionId: +$('ms-collection').value || null,
       starred:      false,
@@ -1909,7 +3874,25 @@ async function inspectProject(id) {
       </div>
       <div id="completenessInspector"></div>
 
-      ${p.description ? `<div class="inspector-desc">${esc(p.description)}</div>` : ''}
+      <div class="inspector-section-label" style="margin-top:12px;display:flex;align-items:center;justify-content:space-between">
+        <span>Descripción</span>
+        <button class="btn btn-ghost btn-sm" id="mdEditToggle" style="font-size:.7rem">
+          ${App._mdEditing ? '👁 Preview' : '✏ Editar'}
+        </button>
+      </div>
+      ${App._mdEditing
+        ? `<textarea class="form-input" id="mdDescEditor"
+              style="min-height:120px;font-family:var(--font-mono);font-size:.8rem;resize:vertical"
+              placeholder="Soporta **Markdown**, - listas, \`código\`, etc."
+            >${esc(p.description || '')}</textarea>
+           <div style="display:flex;gap:6px;margin-top:6px">
+             <button class="btn btn-primary btn-sm" id="mdDescSave">Guardar</button>
+             <button class="btn btn-ghost btn-sm" id="mdDescCancel">Cancelar</button>
+           </div>`
+        : `<div class="inspector-desc md-preview" id="mdDescPreview">
+             ${p.description ? renderMd(p.description) : '<span style="color:var(--text-3);font-size:.8rem">Sin descripción — haz clic en ✏ Editar</span>'}
+           </div>`
+      }
 
       ${(p.tags||[]).length ? `
         <div class="inspector-related-title">Etiquetas</div>
@@ -1950,6 +3933,32 @@ async function inspectProject(id) {
       ${relSnips.length ? `
         <div class="inspector-related-title">Snippets vinculados (${relSnips.length})</div>
         ${relSnips.slice(0,4).map(s => `<div class="inspector-related-item">⟨/⟩ ${esc(s.title)}</div>`).join('')}` : ''}
+
+      ${await (async () => {
+        const subs = await getSubmissions(p.id);
+        const refs  = await getReferences(p.id);
+        const meets = await getMeetings(p.id);
+        let html = '';
+        if (subs.length) html += `
+          <div class="inspector-related-title">Submissions (${subs.length})</div>
+          ${subs.slice(0,3).map(s => `
+            <div class="inspector-related-item" data-inspect-submission="${s.id}" style="cursor:pointer">
+              📤 ${esc(s.title)} ${subStatusBadge(s.status)}
+            </div>`).join('')}`;
+        if (refs.length) html += `
+          <div class="inspector-related-title">Referencias (${refs.length})</div>
+          ${refs.slice(0,3).map(r => `
+            <div class="inspector-related-item" data-inspect-ref="${r.id}" style="cursor:pointer">
+              📚 ${esc(r.authors?.split(',')[0]||'')} (${r.year||'?'}) — ${esc(r.title.slice(0,40))}
+            </div>`).join('')}`;
+        if (meets.length) html += `
+          <div class="inspector-related-title">Reuniones (${meets.length})</div>
+          ${meets.slice(0,3).map(m => `
+            <div class="inspector-related-item" data-inspect-meeting="${m.id}" style="cursor:pointer">
+              🗓 ${formatDate(m.date)} — ${esc(m.title)}
+            </div>`).join('')}`;
+        return html;
+      })()}
 
       ${(() => {
         const durations = computeColumnDurations(p, colMap);
@@ -2010,6 +4019,32 @@ async function inspectProject(id) {
     }, 300);
   });
 
+  // ── Listeners del editor Markdown ───────────────────
+  if (!App._mdEditing) App._mdEditing = false;
+
+  $('mdEditToggle')?.addEventListener('click', () => {
+    App._mdEditing = !App._mdEditing;
+    // Re-render sólo el inspector (sin cerrar)
+    inspectProject(p.id);
+  });
+
+  $('mdDescSave')?.addEventListener('click', async () => {
+    const val = $('mdDescEditor')?.value ?? '';
+    await snapshotProject(p.id);
+    await dbWrite(() => db.projects.update(p.id, {
+      description: val,
+      updatedAt: new Date().toISOString()
+    }));
+    App._mdEditing = false;
+    showToast('Descripción guardada ✓', 'success');
+    inspectProject(p.id);
+  });
+
+  $('mdDescCancel')?.addEventListener('click', () => {
+    App._mdEditing = false;
+    inspectProject(p.id);
+  });
+
   // Async completeness in inspector
   projectCompleteness(p).then(pct => {
     const el = $('completenessInspector');
@@ -2041,6 +4076,14 @@ async function inspectProject(id) {
     closeInspector();
     renderView(App.view);
   });
+
+  // Relacionados desde el inspector
+  inspectorBody.querySelectorAll('[data-inspect-submission]').forEach(el =>
+    el.addEventListener('click', () => inspectSubmission(+el.dataset.inspectSubmission)));
+  inspectorBody.querySelectorAll('[data-inspect-ref]').forEach(el =>
+    el.addEventListener('click', () => inspectReference(+el.dataset.inspectRef)));
+  inspectorBody.querySelectorAll('[data-inspect-meeting]').forEach(el =>
+    el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
 
   // Async: show subprojects
   db.projects.where('parentId').equals(id).toArray().then(children => {
@@ -2311,6 +4354,36 @@ async function inspectIdea(id) {
       </div>
       <div class="inspector-project-title">${esc(idea.title)}</div>
       ${idea.content ? `<div class="inspector-desc">${esc(idea.content)}</div>` : ''}
+      ${(idea._history||[]).length ? (() => {
+        const hist = [...(idea._history||[])].reverse().slice(0, 5);
+        return `
+          <div class="inspector-related-title" style="margin-top:12px">
+            Historial (últimas ${hist.length} versiones)
+          </div>
+          <div class="history-list">
+            ${hist.map((snap, si) => {
+              const prev  = hist[si + 1] || snap;
+              const FIELDS = { title:'Título', content:'Contenido', status:'Estado' };
+              const diffs = Object.entries(FIELDS)
+                .filter(([k]) => snap[k] !== prev[k] && si < hist.length - 1)
+                .map(([k, label]) =>
+                  `<span class="history-diff">${label}: </span>` +
+                  `<span class="history-diff-old">${esc(String(prev[k]||'—').slice(0,60))}</span> → ` +
+                  `<span class="history-diff-new">${esc(String(snap[k]||'—').slice(0,60))}</span>`)
+                .join('<br>');
+              return `
+                <div class="history-entry">
+                  <span class="history-ts">${relativeDate(snap.ts)}</span>
+                  ${diffs || '<span style="color:var(--text-3)">Snapshot inicial</span>'}
+                  <button class="btn btn-ghost btn-sm restore-idea-snap"
+                    data-idea-id="${idea.id}" data-snap-idx="${si}"
+                    style="font-size:.63rem;margin-top:4px;color:var(--accent)">
+                    ↩ Restaurar esta versión
+                  </button>
+                </div>`;
+            }).join('')}
+          </div>`;
+      })() : ''}
       <div class="inspector-meta">
         ${proj ? `<div class="inspector-meta-row">
           <span class="inspector-meta-key">Proyecto</span>
@@ -2345,6 +4418,7 @@ async function inspectIdea(id) {
 
   // Toggle review status
   $('ideaToggleReviewBtn').addEventListener('click', async () => {
+    await snapshotIdea(id); // ← antes de cualquier db.ideas.update
     await dbWrite(() => db.ideas.update(id, {
       status: idea.status === 'reviewed' ? 'unread' : 'reviewed',
       updatedAt: new Date().toISOString()
@@ -2360,6 +4434,27 @@ async function inspectIdea(id) {
   inspectorBody.querySelectorAll('[data-del-st]').forEach(btn => {
     btn.addEventListener('click', () => deleteSubtask(id, +btn.dataset.delSt));
   });
+  // ── Listener restaurar snapshot de idea ─────────────
+  inspectorBody.querySelectorAll('.restore-idea-snap').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const iid    = +btn.dataset.ideaId;
+      const snapIdx = +btn.dataset.snapIdx;
+      const idea   = await db.ideas.get(iid);
+      const hist   = [...(idea._history||[])].reverse();
+      const snap   = hist[snapIdx];
+      if (!snap) return;
+      if (!confirm('¿Restaurar esta versión? El contenido actual se guardará en el historial.')) return;
+      await snapshotIdea(iid);
+      await dbWrite(() => db.ideas.update(iid, {
+        title:   snap.title,
+        content: snap.content,
+        updatedAt: new Date().toISOString()
+      }));
+      showToast('Versión restaurada ✓', 'success');
+      inspectIdea(iid);
+    });
+  });
+
   const stInput  = $(`stInput-${id}`);
   const stAddBtn = $(`stAddBtn-${id}`);
   stAddBtn?.addEventListener('click', () => { addSubtask(id, stInput.value); stInput.value = ''; });
@@ -2422,6 +4517,14 @@ async function updateBadges() {
   ]);
   const badge = $('ideasBadge');
   if (badge) { badge.textContent = unread; badge.classList.toggle('visible', unread > 0); }
+  const subActive = await db.submissions.filter(s =>
+    ['preparacion','enviado','en_revision','revision_solicitada'].includes(s.status)
+  ).count();
+  const subBadge = $('submissionsBadge');
+  if (subBadge) {
+    subBadge.textContent = subActive;
+    subBadge.style.display = subActive > 0 ? '' : 'none';
+  }
   const abadge = $('archivedBadge');
   if (abadge) { abadge.textContent = archived; abadge.classList.toggle('visible', archived > 0); }
   const sbadge = $('starredBadge');
@@ -2648,6 +4751,14 @@ async function init() {
   // Seed database defaults
   await seedDefaults();
 
+  // ── Iniciar deadline reminders ─────────────────────
+  const notifEnabled = localStorage.getItem('ros-notif-enabled') === 'true';
+  if (notifEnabled) {
+    DeadlineReminder.requestPermission().then(ok => {
+      if (ok) DeadlineReminder.start();
+    });
+  }
+
   // Theme persistence
   const savedTheme = localStorage.getItem('ros-theme') || 'dark';
   document.documentElement.setAttribute('data-theme', savedTheme);
@@ -2764,7 +4875,12 @@ async function _searchPalette(q) {
     { icon:'◎', label:'Ideas Inbox', sub:'Vista',    action: () => { closePalette(); navigate('ideas'); } },
     { icon:'⟨/⟩',label:'Snippets',  sub:'Vista',    action: () => { closePalette(); navigate('snippets'); } },
     { icon:'⊟', label:'FS Bridge',   sub:'Vista',    action: () => { closePalette(); navigate('filesystem'); } },
-    { icon:'⏱', label:'Timeline',    sub:'Vista',    action: () => { closePalette(); navigate('timeline'); } },
+    { icon:'⏱', label:'Timeline',      sub:'Vista', action: () => { closePalette(); navigate('timeline'); } },
+    { icon:'📅', label:'Agenda',        sub:'Vista', action: () => { closePalette(); navigate('weekly'); } },
+    { icon:'📤', label:'Submissions',   sub:'Vista', action: () => { closePalette(); navigate('submissions'); } },
+    { icon:'🗓', label:'Reuniones',     sub:'Vista', action: () => { closePalette(); navigate('meetings'); } },
+    { icon:'📚', label:'Referencias',   sub:'Vista', action: () => { closePalette(); navigate('references'); } },
+    { icon:'👥', label:'Colaboradores', sub:'Vista', action: () => { closePalette(); navigate('collaborators'); } },
   ].filter(n => !lq || n.label.toLowerCase().includes(lq));
   if (navItems.length) groups.push({ label: 'Vistas', items: navItems });
 

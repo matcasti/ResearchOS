@@ -7,6 +7,12 @@
 
   <!-- Syntax highlighting (dark theme) -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css">
+  <!-- marked.js para render Markdown -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+  <!-- KaTeX para ecuaciones LaTeX -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
   <!-- App styles -->
   <link rel="stylesheet" href="style.css">
 </head>
@@ -38,8 +44,27 @@
       <a class="nav-item" data-view="timeline">
         <span class="nav-icon">⏱</span><span>Timeline</span>
       </a>
+      <a class="nav-item" data-view="nested">
+        <span class="nav-icon">⬡</span><span>Anidados</span>
+      </a>
+      <a class="nav-item" data-view="weekly">
+        <span class="nav-icon">📅</span><span>Agenda Semanal</span>
+      </a>
 
       <div class="nav-section-label">Knowledge</div>
+      <a class="nav-item" data-view="submissions">
+        <span class="nav-icon">📤</span><span>Submissions</span>
+        <span class="nav-badge" id="submissionsBadge">0</span>
+      </a>
+      <a class="nav-item" data-view="meetings">
+        <span class="nav-icon">🗓</span><span>Reuniones</span>
+      </a>
+      <a class="nav-item" data-view="references">
+        <span class="nav-icon">📚</span><span>Referencias</span>
+      </a>
+      <a class="nav-item" data-view="collaborators">
+        <span class="nav-icon">👥</span><span>Colaboradores</span>
+      </a>
       <a class="nav-item" data-view="ideas">
         <span class="nav-icon">◎</span><span>Ideas Inbox</span>
         <span class="nav-badge" id="ideasBadge">0</span>
