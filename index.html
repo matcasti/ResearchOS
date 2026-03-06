@@ -47,11 +47,27 @@
       <a class="nav-item" data-view="nested">
         <span class="nav-icon">⬡</span><span>Anidados</span>
       </a>
-      <a class="nav-item" data-view="weekly">
-        <span class="nav-icon">📅</span><span>Agenda Semanal</span>
-      </a>
 
       <div class="nav-section-label">Knowledge</div>
+      <a class="nav-item" data-view="ideas">
+        <span class="nav-icon">◎</span><span>Ideas Inbox</span>
+        <span class="nav-badge" id="ideasBadge">0</span>
+      </a>
+      <a class="nav-item" data-view="snippets">
+        <span class="nav-icon">⟨/⟩</span><span>Snippets</span>
+      </a>
+      <a class="nav-item" data-view="starred">
+        <span class="nav-icon">★</span><span>Favoritos</span>
+        <span class="nav-badge" id="starredBadge">0</span>
+      </a>
+
+      <div class="nav-section-label">Research Tools</div>
+      <a class="nav-item" data-view="focus">
+        <span class="nav-icon">🎯</span><span>Focus Feed</span>
+      </a>
+      <a class="nav-item" data-view="orphans">
+        <span class="nav-icon">🔗</span><span>Huérfanos</span>
+      </a>
       <a class="nav-item" data-view="submissions">
         <span class="nav-icon">📤</span><span>Submissions</span>
         <span class="nav-badge" id="submissionsBadge">0</span>
@@ -65,16 +81,8 @@
       <a class="nav-item" data-view="collaborators">
         <span class="nav-icon">👥</span><span>Colaboradores</span>
       </a>
-      <a class="nav-item" data-view="ideas">
-        <span class="nav-icon">◎</span><span>Ideas Inbox</span>
-        <span class="nav-badge" id="ideasBadge">0</span>
-      </a>
-      <a class="nav-item" data-view="snippets">
-        <span class="nav-icon">⟨/⟩</span><span>Snippets</span>
-      </a>
-      <a class="nav-item" data-view="starred">
-        <span class="nav-icon">★</span><span>Favoritos</span>
-        <span class="nav-badge" id="starredBadge">0</span>
+      <a class="nav-item" data-view="weekly">
+        <span class="nav-icon">📅</span><span>Agenda</span>
       </a>
 
       <div class="nav-section-label">Tools</div>
@@ -99,6 +107,9 @@
       <div class="save-indicator" id="saveIndicator">
         <span class="status-dot"></span>
         <span id="saveIndicatorText">Local Only</span>
+      </div>
+      <div class="sidebar-author">
+        Hecho con <span class="author-heart">♥</span> por Matías Castillo-Aguilar
       </div>
     </div>
   </aside>

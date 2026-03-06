@@ -16,8 +16,13 @@ const App = {
   navIndex:         -1,
   filters:          { type: 'all', priority: 'all', column: 'all' },
   filterCollection: 'all',
-  bulkSelected:     new Set(),   // ← NUEVO: IDs seleccionados en bulk
-  bulkMode:         false,       // ← NUEVO: toggle del modo selección
+  bulkSelected:     new Set(),
+  bulkMode:         false,
+  projectHubId:     null,
+  savedViews:       null,
+  triageIdx:        0,
+  triageQueue:      [],
+  _refFilterProject: 'all',
 };
 
 // ── DOM refs ─────────────────────────────────────────────────
@@ -229,7 +234,11 @@ async function renderView(view) {
     submissions:  [{label:'Dashboard', view:'dashboard'}, {label:'Submissions', view:'submissions'}],
     meetings:     [{label:'Dashboard', view:'dashboard'}, {label:'Reuniones',   view:'meetings'}],
     references:   [{label:'Dashboard', view:'dashboard'}, {label:'Referencias', view:'references'}],
-    collaborators:[{label:'Dashboard', view:'dashboard'}, {label:'Colaboradores',view:'collaborators'}],
+    collaborators: [{label:'Dashboard', view:'dashboard'}, {label:'Colaboradores',view:'collaborators'}],
+    'project-hub': [{label:'Dashboard', view:'dashboard'}, {label:'Proyectos',    view:'projects'}, {label:'Hub',view:'project-hub'}],
+    focus:         [{label:'Dashboard', view:'dashboard'}, {label:'Focus Feed',   view:'focus'}],
+    orphans:       [{label:'Dashboard', view:'dashboard'}, {label:'Huérfanos',    view:'orphans'}],
+    triage:        [{label:'Dashboard', view:'dashboard'}, {label:'Ideas Inbox',  view:'ideas'}, {label:'Revisión rápida', view:'triage'}],
   };
 
   // Render first, then inject BC at top so innerHTML overwrites don't destroy it
@@ -250,6 +259,10 @@ async function renderView(view) {
     case 'meetings':     await renderMeetings();        break;
     case 'references':   await renderReferences();      break;
     case 'collaborators':await renderCollaborators();   break;
+    case 'project-hub':  await renderProjectHub();      break;
+    case 'focus':        await renderFocusFeed();       break;
+    case 'orphans':      await renderOrphans();         break;
+    case 'triage':       await renderIdeaTriage();      break;
     default:             await renderDashboard();
   }
 
@@ -448,8 +461,11 @@ async function renderDashboard() {
         <button class="btn btn-ghost" id="qAddIdea">+ Idea</button>
         <button class="btn btn-ghost" id="qAddSnippet">+ Snippet</button>
         <button class="btn btn-ghost" id="qGoKanban">Ver Kanban →</button>
-        <button class="btn btn-ghost" id="qGoFS">FS Bridge →</button>
+        <button class="btn btn-ghost" id="qGoFocus">🎯 Focus →</button>
+        <button class="btn btn-ghost" id="qGoTriage">◎ Revisar ideas →</button>
+        <button class="btn btn-ghost" id="qGoOrphans">🔗 Huérfanos →</button>
         <button class="btn btn-ghost" id="qGoTimeline">Timeline →</button>
+        <button class="btn btn-ghost" id="qGoFS">FS Bridge →</button>
       </div>
     </div>`;
 
@@ -458,6 +474,9 @@ async function renderDashboard() {
   $('qAddSnippet').addEventListener('click', () => { navigate('snippets'); });
   $('qGoKanban').addEventListener('click', () => navigate('kanban'));
   $('qGoTimeline')?.addEventListener('click', () => navigate('timeline'));
+  $('qGoFocus')?.addEventListener('click',   () => navigate('focus'));
+  $('qGoTriage')?.addEventListener('click',  () => navigate('triage'));
+  $('qGoOrphans')?.addEventListener('click', () => navigate('orphans'));
   $('qGoFS').addEventListener('click', () => navigate('filesystem'));
   mainContent.querySelectorAll('[data-inspect-project]').forEach(el => {
     el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject));
@@ -763,6 +782,26 @@ window.kanbanDragOver  = kanbanDragOver;
 window.kanbanDragLeave = kanbanDragLeave;
 window.kanbanDrop      = kanbanDrop;
 
+// ── Saved Views helpers (localStorage, sin BD) ───────────────
+function _getSavedViews() {
+  try { return JSON.parse(localStorage.getItem('ros-saved-views') || '[]'); }
+  catch { return []; }
+}
+function _saveSavedView(name, filters) {
+  const views = _getSavedViews().filter(v => v.name !== name);
+  views.push({ name, ...filters });
+  localStorage.setItem('ros-saved-views', JSON.stringify(views.slice(-12)));
+}
+function _deleteSavedView(name) {
+  const views = _getSavedViews().filter(v => v.name !== name);
+  localStorage.setItem('ros-saved-views', JSON.stringify(views));
+}
+function _currentSavedView(v) {
+  return App.filters.type === (v.type||'all') &&
+         App.filters.priority === (v.priority||'all') &&
+         App.filters.column === (v.column||'all');
+}
+
 // ══════════════════════════════════════════════════════════════
 //  VIEW: PROJECTS
 // ══════════════════════════════════════════════════════════════
@@ -795,11 +834,26 @@ async function renderProjects() {
           <div class="view-title">Proyectos</div>
           <div class="view-subtitle">${projects.length} de ${allProjects.length} proyecto(s)</div>
         </div>
+        <!-- Vistas guardadas -->
+        ${(() => {
+          const saved = _getSavedViews();
+          if (!saved.length) return '';
+          return `<div class="saved-views-bar">
+            <span style="font-size:.65rem;color:var(--text-3);font-family:var(--font-mono)">Vistas:</span>
+            ${saved.map(v => `
+              <button class="saved-view-chip ${_currentSavedView(v) ? 'active' : ''}"
+                      data-load-view="${encodeURIComponent(JSON.stringify(v))}">
+                ${esc(v.name)}
+                <span class="saved-view-del" data-del-view="${esc(v.name)}">✕</span>
+              </button>`).join('')}
+          </div>`;
+        })()}
         <div style="display:flex;gap:8px">
           <button class="btn btn-ghost" id="bulkToggleBtn"
             style="color:${App.bulkMode ? 'var(--accent)' : 'var(--text-2)'}">
             ${App.bulkMode ? '✕ Cancelar selección' : '⊞ Seleccionar'}
           </button>
+          <button class="btn btn-ghost btn-sm" id="saveViewBtn" title="Guardar filtro actual como vista">⊞ Guardar vista</button>
           <button class="btn btn-primary" id="projAddBtn">+ Nuevo Proyecto</button>
         </div>
       </div>
@@ -839,6 +893,28 @@ async function renderProjects() {
     </div>`);
 
   $('projAddBtn').addEventListener('click', showAddProjectModal);
+  $('saveViewBtn')?.addEventListener('click', () => {
+    const name = prompt('Nombre para esta vista (p.ej. "Papers Alta Prioridad"):');
+    if (!name?.trim()) return;
+    _saveSavedView(name.trim(), { ...App.filters });
+    showToast(`Vista "${name}" guardada ✓`, 'success');
+    renderView('projects');
+  });
+  mainContent.querySelectorAll('[data-load-view]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      if (e.target.closest('[data-del-view]')) return;
+      const v = JSON.parse(decodeURIComponent(btn.dataset.loadView));
+      App.filters = { type: v.type||'all', priority: v.priority||'all', column: v.column||'all' };
+      renderView('projects');
+    });
+  });
+  mainContent.querySelectorAll('[data-del-view]').forEach(span => {
+    span.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _deleteSavedView(span.dataset.delView);
+      renderView('projects');
+    });
+  });
   $('clearFiltersBtn')?.addEventListener('click', () => {
     App.filters = { type:'all', priority:'all', column:'all' };
     renderView('projects');
@@ -1081,6 +1157,9 @@ async function renderIdeas() {
           <div class="view-title">Ideas Inbox</div>
           <div class="view-subtitle">${ideas.filter(i=>i.status==='unread').length} sin revisar</div>
         </div>
+        ${ideas.filter(i=>i.status==='unread').length > 2
+          ? `<button class="btn btn-primary" id="startTriageBtn">◎ Revisión rápida (${ideas.filter(i=>i.status==='unread').length})</button>`
+          : ''}
       </div>
 
       <!-- Quick capture -->
@@ -1141,6 +1220,7 @@ async function renderIdeas() {
     </div>`;
 
   $('saveIdeaBtn').addEventListener('click', saveQuickIdea);
+  $('startTriageBtn')?.addEventListener('click', () => { App.triageIdx = 0; navigate('triage'); });
   $('ideaTitleInput').addEventListener('keydown', e => { if (e.key === 'Enter') saveQuickIdea(); });
   // ── Listeners del panel LaTeX ──────────────────────
   if (!App._latexOpen) App._latexOpen = false;
@@ -1720,113 +1800,210 @@ async function createProjectStructure(rootHandle, { name, desc, author }, templa
 // ══════════════════════════════════════════════════════════════
 async function renderTimeline() {
   const projects = await db.projects.toArray();
-  const withDL   = projects.filter(p => p.deadline).sort((a,b) => new Date(a.deadline) - new Date(b.deadline));
+  const allWithDL = projects.filter(p => p.deadline)
+    .sort((a,b) => new Date(a.deadline) - new Date(b.deadline));
 
-  const PRIO_COLORS = { Alta: 'var(--red)', Media: 'var(--amber)', Baja: 'var(--green)' };
-  const TYPE_COLORS = { Grant: 'var(--amber)', Paper: 'var(--accent)', 'Análisis': 'var(--purple)', Dataset: 'var(--teal)' };
+  const PRIO_COLORS = { Alta:'var(--red)', Media:'var(--amber)', Baja:'var(--green)' };
+  const TYPE_COLORS = { Grant:'var(--amber)', Paper:'var(--accent)', 'Análisis':'var(--purple)', Dataset:'var(--teal)' };
+
+  const today = new Date(); today.setHours(12,0,0,0);
+
+  // ── Estado mutable del timeline ────────────────────────
+  let colorMode    = 'priority';
+  let showOverdue  = true;
+  let zoomLevel    = 'year';   // 'week' | 'month' | 'year'
+
+  // Rango de fechas según zoom
+  const getDateRange = () => {
+    const start = new Date(today);
+    const end   = new Date(today);
+    if (zoomLevel === 'week')  { start.setDate(today.getDate() - 1); end.setDate(today.getDate() + 7); }
+    if (zoomLevel === 'month') { start.setDate(today.getDate() - 3); end.setMonth(today.getMonth() + 1); end.setDate(end.getDate() + 3); }
+    if (zoomLevel === 'year')  { start.setMonth(today.getMonth() - 1); end.setFullYear(today.getFullYear() + 1); }
+    return { start, end };
+  };
+
+  const getColor = p => colorMode === 'priority'
+    ? (PRIO_COLORS[p.priority] || 'var(--text-2)')
+    : (TYPE_COLORS[p.type]     || 'var(--text-2)');
 
   mainContent.insertAdjacentHTML('beforeend', `
     <div class="view">
       <div class="view-header">
         <div>
           <div class="view-title">Timeline</div>
-          <div class="view-subtitle">${withDL.length} proyectos con deadline</div>
+          <div class="view-subtitle" id="tlSubtitle"></div>
         </div>
-        <div style="display:flex;gap:8px">
-          <button class="btn btn-ghost btn-sm" id="tlColorByPrio">Color: Prioridad</button>
-          <button class="btn btn-ghost btn-sm" id="tlColorByType">Color: Tipo</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <!-- Zoom -->
+          <div class="tl-btn-group">
+            <button class="btn btn-ghost btn-sm tl-zoom active" data-zoom="week">Semana</button>
+            <button class="btn btn-ghost btn-sm tl-zoom"        data-zoom="month">Mes</button>
+            <button class="btn btn-ghost btn-sm tl-zoom"        data-zoom="year">Año</button>
+          </div>
+          <!-- Color -->
+          <div class="tl-btn-group">
+            <button class="btn btn-ghost btn-sm tl-color active" data-color="priority">Prioridad</button>
+            <button class="btn btn-ghost btn-sm tl-color"        data-color="type">Tipo</button>
+          </div>
+          <!-- Vencidos -->
+          <button class="btn btn-ghost btn-sm" id="tlToggleOverdue">⏱ Ocultar vencidos</button>
         </div>
       </div>
+      <div id="tlContainer"></div>
     </div>`);
 
-  const viewEl = mainContent.querySelector('.view');
+  const viewEl    = mainContent.querySelector('.view');
+  const container = $('tlContainer');
 
-  if (!withDL.length) {
-    viewEl.insertAdjacentHTML('beforeend', `<div class="timeline-empty">⏱ Ningún proyecto tiene deadline. Edita proyectos para añadir fechas límite.</div>`);
-    return;
-  }
+  const rebuild = () => {
+    const { start, end } = getDateRange();
+    const totalMs = end - start;
+    const toX = d => {
+      const pct = ((new Date(d + 'T12:00:00') - start) / totalMs * 100);
+      return Math.max(-2, Math.min(102, pct)).toFixed(2) + '%';
+    };
+    const todayX = ((today - start) / totalMs * 100).toFixed(2) + '%';
 
-  // Date range: from 30d before first deadline to 30d after last
-  const today    = new Date(); today.setHours(12,0,0,0);
-  const allDates = withDL.map(p => new Date(p.deadline + 'T12:00:00'));
-  const minDate  = new Date(Math.min(...allDates, today.getTime() - 15 * 86400000));
-  const maxDate  = new Date(Math.max(...allDates, today.getTime() + 60 * 86400000));
-  const totalMs  = maxDate - minDate;
-  const toX      = d => ((new Date(d + 'T12:00:00') - minDate) / totalMs * 100).toFixed(2) + '%';
-  const todayX   = ((today - minDate) / totalMs * 100).toFixed(2) + '%';
-
-  // Month labels
-  const months = [];
-  const cur = new Date(minDate); cur.setDate(1);
-  while (cur <= maxDate) {
-    months.push({ label: cur.toLocaleDateString('es-CL', { month:'short', year:'2-digit' }), x: ((cur - minDate) / totalMs * 100).toFixed(2) + '%' });
-    cur.setMonth(cur.getMonth() + 1);
-  }
-
-  let colorMode = 'priority';
-  const getColor = (p) => colorMode === 'priority'
-    ? (PRIO_COLORS[p.priority] || 'var(--text-2)')
-    : (TYPE_COLORS[p.type]     || 'var(--text-2)');
-
-  const buildTimeline = () => `
-    <div class="timeline-legend">
-      ${colorMode === 'priority'
-        ? Object.entries(PRIO_COLORS).map(([k,v]) => `<span class="timeline-legend-item"><span class="tl-dot" style="background:${v}"></span>${k}</span>`).join('')
-        : Object.entries(TYPE_COLORS).map(([k,v]) => `<span class="timeline-legend-item"><span class="tl-dot" style="background:${v}"></span>${k}</span>`).join('')
-      }
-      <span class="timeline-legend-item"><span style="display:inline-block;width:10px;height:2px;background:var(--accent);border-radius:1px"></span>Hoy</span>
-    </div>
-    <div class="timeline-wrapper">
-      <div class="timeline-grid">
-        <div class="timeline-header-row">
-          <div style="font-family:var(--font-mono);font-size:.68rem;color:var(--text-3);padding-bottom:8px">Proyecto</div>
-          <div style="position:relative;height:24px;">
-            ${months.map(m => `<span class="timeline-month-label" style="left:${m.x}">${m.label}</span>`).join('')}
-          </div>
-        </div>
-        ${withDL.map(p => `
-          <div class="timeline-row">
-            <div class="timeline-row-label" data-inspect-project="${p.id}" title="${esc(p.title)}">
-              ${esc(p.title)}
-            </div>
-            <div class="timeline-track">
-              <div class="timeline-today-line" style="left:${todayX}">
-                <span class="timeline-today-label">hoy</span>
-              </div>
-              <div class="timeline-deadline-dot"
-                   style="left:${toX(p.deadline)};background:${getColor(p)}"
-                   data-inspect-project="${p.id}"
-                   title="${esc(p.title)} — ${formatDate(p.deadline)}">
-              </div>
-              <span class="timeline-deadline-label" style="left:${toX(p.deadline)}">
-                ${formatDate(p.deadline)}
-              </span>
-            </div>
-          </div>`).join('')}
-      </div>
-    </div>`;
-
-  const tlContainer = document.createElement('div');
-  tlContainer.id = 'tlContainer';
-  tlContainer.innerHTML = buildTimeline();
-  viewEl.appendChild(tlContainer);
-
-  const rebind = () => {
-    mainContent.querySelectorAll('[data-inspect-project]').forEach(el => {
-      el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject));
+    // Filtrar proyectos visibles en la ventana actual
+    let visible = allWithDL.filter(p => {
+      const pd = new Date(p.deadline + 'T12:00:00');
+      if (!showOverdue && pd < today) return false;
+      return pd >= start && pd <= end;
     });
-  };
-  rebind();
 
-  $('tlColorByPrio')?.addEventListener('click', () => {
-    colorMode = 'priority';
-    tlContainer.innerHTML = buildTimeline();
-    rebind();
+    // Proyectos vencidos fuera de la ventana (banner informativo)
+    const overdueOutside = allWithDL.filter(p => {
+      const pd = new Date(p.deadline + 'T12:00:00');
+      return pd < today && pd < start;
+    });
+
+    $('tlSubtitle').textContent =
+      `${visible.length} proyecto(s) en la ventana` +
+      (overdueOutside.length && showOverdue ? ` · ${overdueOutside.length} vencido(s) fuera de rango` : '');
+
+    // Etiquetas de escala
+    const ticks = [];
+    const cur = new Date(start); cur.setDate(1);
+    if (zoomLevel === 'week') {
+      // etiquetas diarias
+      const d = new Date(start);
+      while (d <= end) {
+        ticks.push({
+          label: d.toLocaleDateString('es-CL', { weekday:'short', day:'numeric' }),
+          x: ((d - start) / totalMs * 100).toFixed(2) + '%'
+        });
+        d.setDate(d.getDate() + 1);
+      }
+    } else if (zoomLevel === 'month') {
+      // etiquetas semanales
+      const d = new Date(start);
+      while (d <= end) {
+        ticks.push({
+          label: d.toLocaleDateString('es-CL', { day:'numeric', month:'short' }),
+          x: ((d - start) / totalMs * 100).toFixed(2) + '%'
+        });
+        d.setDate(d.getDate() + 7);
+      }
+    } else {
+      // etiquetas mensuales
+      while (cur <= end) {
+        ticks.push({
+          label: cur.toLocaleDateString('es-CL', { month:'short', year:'2-digit' }),
+          x: ((cur - start) / totalMs * 100).toFixed(2) + '%'
+        });
+        cur.setMonth(cur.getMonth() + 1);
+      }
+    }
+
+    const legendEntries = colorMode === 'priority' ? PRIO_COLORS : TYPE_COLORS;
+
+    container.innerHTML = !visible.length ? `
+      <div class="timeline-empty">
+        Sin proyectos con deadline en esta ventana.
+        ${!showOverdue ? 'Activa "Mostrar vencidos" o cambia el zoom.' : 'Ajusta el zoom para ampliar el rango.'}
+      </div>` : `
+      <div class="timeline-legend">
+        ${Object.entries(legendEntries).map(([k,v]) =>
+          `<span class="timeline-legend-item">
+            <span class="tl-dot" style="background:${v}"></span>${k}
+          </span>`).join('')}
+        <span class="timeline-legend-item">
+          <span style="display:inline-block;width:10px;height:2px;background:var(--accent);border-radius:1px"></span>Hoy
+        </span>
+      </div>
+      <div class="timeline-wrapper">
+        <div class="timeline-grid">
+          <div class="timeline-header-row">
+            <div style="font-family:var(--font-mono);font-size:.68rem;color:var(--text-3);padding-bottom:8px">Proyecto</div>
+            <div style="position:relative;height:24px">
+              ${ticks.map(t =>
+                `<span class="timeline-month-label" style="left:${t.x}">${t.label}</span>`
+              ).join('')}
+            </div>
+          </div>
+          ${visible.map(p => {
+            const isOverdue = new Date(p.deadline + 'T12:00:00') < today;
+            return `
+              <div class="timeline-row ${isOverdue ? 'tl-row-overdue' : ''}">
+                <div class="timeline-row-label" data-inspect-project="${p.id}" title="${esc(p.title)}">
+                  ${isOverdue ? '<span class="tl-overdue-badge">vencido</span>' : ''}
+                  ${esc(p.title)}
+                </div>
+                <div class="timeline-track">
+                  <div class="timeline-today-line" style="left:${todayX}">
+                    <span class="timeline-today-label">hoy</span>
+                  </div>
+                  <div class="timeline-deadline-dot"
+                       style="left:${toX(p.deadline)};background:${getColor(p)}"
+                       data-inspect-project="${p.id}"
+                       title="${esc(p.title)} — ${formatDate(p.deadline)}">
+                  </div>
+                  <span class="timeline-deadline-label" style="left:${toX(p.deadline)}">
+                    ${formatDate(p.deadline)}
+                  </span>
+                </div>
+              </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+
+    // Rebind inspect
+    container.querySelectorAll('[data-inspect-project]').forEach(el =>
+      el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+  };
+
+  // ── Evento inicial: zoom = año por defecto ──────────────
+  // Seleccionar el btn activo de zoom correcto
+  mainContent.querySelectorAll('.tl-zoom').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.zoom === zoomLevel);
   });
-  $('tlColorByType')?.addEventListener('click', () => {
-    colorMode = 'type';
-    tlContainer.innerHTML = buildTimeline();
-    rebind();
+
+  rebuild();
+
+  // ── Listeners de controles ──────────────────────────────
+  mainContent.querySelectorAll('.tl-zoom').forEach(btn => {
+    btn.addEventListener('click', () => {
+      zoomLevel = btn.dataset.zoom;
+      mainContent.querySelectorAll('.tl-zoom').forEach(b =>
+        b.classList.toggle('active', b === btn));
+      rebuild();
+    });
+  });
+
+  mainContent.querySelectorAll('.tl-color').forEach(btn => {
+    btn.addEventListener('click', () => {
+      colorMode = btn.dataset.color;
+      mainContent.querySelectorAll('.tl-color').forEach(b =>
+        b.classList.toggle('active', b === btn));
+      rebuild();
+    });
+  });
+
+  $('tlToggleOverdue')?.addEventListener('click', (e) => {
+    showOverdue = !showOverdue;
+    e.target.textContent = showOverdue ? '⏱ Ocultar vencidos' : '⏱ Mostrar vencidos';
+    rebuild();
   });
 }
 
@@ -2161,7 +2338,7 @@ async function renderSubmissions() {
     }));
 }
 
-async function showAddSubmissionModal(prefillDate = null) {
+async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
   const projects = await db.projects.toArray();
   showModal('📤 Nuevo Envío', `
     <div class="modal-body">
@@ -2197,7 +2374,7 @@ async function showAddSubmissionModal(prefillDate = null) {
         <label class="form-label">Vincular a proyecto</label>
         <select class="form-select" id="asub-project">
           <option value="">Sin proyecto</option>
-          ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+          ${projects.map(p => `<option value="${p.id}" ${p.id === preProjectId ? 'selected' : ''}>${esc(p.title)}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -2229,7 +2406,8 @@ async function showAddSubmissionModal(prefillDate = null) {
     }));
     closeModal();
     showToast('Envío registrado ✓', 'success');
-    if (App.view === 'submissions') renderSubmissions();
+    if (App.view === 'submissions')  renderSubmissions();
+    if (App.view === 'project-hub')  renderProjectHub();
     updateBadges();
   });
 }
@@ -2463,7 +2641,7 @@ async function renderMeetings() {
     el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
 }
 
-async function showAddMeetingModal(prefillDate = null) {
+async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
   const projects = await db.projects.toArray();
   showModal('🗓 Nueva Reunión', `
     <div class="modal-body">
@@ -2483,7 +2661,7 @@ async function showAddMeetingModal(prefillDate = null) {
         <label class="form-label">Vincular a proyecto</label>
         <select class="form-select" id="am-project">
           <option value="">Sin proyecto</option>
-          ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+          ${projects.map(p => `<option value="${p.id}" ${p.id === preProjectId ? 'selected' : ''}>${esc(p.title)}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -2521,8 +2699,9 @@ async function showAddMeetingModal(prefillDate = null) {
     }));
     closeModal();
     showToast('Reunión guardada ✓', 'success');
-    if (App.view === 'meetings') renderMeetings();
-    if (App.view === 'weekly') renderWeeklyAgenda();
+    if (App.view === 'meetings')     renderMeetings();
+    if (App.view === 'weekly')       renderWeeklyAgenda();
+    if (App.view === 'project-hub')  renderProjectHub();
   });
 }
 
@@ -2728,7 +2907,7 @@ async function renderReferences() {
     el.addEventListener('click', () => inspectReference(+el.dataset.inspectRef)));
 }
 
-async function showAddReferenceModal() {
+async function showAddReferenceModal(preProjectId = null) {
   const projects = await db.projects.toArray();
   showModal('📚 Nueva Referencia', `
     <div class="modal-body">
@@ -2763,7 +2942,7 @@ async function showAddReferenceModal() {
         <label class="form-label">Vincular a proyecto</label>
         <select class="form-select" id="ar-project">
           <option value="">Sin proyecto</option>
-          ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+          ${projects.map(p => `<option value="${p.id}" ${p.id === preProjectId ? 'selected' : ''}>${esc(p.title)}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -2799,7 +2978,8 @@ async function showAddReferenceModal() {
       createdAt: now, updatedAt: now
     }));
     closeModal(); showToast('Referencia guardada ✓', 'success');
-    if (App.view === 'references') renderReferences();
+    if (App.view === 'references')   renderReferences();
+    if (App.view === 'project-hub')  renderProjectHub();
   });
 }
 
@@ -3130,6 +3310,637 @@ async function inspectCollaborator(id) {
     closeInspector(); showToast('Colaborador eliminado', 'info');
     if (App.view === 'collaborators') renderCollaborators();
   });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  PROJECT HUB — Vista unificada por proyecto
+// ══════════════════════════════════════════════════════════════
+async function renderProjectHub() {
+  const id = App.projectHubId;
+  if (!id) { navigate('projects'); return; }
+
+  const [p, cols, ideas, snippets] = await Promise.all([
+    db.projects.get(id),
+    db.kanbanColumns.toArray(),
+    db.ideas.where('projectId').equals(id).toArray(),
+    db.snippets.where('projectId').equals(id).toArray(),
+  ]);
+  if (!p) { navigate('projects'); return; }
+
+  // Datos de tablas extendidas (pueden no existir si features anteriores no aplicadas)
+  const submissions = typeof db.submissions !== 'undefined'
+    ? await db.submissions.where('projectId').equals(id).toArray() : [];
+  const meetings    = typeof db.meetings    !== 'undefined'
+    ? await db.meetings.where('projectId').equals(id).toArray()    : [];
+  const references  = typeof db.references  !== 'undefined'
+    ? await db.references.where('projectId').equals(id).toArray()  : [];
+
+  const col     = cols.find(c => c.id === p.columnId);
+  const colMap  = Object.fromEntries(cols.map(c => [c.id, c]));
+  const unreadIdeas = ideas.filter(i => i.status === 'unread').length;
+  const pendingAIs  = meetings.flatMap(m => (m.actionItems||[]).filter(a => !a.done));
+
+  const sectionToggle = (id, label, count, content) => `
+    <div class="hub-section">
+      <div class="hub-section-header" data-hub-toggle="${id}">
+        <span class="hub-section-title">${label}</span>
+        ${count > 0 ? `<span class="hub-section-count">${count}</span>` : ''}
+        <span class="hub-chevron" id="chev-${id}">▾</span>
+      </div>
+      <div class="hub-section-body" id="hubBody-${id}">${content}</div>
+    </div>`;
+
+  mainContent.innerHTML = `
+    <div class="view hub-view">
+      <!-- Header del Hub -->
+      <div class="hub-header">
+        <div class="hub-header-left">
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+            <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
+            <span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority)}</span>
+            ${p.starred ? '<span style="color:var(--amber)">★</span>' : ''}
+            ${p.archived ? '<span class="badge" style="background:rgba(120,120,120,.15);color:var(--text-3)">Archivado</span>' : ''}
+          </div>
+          <h1 class="hub-title">${esc(p.title)}</h1>
+          <div class="hub-meta-row">
+            ${col ? `<span class="hub-meta-chip" style="border-color:${col.color}">
+              <span style="width:7px;height:7px;border-radius:50%;background:${col.color};display:inline-block"></span>
+              ${esc(col.title)}</span>` : ''}
+            ${p.responsible ? `<span class="hub-meta-chip">👤 ${esc(p.responsible)}</span>` : ''}
+            ${p.deadline ? `<span class="hub-meta-chip">⏱ ${formatDate(p.deadline)}</span>` : ''}
+            ${(p.tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
+          </div>
+        </div>
+        <div class="hub-header-actions">
+          <button class="btn btn-ghost btn-sm" id="hubEditBtn">✎ Editar</button>
+          <button class="btn btn-ghost btn-sm" id="hubExportBtn">⬇ Exportar</button>
+          <button class="btn btn-ghost btn-sm" id="hubAddIdeaBtn">+ Idea</button>
+          <button class="btn btn-ghost btn-sm" id="hubAddMeetingBtn">+ Reunión</button>
+          <button class="btn btn-ghost btn-sm" id="hubAddRefBtn">+ Ref</button>
+          <button class="btn btn-ghost btn-sm" id="hubAddSubBtn">+ Submission</button>
+          <button class="btn btn-ghost btn-sm" id="hubAddSnipBtn">+ Snippet</button>
+        </div>
+      </div>
+
+      <!-- Completeness bar -->
+      <div id="hubCompleteness" style="margin-bottom:16px"></div>
+
+      <!-- Descripción -->
+      ${sectionToggle('desc', '📋 Descripción', 0,
+        p.description
+          ? `<div class="md-preview hub-desc">${renderMd(p.description)}</div>`
+          : `<div class="hub-empty-hint">Sin descripción — haz clic en ✎ Editar para agregar una.</div>`
+      )}
+
+      <!-- Ideas -->
+      ${sectionToggle('ideas', `◎ Ideas${unreadIdeas ? ` · <span style="color:var(--amber)">${unreadIdeas} sin revisar</span>` : ''}`, ideas.length,
+        ideas.length ? ideas.map(i => `
+          <div class="hub-list-item ${i.status==='unread'?'hub-item-unread':''}" data-inspect-idea="${i.id}">
+            <span class="hub-item-dot ${i.status==='reviewed'?'reviewed':''}"></span>
+            <span class="hub-item-text">${esc(i.title)}</span>
+            ${(i.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
+            <span class="hub-item-date">${relativeDate(i.updatedAt)}</span>
+          </div>`).join('')
+        : `<div class="hub-empty-hint">Sin ideas — agrega la primera con + Idea arriba.</div>`
+      )}
+
+      <!-- Submissions -->
+      ${submissions.length || true ? sectionToggle('subs', '📤 Submissions', submissions.length,
+        submissions.length ? submissions.map(s => `
+          <div class="hub-list-item" data-inspect-submission="${s.id}">
+            <span class="hub-item-dot"></span>
+            <span class="hub-item-text">${esc(s.title)}</span>
+            ${typeof subStatusBadge === 'function' ? subStatusBadge(s.status) : ''}
+            ${s.targetVenue ? `<span style="font-size:.7rem;color:var(--text-3)">${esc(s.targetVenue)}</span>` : ''}
+          </div>`).join('')
+        : `<div class="hub-empty-hint">Sin submissions registradas.</div>`
+      ) : ''}
+
+      <!-- Reuniones -->
+      ${sectionToggle('meetings', `🗓 Reuniones${pendingAIs.length ? ` · <span style="color:var(--amber)">${pendingAIs.length} acciones pendientes</span>` : ''}`, meetings.length,
+        meetings.length ? meetings.map(m => {
+          const pending = (m.actionItems||[]).filter(a=>!a.done).length;
+          return `
+            <div class="hub-list-item" data-inspect-meeting="${m.id}">
+              <span class="hub-item-dot"></span>
+              <span class="hub-item-date" style="min-width:80px">${formatDate(m.date)}</span>
+              <span class="hub-item-text">${esc(m.title)}</span>
+              ${pending ? `<span class="hub-item-badge-warn">⚑ ${pending}</span>` : ''}
+            </div>`;
+        }).join('')
+        : `<div class="hub-empty-hint">Sin reuniones registradas.</div>`
+      )}
+
+      <!-- Referencias -->
+      ${sectionToggle('refs', '📚 Referencias', references.length,
+        references.length ? references.map(r => `
+          <div class="hub-list-item" data-inspect-ref="${r.id}">
+            <span class="hub-item-dot"></span>
+            <span class="hub-item-text">${esc(r.authors?.split(',')[0]||'')} (${r.year||'?'}) — ${esc(r.title)}</span>
+            ${r.doi ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank"
+              onclick="event.stopPropagation()" style="font-size:.68rem;color:var(--accent)">DOI ↗</a>` : ''}
+          </div>`).join('')
+        : `<div class="hub-empty-hint">Sin referencias. Agrega con + Ref arriba.</div>`
+      )}
+
+      <!-- Snippets -->
+      ${sectionToggle('snips', '⟨/⟩ Snippets', snippets.length,
+        snippets.length ? snippets.map(s => `
+          <div class="hub-list-item" data-inspect-snip="${s.id}">
+            <span class="snippet-lang-badge lang-${s.language||'Other'}" style="font-size:.6rem">${esc(s.language||'Other')}</span>
+            <span class="hub-item-text">${esc(s.title)}</span>
+            <span class="hub-item-date">${relativeDate(s.updatedAt)}</span>
+          </div>`).join('')
+        : `<div class="hub-empty-hint">Sin snippets vinculados a este proyecto.</div>`
+      )}
+
+      <!-- Historial -->
+      ${(p._history||[]).length ? sectionToggle('hist', '⑆ Historial', (p._history||[]).length,
+        [...(p._history||[])].reverse().slice(0,5).map(snap => `
+          <div class="hub-list-item">
+            <span class="hub-item-date">${relativeDate(snap.ts)}</span>
+            <span class="hub-item-text" style="color:var(--text-3)">${esc(snap.title||'')}</span>
+          </div>`).join('')
+      ) : ''}
+    </div>`;
+
+  // Completeness
+  projectCompleteness(p).then(pct => {
+    const el = $('hubCompleteness');
+    if (el) el.innerHTML = completenessBarHTML(pct);
+  });
+
+  // Section toggle
+  mainContent.querySelectorAll('[data-hub-toggle]').forEach(header => {
+    header.addEventListener('click', () => {
+      const bid  = header.dataset.hubToggle;
+      const body = $(`hubBody-${bid}`);
+      const chev = $(`chev-${bid}`);
+      if (!body) return;
+      const hidden = body.style.display === 'none';
+      body.style.display = hidden ? '' : 'none';
+      if (chev) chev.textContent = hidden ? '▾' : '▸';
+    });
+  });
+
+  // Item inspect handlers
+  mainContent.querySelectorAll('[data-inspect-idea]').forEach(el =>
+    el.addEventListener('click', () => inspectIdea(+el.dataset.inspectIdea)));
+  mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
+    el.addEventListener('click', () => typeof inspectSubmission === 'function' && inspectSubmission(+el.dataset.inspectSubmission)));
+  mainContent.querySelectorAll('[data-inspect-meeting]').forEach(el =>
+    el.addEventListener('click', () => typeof inspectMeeting === 'function' && inspectMeeting(+el.dataset.inspectMeeting)));
+  mainContent.querySelectorAll('[data-inspect-ref]').forEach(el =>
+    el.addEventListener('click', () => typeof inspectReference === 'function' && inspectReference(+el.dataset.inspectRef)));
+  mainContent.querySelectorAll('[data-inspect-snip]').forEach(el =>
+    el.addEventListener('click', async () => {
+      const s = await db.snippets.get(+el.dataset.inspectSnip);
+      if (s) inspectSnippet(s);
+    }));
+
+  // Header actions
+  $('hubEditBtn').addEventListener('click', () => showEditProjectModal(p));
+  $('hubExportBtn').addEventListener('click', () => exportProjectAsMarkdown(p.id));
+
+  $('hubAddIdeaBtn').addEventListener('click', () => {
+    const now = new Date().toISOString();
+    showModal(`+ Idea → ${p.title}`, `
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Título *</label>
+          <input class="form-input" id="qi-title" placeholder="Nueva idea…">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Contenido / Nota</label>
+          <textarea class="form-textarea" id="qi-content" rows="3"
+            placeholder="Detalles, URL, referencia…"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Etiquetas (separadas por coma)</label>
+          <input class="form-input" id="qi-tags" placeholder="R, stats, review">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="qiCancel">Cancelar</button>
+        <button class="btn btn-primary" id="qiSave">Guardar Idea</button>
+      </div>`);
+    setTimeout(() => $('qi-title')?.focus(), 60);
+    $('qiCancel').addEventListener('click', closeModal);
+    $('qiSave').addEventListener('click', async () => {
+      const title = $('qi-title').value.trim();
+      if (!title) { showToast('Título requerido', 'error'); return; }
+      await dbWrite(() => db.ideas.add({
+        title,
+        content:    $('qi-content').value.trim(),
+        status:     'unread',
+        projectId:  p.id,
+        projectIds: [p.id],
+        tags:       $('qi-tags').value.split(',').map(s => s.trim()).filter(Boolean),
+        subtasks:   [],
+        createdAt:  now, updatedAt: now
+      }));
+      closeModal();
+      showToast('Idea añadida ✓', 'success');
+      updateBadges();
+      renderProjectHub();   // refrescar el hub para reflejar el nuevo ítem
+    });
+  });
+
+  $('hubAddMeetingBtn').addEventListener('click', () => showAddMeetingModal(null, p.id));
+  $('hubAddRefBtn').addEventListener('click',     () => showAddReferenceModal(p.id));
+  $('hubAddSubBtn').addEventListener('click',     () => showAddSubmissionModal(null, p.id));
+  $('hubAddSnipBtn').addEventListener('click',    () => showAddSnippetModal(p.id));
+}
+
+// ══════════════════════════════════════════════════════════════
+//  FOCUS FEED — "¿Qué hago ahora?"
+// ══════════════════════════════════════════════════════════════
+async function renderFocusFeed() {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const in7   = new Date(today); in7.setDate(today.getDate() + 7);
+
+  const [projects, ideas, meetings, submissions] = await Promise.all([
+    db.projects.filter(p => !p.archived).toArray(),
+    db.ideas.filter(i => i.status === 'unread').toArray(),
+    typeof db.meetings !== 'undefined' ? db.meetings.toArray() : Promise.resolve([]),
+    typeof db.submissions !== 'undefined' ? db.submissions.toArray() : Promise.resolve([]),
+  ]);
+
+  const items = [];
+
+  // 1. Deadlines en los próximos 7 días (prioridad máxima)
+  projects
+    .filter(p => p.deadline)
+    .forEach(p => {
+      const d = new Date(p.deadline + 'T00:00:00');
+      const daysLeft = Math.ceil((d - today) / 86400000);
+      if (daysLeft < 0) {
+        items.push({ score: 100, icon:'🔴', label:`Proyecto vencido hace ${Math.abs(daysLeft)}d`,
+          text: p.title, type:'deadline-overdue', ref: p, daysLeft });
+      } else if (daysLeft <= 7) {
+        items.push({ score: 90 - daysLeft * 5, icon:'⏱', label:`Deadline en ${daysLeft}d`,
+          text: p.title, type:'deadline', ref: p, daysLeft });
+      }
+    });
+
+  // 2. Submissions que requieren acción
+  submissions
+    .filter(s => s.status === 'revision_solicitada')
+    .forEach(s => items.push({ score: 85, icon:'📤', label:'Revisión solicitada — requiere respuesta',
+      text: s.title, type:'submission', ref: s }));
+
+  submissions
+    .filter(s => s.deadlineAt)
+    .forEach(s => {
+      const d = new Date(s.deadlineAt + 'T00:00:00');
+      const daysLeft = Math.ceil((d - today) / 86400000);
+      if (daysLeft >= 0 && daysLeft <= 7)
+        items.push({ score: 80 - daysLeft * 4, icon:'📤', label:`Submission deadline en ${daysLeft}d`,
+          text: s.title, type:'submission-deadline', ref: s });
+    });
+
+  // 3. Action items pendientes de reuniones
+  meetings.forEach(m => {
+    const pending = (m.actionItems||[]).filter(a => !a.done);
+    if (pending.length) {
+      pending.slice(0,3).forEach(ai =>
+        items.push({ score: 70, icon:'⚑', label:`Acción pendiente (${formatDate(m.date)})`,
+          text: ai.text, type:'action-item', ref: m, meetingId: m.id }));
+    }
+  });
+
+  // 4. Ideas sin revisar vinculadas a proyectos activos con deadline próximo
+  const hotProjectIds = new Set(
+    projects.filter(p => p.deadline &&
+      Math.ceil((new Date(p.deadline+'T00:00:00') - today)/86400000) <= 30
+    ).map(p => p.id)
+  );
+  ideas
+    .filter(i => hotProjectIds.has(i.projectId))
+    .slice(0, 4)
+    .forEach(i => items.push({ score: 60, icon:'◎', label:'Idea sin revisar en proyecto activo',
+      text: i.title, type:'idea', ref: i }));
+
+  // 5. Proyectos sin actividad reciente (> 14 días)
+  const cutoff = new Date(today); cutoff.setDate(today.getDate() - 14);
+  projects
+    .filter(p => p.updatedAt && new Date(p.updatedAt) < cutoff && !p.archived)
+    .sort((a,b) => new Date(a.updatedAt) - new Date(b.updatedAt))
+    .slice(0, 3)
+    .forEach(p => items.push({ score: 30, icon:'❄', label:`Sin actividad hace ${Math.floor((today - new Date(p.updatedAt))/86400000)}d`,
+      text: p.title, type:'stale', ref: p }));
+
+  // Ordenar por score desc, limitar a 10 ítems
+  items.sort((a,b) => b.score - a.score);
+  const feed = items.slice(0, 10);
+
+  const itemHTML = (item) => {
+    const scoreColor = item.score >= 85 ? 'var(--red)' : item.score >= 70 ? 'var(--amber)' : 'var(--text-3)';
+    let actionAttr = '';
+    if (item.type === 'deadline' || item.type === 'deadline-overdue' || item.type === 'stale')
+      actionAttr = `data-inspect-project="${item.ref.id}"`;
+    else if (item.type === 'idea')
+      actionAttr = `data-inspect-idea="${item.ref.id}"`;
+    else if (item.type === 'submission' || item.type === 'submission-deadline')
+      actionAttr = `data-inspect-submission="${item.ref.id}"`;
+    else if (item.type === 'action-item')
+      actionAttr = `data-inspect-meeting="${item.meetingId}"`;
+
+    return `
+      <div class="focus-item" ${actionAttr}>
+        <div class="focus-item-score" style="color:${scoreColor}">${item.icon}</div>
+        <div class="focus-item-body">
+          <div class="focus-item-label">${item.label}</div>
+          <div class="focus-item-text">${esc(item.text)}</div>
+        </div>
+        <div class="focus-item-arrow">›</div>
+      </div>`;
+  };
+
+  mainContent.innerHTML = `
+    <div class="view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">🎯 Focus Feed</div>
+          <div class="view-subtitle">Calculado ahora · ${feed.length} elemento(s) que requieren atención</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="focusRefreshBtn">↻ Actualizar</button>
+      </div>
+      ${feed.length ? `
+        <div class="focus-feed">
+          ${feed.map(itemHTML).join('')}
+        </div>
+        <div style="font-size:.72rem;color:var(--text-3);font-family:var(--font-mono);margin-top:12px;text-align:center">
+          Ordenado por urgencia calculada · Toca un ítem para abrir su inspector
+        </div>`
+      : `<div class="empty-state">
+           <span class="empty-state-icon">🎯</span>
+           <h3>Todo al día</h3>
+           <p>No hay deadlines próximos, acciones pendientes ni ideas sin revisar.<br>Buen momento para capturar ideas nuevas.</p>
+         </div>`}
+    </div>`;
+
+  $('focusRefreshBtn').addEventListener('click', () => renderView('focus'));
+  mainContent.querySelectorAll('[data-inspect-project]').forEach(el =>
+    el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+  mainContent.querySelectorAll('[data-inspect-idea]').forEach(el =>
+    el.addEventListener('click', () => inspectIdea(+el.dataset.inspectIdea)));
+  mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
+    el.addEventListener('click', () => typeof inspectSubmission === 'function' && inspectSubmission(+el.dataset.inspectSubmission)));
+  mainContent.querySelectorAll('[data-inspect-meeting]').forEach(el =>
+    el.addEventListener('click', () => typeof inspectMeeting === 'function' && inspectMeeting(+el.dataset.inspectMeeting)));
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ELEMENTOS HUÉRFANOS
+// ══════════════════════════════════════════════════════════════
+async function renderOrphans() {
+  const [ideas, snippets, projects, collections] = await Promise.all([
+    db.ideas.toArray(),
+    db.snippets.toArray(),
+    db.projects.toArray(),
+    db.snippetCollections.toArray(),
+  ]);
+  const refs  = typeof db.references  !== 'undefined' ? await db.references.toArray()  : [];
+  const meets = typeof db.meetings    !== 'undefined' ? await db.meetings.toArray()     : [];
+
+  const projIds = new Set(projects.map(p => p.id));
+  const colIds  = new Set(collections.map(c => c.id));
+
+  const orphanIdeas    = ideas.filter(i => !i.projectId && !((i.projectIds||[]).length));
+  const orphanSnippets = snippets.filter(s => !s.projectId && !((s.projectIds||[]).length));
+  const orphanSnipsNoCol = snippets.filter(s => !s.collectionId);
+  const orphanRefs     = refs.filter(r => !r.projectId);
+  const orphanMeets    = meets.filter(m => !m.projectId);
+
+  const total = orphanIdeas.length + orphanSnippets.length + orphanRefs.length + orphanMeets.length;
+
+  const cols = await db.kanbanColumns.orderBy('order').toArray();
+
+  const assignModal = async (entityType, entityId, currentTitle) => {
+    showModal(`Asignar proyecto — "${currentTitle}"`, `
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Asignar a proyecto</label>
+          <select class="form-select" id="orphan-proj-sel">
+            <option value="">Sin proyecto (mantener huérfano)</option>
+            ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="orphCancel">Cancelar</button>
+        <button class="btn btn-primary" id="orphSave">Asignar</button>
+      </div>`);
+    $('orphCancel').addEventListener('click', closeModal);
+    $('orphSave').addEventListener('click', async () => {
+      const pid = +$('orphan-proj-sel').value || null;
+      if (!pid) { closeModal(); return; }
+      const table = { idea: db.ideas, snippet: db.snippets,
+                      reference: db.references, meeting: db.meetings }[entityType];
+      if (table) await dbWrite(() => table.update(entityId, { projectId: pid, updatedAt: new Date().toISOString() }));
+      closeModal();
+      showToast('Asignado ✓', 'success');
+      renderOrphans();
+    });
+  };
+
+  const rowHTML = (item, type, icon) => `
+    <div class="orphan-row">
+      <span class="orphan-icon">${icon}</span>
+      <span class="orphan-title">${esc(item.title||item.agreements||'Sin título')}</span>
+      <span class="orphan-date">${relativeDate(item.createdAt||item.date)}</span>
+      <button class="btn btn-ghost btn-sm orphan-assign-btn"
+              data-otype="${type}" data-oid="${item.id}"
+              data-otitle="${esc(item.title||'?')}">Asignar →</button>
+      <button class="btn btn-ghost btn-sm orphan-delete-btn"
+              data-otype="${type}" data-oid="${item.id}"
+              style="color:var(--red)">✕</button>
+    </div>`;
+
+  const section = (label, items, icon) => items.length ? `
+    <div class="orphan-section">
+      <div class="orphan-section-header">${label} <span class="hub-section-count">${items.length}</span></div>
+      ${items.map(i => rowHTML(i, icon.type, icon.icon)).join('')}
+    </div>` : '';
+
+  mainContent.innerHTML = `
+    <div class="view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">🔗 Elementos Huérfanos</div>
+          <div class="view-subtitle">${total} elemento(s) sin proyecto asignado</div>
+        </div>
+      </div>
+      ${total === 0
+        ? `<div class="empty-state">
+             <span class="empty-state-icon">✓</span>
+             <h3>Todo conectado</h3>
+             <p>No hay ideas, snippets, referencias ni reuniones sin proyecto.</p>
+           </div>`
+        : `<div class="orphan-list">
+             ${section('◎ Ideas sin proyecto', orphanIdeas, {type:'idea', icon:'◎'})}
+             ${section('⟨/⟩ Snippets sin proyecto', orphanSnippets, {type:'snippet', icon:'⟨/⟩'})}
+             ${section('📚 Referencias sin proyecto', orphanRefs, {type:'reference', icon:'📚'})}
+             ${section('🗓 Reuniones sin proyecto', orphanMeets, {type:'meeting', icon:'🗓'})}
+           </div>`}
+    </div>`;
+
+  mainContent.querySelectorAll('.orphan-assign-btn').forEach(btn => {
+    btn.addEventListener('click', () =>
+      assignModal(btn.dataset.otype, +btn.dataset.oid, btn.dataset.otitle));
+  });
+
+  mainContent.querySelectorAll('.orphan-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('¿Eliminar este elemento?')) return;
+      const table = {
+        idea: db.ideas, snippet: db.snippets,
+        reference: typeof db.references !== 'undefined' ? db.references : null,
+        meeting:   typeof db.meetings   !== 'undefined' ? db.meetings   : null,
+      }[btn.dataset.otype];
+      if (table) await table.delete(+btn.dataset.oid);
+      showToast('Eliminado', 'info');
+      renderOrphans();
+    });
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  IDEA TRIAGE — Revisión rápida con teclado
+// ══════════════════════════════════════════════════════════════
+async function renderIdeaTriage() {
+  const ideas = await db.ideas.filter(i => i.status === 'unread').toArray();
+
+  if (!ideas.length) {
+    mainContent.innerHTML = `
+      <div class="view">
+        <div class="view-header">
+          <div><div class="view-title">✓ Inbox vacío</div>
+          <div class="view-subtitle">Todas las ideas han sido revisadas</div></div>
+          <button class="btn btn-ghost" id="triageBack">← Volver a Ideas</button>
+        </div>
+        <div class="empty-state">
+          <span class="empty-state-icon">◎</span>
+          <h3>¡Inbox a cero!</h3>
+          <p>No quedan ideas sin revisar.</p>
+        </div>
+      </div>`;
+    $('triageBack').addEventListener('click', () => navigate('ideas'));
+    return;
+  }
+
+  App.triageQueue = ideas;
+  if (App.triageIdx >= ideas.length) App.triageIdx = 0;
+  const idea    = ideas[App.triageIdx];
+  const total   = ideas.length;
+  const current = App.triageIdx + 1;
+  const pct     = Math.round((App.triageIdx / total) * 100);
+  const projects = await db.projects.toArray();
+
+  mainContent.innerHTML = `
+    <div class="view triage-view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">◎ Revisión rápida</div>
+          <div class="view-subtitle">${current} de ${total} ideas sin revisar</div>
+        </div>
+        <button class="btn btn-ghost" id="triageExitBtn">✕ Salir</button>
+      </div>
+
+      <!-- Progress bar -->
+      <div class="triage-progress-track">
+        <div class="triage-progress-bar" style="width:${pct}%"></div>
+      </div>
+
+      <!-- Card -->
+      <div class="triage-card" id="triageCard">
+        <div class="triage-card-title">${esc(idea.title)}</div>
+        ${idea.content ? `<div class="triage-card-content">${esc(idea.content)}</div>` : ''}
+        ${(idea.tags||[]).length ? `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:10px">
+          ${idea.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
+        </div>` : ''}
+        <div class="triage-card-meta">${relativeDate(idea.createdAt)}</div>
+      </div>
+
+      <!-- Acciones -->
+      <div class="triage-actions">
+        <button class="btn triage-btn triage-btn-archive" id="triageBtnArchive"
+                title="Eliminar (A)">🗑 Eliminar</button>
+        <button class="btn triage-btn triage-btn-project" id="triageBtnProject"
+                title="Asignar proyecto (P)">⬡ Proyecto</button>
+        <button class="btn triage-btn triage-btn-edit" id="triageBtnEdit"
+                title="Expandir / editar (E)">✎ Editar</button>
+        <button class="btn triage-btn triage-btn-done" id="triageBtnDone"
+                title="Revisada, siguiente (→ o L)">✓ Revisada →</button>
+      </div>
+
+      <!-- Keyboard hint -->
+      <div class="triage-kbd-hint">
+        <kbd>→</kbd> Revisada · <kbd>A</kbd> Eliminar · <kbd>P</kbd> Proyecto · <kbd>E</kbd> Expandir · <kbd>Esc</kbd> Salir
+      </div>
+    </div>`;
+
+  const next = (skip = false) => {
+    if (!skip) {
+      db.ideas.update(idea.id, { status: 'reviewed', updatedAt: new Date().toISOString() });
+    }
+    App.triageIdx++;
+    renderIdeaTriage();
+  };
+
+  $('triageExitBtn').addEventListener('click', () => navigate('ideas'));
+  $('triageBtnDone').addEventListener('click', () => next(false));
+  $('triageBtnArchive').addEventListener('click', async () => {
+    if (confirm('¿Eliminar esta idea?')) {
+      await db.ideas.delete(idea.id);
+      App.triageIdx = Math.max(0, App.triageIdx - 1);
+      renderIdeaTriage();
+    }
+  });
+  $('triageBtnEdit').addEventListener('click', () => inspectIdea(idea.id));
+  $('triageBtnProject').addEventListener('click', () => {
+    showModal('Asignar proyecto', `
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Proyecto</label>
+          <select class="form-select" id="triageProjSel">
+            <option value="">Sin proyecto</option>
+            ${projects.map(p=>`<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="tpCancel">Cancelar</button>
+        <button class="btn btn-primary" id="tpSave">Asignar y marcar revisada</button>
+      </div>`);
+    $('tpCancel').addEventListener('click', closeModal);
+    $('tpSave').addEventListener('click', async () => {
+      const pid = +$('triageProjSel').value || null;
+      await dbWrite(() => db.ideas.update(idea.id, {
+        projectId: pid,
+        projectIds: pid ? [pid] : [],
+        status: 'reviewed',
+        updatedAt: new Date().toISOString()
+      }));
+      closeModal(); next(true);
+    });
+  });
+
+  // Keyboard handler — se destruye al salir de la vista
+  const onKey = (e) => {
+    if (!mainContent.querySelector('.triage-view')) {
+      document.removeEventListener('keydown', onKey);
+      return;
+    }
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowRight' || e.key === 'l' || e.key === 'L') next(false);
+    else if (e.key === 'a' || e.key === 'A') $('triageBtnArchive')?.click();
+    else if (e.key === 'p' || e.key === 'P') $('triageBtnProject')?.click();
+    else if (e.key === 'e' || e.key === 'E') $('triageBtnEdit')?.click();
+    else if (e.key === 'Escape') { document.removeEventListener('keydown', onKey); navigate('ideas'); }
+  };
+  document.addEventListener('keydown', onKey);
 }
 
 async function renderStarred() {
@@ -3746,7 +4557,7 @@ async function showEditIdeaModal(idea) {
   });
 }
 
-async function showAddSnippetModal() {
+async function showAddSnippetModal(preProjectId = null) {
   const projects = await db.projects.toArray();
   const body = `
     <div class="modal-body">
@@ -3774,7 +4585,9 @@ async function showAddSnippetModal() {
         <label class="form-label">Vincular a proyecto</label>
         <select class="form-select" id="ms-project">
           <option value="">Sin proyecto</option>
-          ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+          ${projects.map(p =>
+            `<option value="${p.id}" ${p.id === preProjectId ? 'selected' : ''}>${esc(p.title)}</option>`
+          ).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -3813,7 +4626,8 @@ async function showAddSnippetModal() {
     }));
     closeModal();
     showToast('Snippet guardado ✓', 'success');
-    if (App.view === 'snippets') renderSnippets();
+    if (App.view === 'snippets')     renderSnippets();
+    if (App.view === 'project-hub')  renderProjectHub();
   });
 }
 
@@ -3873,6 +4687,15 @@ async function inspectProject(id) {
         </div>
       </div>
       <div id="completenessInspector"></div>
+
+      <!-- Quick-Add contextual -->
+      <div class="insp-quickadd-bar">
+        <span style="font-size:.65rem;color:var(--text-3);font-family:var(--font-mono)">Agregar a este proyecto:</span>
+        <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="idea">+ Idea</button>
+        <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="meeting">+ Reunión</button>
+        <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="reference">+ Referencia</button>
+        <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="submission">+ Submission</button>
+      </div>
 
       <div class="inspector-section-label" style="margin-top:12px;display:flex;align-items:center;justify-content:space-between">
         <span>Descripción</span>
@@ -3980,6 +4803,7 @@ async function inspectProject(id) {
       })()}
 
       <div class="inspector-actions">
+        <button class="btn btn-primary btn-sm" id="inspHubBtn">⬡ Abrir Hub</button>
         <button class="btn btn-ghost btn-sm" id="inspEditBtn">✎ Editar</button>
         <button class="btn btn-ghost btn-sm" id="inspFSBtn" title="Crear estructura FS">📁 FS</button>
         <button class="btn btn-ghost btn-sm" id="inspStarBtn">${p.starred ? '★ Quitar fav.' : '☆ Favorito'}</button>
@@ -4008,6 +4832,11 @@ async function inspectProject(id) {
       showToast('Proyecto eliminado', 'info');
       renderView(App.view);
     }
+  });
+
+  $('inspHubBtn').addEventListener('click', () => {
+    App.projectHubId = id;
+    navigate('project-hub');
   });
 
   $('inspFSBtn').addEventListener('click', () => {
@@ -4059,6 +4888,58 @@ async function inspectProject(id) {
           !(p.tags||[]).length   && 'etiquetas',
         ].filter(Boolean).join(', ') : '✓ Proyecto completo'}
       </div>`;
+  });
+
+  // Quick-Add contextual — abre el modal correspondiente con projectId pre-cargado
+  inspectorBody.querySelectorAll('.insp-qa-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      switch (btn.dataset.qa) {
+        case 'idea': {
+          // Reutiliza showAddIdeaModal pre-seleccionando el proyecto
+          const projects = await db.projects.toArray();
+          const body = `
+            <div class="modal-body">
+              <div class="form-group">
+                <label class="form-label">Título *</label>
+                <input class="form-input" id="qi-title" placeholder="Idea o recurso…">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Contenido / URL / Nota</label>
+                <textarea class="form-textarea" id="qi-content" placeholder="Detalles…"></textarea>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-ghost" id="qiCancel">Cancelar</button>
+              <button class="btn btn-primary" id="qiSave">Guardar Idea</button>
+            </div>`;
+          showModal(`+ Idea → ${p.title}`, body);
+          setTimeout(() => $('qi-title')?.focus(), 60);
+          $('qiCancel').addEventListener('click', closeModal);
+          $('qiSave').addEventListener('click', async () => {
+            const title = $('qi-title').value.trim();
+            if (!title) { showToast('Título requerido', 'error'); return; }
+            const now = new Date().toISOString();
+            await dbWrite(() => db.ideas.add({
+              title, content: $('qi-content').value.trim(),
+              status: 'unread', projectId: p.id, projectIds: [p.id],
+              tags: [], subtasks: [], createdAt: now, updatedAt: now
+            }));
+            closeModal(); showToast('Idea añadida ✓', 'success');
+            updateBadges();
+          });
+          break;
+        }
+        case 'meeting':
+          await showAddMeetingModal(null, p.id);
+          break;
+        case 'reference':
+          await showAddReferenceModal(p.id);
+          break;
+        case 'submission':
+          await showAddSubmissionModal(null, p.id);
+          break;
+      }
+    });
   });
 
   $('inspEditBtn').addEventListener('click', () => showEditProjectModal(p));
@@ -4741,6 +5622,189 @@ async function previewImportCSV(file) {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  EXPORT DE PROYECTO COMO DOCUMENTO MARKDOWN
+// ══════════════════════════════════════════════════════════════
+async function exportProjectAsMarkdown(projectId) {
+  const [p, cols, ideas, snippets] = await Promise.all([
+    db.projects.get(projectId),
+    db.kanbanColumns.toArray(),
+    db.ideas.where('projectId').equals(projectId).toArray(),
+    db.snippets.where('projectId').equals(projectId).toArray(),
+  ]);
+  if (!p) return;
+
+  const refs  = typeof db.references  !== 'undefined' ? await db.references.where('projectId').equals(projectId).toArray()  : [];
+  const meets = typeof db.meetings    !== 'undefined' ? await db.meetings.where('projectId').equals(projectId).toArray()     : [];
+  const subs  = typeof db.submissions !== 'undefined' ? await db.submissions.where('projectId').equals(projectId).toArray()  : [];
+  const col   = cols.find(c => c.id === p.columnId);
+
+  const hr  = '\n\n---\n\n';
+  const now = new Date().toLocaleDateString('es-CL', { year:'numeric', month:'long', day:'numeric' });
+
+  let md = `# ${p.title}\n\n`;
+  md += `> Exportado el ${now} desde ResearchOS\n\n`;
+  md += `| Campo | Valor |\n|---|---|\n`;
+  md += `| **Tipo** | ${p.type||'—'} |\n`;
+  md += `| **Estado** | ${col?.title||'—'} |\n`;
+  md += `| **Prioridad** | ${p.priority||'—'} |\n`;
+  md += `| **Responsable** | ${p.responsible||'—'} |\n`;
+  md += `| **Deadline** | ${p.deadline ? formatDate(p.deadline) : '—'} |\n`;
+  if ((p.coauthors||[]).length)
+    md += `| **Coautores** | ${p.coauthors.join(', ')} |\n`;
+  if ((p.tags||[]).length)
+    md += `| **Etiquetas** | ${p.tags.join(', ')} |\n`;
+  md += '\n';
+
+  if (p.description) {
+    md += `## Descripción\n\n${p.description}\n`;
+  }
+
+  if (ideas.length) {
+    md += `${hr}## Ideas (${ideas.length})\n\n`;
+    ideas.forEach(i => {
+      md += `### ${i.status === 'reviewed' ? '✓' : '○'} ${i.title}\n`;
+      if (i.content) md += `\n${i.content}\n`;
+      if ((i.tags||[]).length) md += `\n_Tags: ${i.tags.join(', ')}_\n`;
+      md += '\n';
+    });
+  }
+
+  if (subs.length) {
+    md += `${hr}## Submissions (${subs.length})\n\n`;
+    subs.forEach(s => {
+      md += `### ${s.title}\n`;
+      md += `- **Estado:** ${s.status}\n`;
+      if (s.targetVenue) md += `- **Venue:** ${s.targetVenue}\n`;
+      if (s.deadlineAt)  md += `- **Deadline:** ${formatDate(s.deadlineAt)}\n`;
+      if (s.submittedAt) md += `- **Enviado:** ${formatDate(s.submittedAt)}\n`;
+      if (s.notes) md += `\n${s.notes}\n`;
+      if ((s.rounds||[]).length) {
+        md += `\n**Rondas:**\n`;
+        s.rounds.forEach(r => { md += `- ${r.date}: ${r.status} — ${r.notes||''}\n`; });
+      }
+      md += '\n';
+    });
+  }
+
+  if (meets.length) {
+    md += `${hr}## Reuniones (${meets.length})\n\n`;
+    meets.forEach(m => {
+      md += `### ${formatDate(m.date)} — ${m.title}\n`;
+      if (m.participants) md += `_Participantes: ${m.participants}_\n\n`;
+      if (m.agreements)   md += `${m.agreements}\n\n`;
+      const pendingAIs = (m.actionItems||[]).filter(a => !a.done);
+      if ((m.actionItems||[]).length) {
+        md += `**Próximos pasos:**\n`;
+        m.actionItems.forEach(a => { md += `- [${a.done?'x':' '}] ${a.text}\n`; });
+        md += '\n';
+      }
+    });
+  }
+
+  if (refs.length) {
+    md += `${hr}## Referencias (${refs.length})\n\n`;
+    refs.forEach(r => {
+      md += `- ${r.authors||'?'} (${r.year||'?'}). _${r.title}_.`;
+      if (r.journal) md += ` ${r.journal}.`;
+      if (r.doi) md += ` https://doi.org/${r.doi}`;
+      md += '\n';
+      if (r.notes) md += `  > ${r.notes}\n`;
+    });
+  }
+
+  if (snippets.length) {
+    md += `${hr}## Snippets de código (${snippets.length})\n\n`;
+    snippets.forEach(s => {
+      md += `### ${s.title}\n`;
+      if (s.description) md += `_${s.description}_\n\n`;
+      md += `\`\`\`${(s.language||'').toLowerCase()}\n${s.code||''}\n\`\`\`\n\n`;
+    });
+  }
+
+  const blob = new Blob([md], { type: 'text/markdown' });
+  const url  = URL.createObjectURL(blob);
+  const a    = Object.assign(document.createElement('a'), {
+    href: url,
+    download: `${p.title.replace(/[^a-z0-9]/gi,'_').toLowerCase()}_${new Date().toISOString().split('T')[0]}.md`
+  });
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('Documento exportado ✓', 'success');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  WELCOME MODAL — se muestra sólo la primera vez
+// ══════════════════════════════════════════════════════════════
+function _showWelcomeModal() {
+  const sections = [
+    { icon:'◈', title:'Dashboard',        desc:'Vista general: estadísticas, actividad reciente y accesos rápidos a Focus Feed, revisión de ideas y elementos huérfanos.' },
+    { icon:'⊞', title:'Kanban Board',     desc:'Gestiona el estado de tus proyectos arrastrando tarjetas entre columnas personalizables. Soporta límites WIP.' },
+    { icon:'◉', title:'Proyectos',        desc:'Listado filtrable por tipo, prioridad y columna. Guarda filtros como vistas con nombre para acceso rápido.' },
+    { icon:'⬡', title:'Project Hub',      desc:'Abre el Hub desde cualquier proyecto para ver en una sola página: ideas, submissions, reuniones, referencias y snippets vinculados.' },
+    { icon:'🎯', title:'Focus Feed',       desc:'Calculado automáticamente: qué hacer ahora según deadlines, acciones pendientes e ideas sin revisar.' },
+    { icon:'📤', title:'Submissions',      desc:'Seguimiento de papers, grants y ponencias a través de su ciclo: preparación → enviado → revisión → aceptado/rechazado.' },
+    { icon:'🗓', title:'Reuniones',        desc:'Registra reuniones con acuerdos y próximos pasos. Las acciones pendientes aparecen en el Focus Feed.' },
+    { icon:'📚', title:'Referencias',      desc:'Gestiona fuentes bibliográficas vinculadas a proyectos. Exporta a .bib con un clic.' },
+    { icon:'◎', title:'Ideas Inbox',       desc:'Captura rápida de ideas. Usa la Revisión rápida (teclado) para procesar el inbox sin fricción.' },
+    { icon:'⟨/⟩', title:'Snippets',       desc:'Biblioteca de código por lenguaje y colección, vinculada a proyectos. Resaltado de sintaxis incluido.' },
+    { icon:'📅', title:'Agenda Semanal',   desc:'Vista de solo lectura que agrega todos los deadlines, submissions y reuniones de los próximos 7 días.' },
+    { icon:'⏱', title:'Timeline',         desc:'Vista Gantt con zoom semana / mes / año. Filtra proyectos vencidos y colorea por prioridad o tipo.' },
+    { icon:'🔗', title:'Huérfanos',        desc:'Detecta ideas, snippets, referencias y reuniones sin proyecto asignado para mantener todo conectado.' },
+  ];
+
+  showModal('⬡ Bienvenido a ResearchOS', `
+    <div class="welcome-modal-body">
+      <p class="welcome-intro">
+        <strong>ResearchOS</strong> es una herramienta de productividad científica
+        <em>local-first</em> — tus datos nunca salen del navegador, no hay backend,
+        no hay telemetría.
+      </p>
+      <p class="welcome-intro" style="margin-bottom:18px">
+        Diseñada para investigadores que manejan proyectos, docencia, postulaciones
+        y colaboraciones en paralelo, con el objetivo de reducir la carga cognitiva
+        y mantener todo conectado.
+      </p>
+
+      <div class="welcome-section-title">Módulos principales</div>
+      <div class="welcome-grid">
+        ${sections.map(s => `
+          <div class="welcome-card">
+            <div class="welcome-card-header">
+              <span class="welcome-card-icon">${s.icon}</span>
+              <span class="welcome-card-title">${s.title}</span>
+            </div>
+            <div class="welcome-card-desc">${s.desc}</div>
+          </div>`).join('')}
+      </div>
+
+      <div class="welcome-section-title" style="margin-top:20px">Atajos de teclado</div>
+      <div class="welcome-shortcuts">
+        <div class="ws-row"><kbd>⌘K</kbd><span>Abrir Command Palette (búsqueda global)</span></div>
+        <div class="ws-row"><kbd>⌘⇧K</kbd><span>Ir al Kanban</span></div>
+        <div class="ws-row"><kbd>⌘P</kbd><span>Abrir / cerrar Pomodoro</span></div>
+        <div class="ws-row"><kbd>Alt ←/→</kbd><span>Navegar historial de vistas</span></div>
+        <div class="ws-row"><kbd>F5</kbd><span>Presentación Kanban (pantalla completa)</span></div>
+        <div class="ws-row"><kbd>→ / L</kbd><span>Siguiente idea en Revisión rápida</span></div>
+        <div class="ws-row"><kbd>Esc</kbd><span>Cerrar modal / inspector / paleta</span></div>
+      </div>
+    </div>
+    <div class="modal-footer" style="justify-content:space-between;align-items:center">
+      <label style="display:flex;align-items:center;gap:8px;font-size:.75rem;color:var(--text-2);cursor:pointer">
+        <input type="checkbox" id="welcomeDontShow">
+        No mostrar al iniciar
+      </label>
+      <button class="btn btn-primary" id="welcomeStart">Comenzar →</button>
+    </div>`);
+
+  $('welcomeStart').addEventListener('click', () => {
+    if ($('welcomeDontShow')?.checked) {
+      localStorage.setItem('ros-welcomed', '1');
+    }
+    closeModal();
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════════
 async function init() {
@@ -4824,6 +5888,11 @@ async function init() {
   _initPalette();
   _initPomodoro();
 
+  // ── Bienvenida en primer uso ────────────────────────────
+  if (!localStorage.getItem('ros-welcomed')) {
+    _showWelcomeModal();
+  }
+
   // Initial view
   navigate('dashboard');
 }
@@ -4860,6 +5929,10 @@ async function _searchPalette(q) {
   const [projects, ideas, snippets] = await Promise.all([
     db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray()
   ]);
+  // Full-text: tablas extendidas (opcionales)
+  const refs  = lq && typeof db.references  !== 'undefined' ? await db.references.toArray()  : [];
+  const meets = lq && typeof db.meetings    !== 'undefined' ? await db.meetings.toArray()     : [];
+  const subs  = lq && typeof db.submissions !== 'undefined' ? await db.submissions.toArray()  : [];
 
   const groups = [];
 
@@ -4872,6 +5945,9 @@ async function _searchPalette(q) {
     { icon:'⟨/⟩',label:'Snippets',  sub:'Vista',    action: () => { closePalette(); navigate('snippets'); } },
     { icon:'⊟', label:'FS Bridge',   sub:'Vista',    action: () => { closePalette(); navigate('filesystem'); } },
     { icon:'⏱', label:'Timeline',      sub:'Vista', action: () => { closePalette(); navigate('timeline'); } },
+    { icon:'🎯', label:'Focus Feed',    sub:'Vista', action: () => { closePalette(); navigate('focus'); } },
+    { icon:'🔗', label:'Huérfanos',     sub:'Vista', action: () => { closePalette(); navigate('orphans'); } },
+    { icon:'◎', label:'Revisión rápida',sub:'Vista', action: () => { closePalette(); App.triageIdx = 0; navigate('triage'); } },
     { icon:'📅', label:'Agenda',        sub:'Vista', action: () => { closePalette(); navigate('weekly'); } },
     { icon:'📤', label:'Submissions',   sub:'Vista', action: () => { closePalette(); navigate('submissions'); } },
     { icon:'🗓', label:'Reuniones',     sub:'Vista', action: () => { closePalette(); navigate('meetings'); } },
@@ -4880,9 +5956,14 @@ async function _searchPalette(q) {
   ].filter(n => !lq || n.label.toLowerCase().includes(lq));
   if (navItems.length) groups.push({ label: 'Vistas', items: navItems });
 
-  // Projects
+  // Projects — full-text en title, description y tags
   const pItems = projects
-    .filter(p => !lq || p.title.toLowerCase().includes(lq) || (p.description||'').toLowerCase().includes(lq))
+    .filter(p => !lq ||
+      p.title.toLowerCase().includes(lq) ||
+      (p.description||'').toLowerCase().includes(lq) ||
+      (p.tags||[]).some(t => t.toLowerCase().includes(lq)) ||
+      (p.responsible||'').toLowerCase().includes(lq)
+    )
     .slice(0, 5)
     .map(p => ({
       icon: '◉', label: p.title, sub: p.type,
@@ -4892,7 +5973,11 @@ async function _searchPalette(q) {
 
   // Ideas
   const iItems = ideas
-    .filter(i => !lq || i.title.toLowerCase().includes(lq) || (i.content||'').toLowerCase().includes(lq))
+    .filter(i => !lq ||
+      i.title.toLowerCase().includes(lq) ||
+      (i.content||'').toLowerCase().includes(lq) ||
+      (i.tags||[]).some(t => t.toLowerCase().includes(lq))
+    )
     .slice(0, 4)
     .map(i => ({
       icon: '◎', label: i.title, sub: 'Idea',
@@ -4902,13 +5987,60 @@ async function _searchPalette(q) {
 
   // Snippets
   const sItems = snippets
-    .filter(s => !lq || s.title.toLowerCase().includes(lq) || (s.code||'').toLowerCase().includes(lq))
+    .filter(s => !lq ||
+      s.title.toLowerCase().includes(lq) ||
+      (s.code||'').toLowerCase().includes(lq) ||
+      (s.description||'').toLowerCase().includes(lq)
+    )
     .slice(0, 4)
     .map(s => ({
       icon: '⟨/⟩', label: s.title, sub: s.language,
       action: () => { closePalette(); navigate('snippets'); }
     }));
   if (sItems.length) groups.push({ label: 'Snippets', items: sItems });
+
+  // Referencias
+  if (refs.length) {
+    const rItems = refs
+      .filter(r => r.title.toLowerCase().includes(lq) ||
+        (r.authors||'').toLowerCase().includes(lq) ||
+        (r.journal||'').toLowerCase().includes(lq) ||
+        (r.notes||'').toLowerCase().includes(lq))
+      .slice(0, 4)
+      .map(r => ({
+        icon: '📚', label: r.title, sub: `${r.authors?.split(',')[0]||''} ${r.year||''}`.trim(),
+        action: () => { closePalette(); navigate('references'); setTimeout(() => inspectReference(r.id), 120); }
+      }));
+    if (rItems.length) groups.push({ label: 'Referencias', items: rItems });
+  }
+
+  // Reuniones
+  if (meets.length) {
+    const mItems = meets
+      .filter(m => m.title.toLowerCase().includes(lq) ||
+        (m.agreements||'').toLowerCase().includes(lq) ||
+        (m.participants||'').toLowerCase().includes(lq))
+      .slice(0, 3)
+      .map(m => ({
+        icon: '🗓', label: m.title, sub: formatDate(m.date),
+        action: () => { closePalette(); navigate('meetings'); setTimeout(() => inspectMeeting(m.id), 120); }
+      }));
+    if (mItems.length) groups.push({ label: 'Reuniones', items: mItems });
+  }
+
+  // Submissions
+  if (subs.length) {
+    const subItems = subs
+      .filter(s => s.title.toLowerCase().includes(lq) ||
+        (s.targetVenue||'').toLowerCase().includes(lq) ||
+        (s.notes||'').toLowerCase().includes(lq))
+      .slice(0, 3)
+      .map(s => ({
+        icon: '📤', label: s.title, sub: s.targetVenue||'',
+        action: () => { closePalette(); navigate('submissions'); setTimeout(() => inspectSubmission(s.id), 120); }
+      }));
+    if (subItems.length) groups.push({ label: 'Submissions', items: subItems });
+  }
 
   // Flatten for keyboard navigation
   _paletteResults = groups.flatMap(g => g.items);
