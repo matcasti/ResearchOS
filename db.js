@@ -185,7 +185,8 @@ async function getActivityHeatmap() {
 // ── Full export / import ─────────────────────────────────────
 
 async function exportAllData() {
-  const [projects, ideas, snippets, resources, collaborators, kanbanColumns, snippetCollections] =
+  const [projects, ideas, snippets, resources, collaborators,
+         kanbanColumns, snippetCollections, submissions, meetings, references] =
     await Promise.all([
       db.projects.toArray(),
       db.ideas.toArray(),
@@ -193,11 +194,16 @@ async function exportAllData() {
       db.resources.toArray(),
       db.collaborators.toArray(),
       db.kanbanColumns.toArray(),
-      db.snippetCollections.toArray()
+      db.snippetCollections.toArray(),
+      db.submissions.toArray(),
+      db.meetings.toArray(),
+      db.references.toArray()
     ]);
   return JSON.stringify(
-    { _version: 2, exportedAt: new Date().toISOString(),
-      projects, ideas, snippets, resources, collaborators, kanbanColumns, snippetCollections },
+    { _version: 3, exportedAt: new Date().toISOString(),
+      projects, ideas, snippets, resources, collaborators,
+      kanbanColumns, snippetCollections,
+      submissions, meetings, references },
     null, 2
   );
 }
@@ -205,13 +211,15 @@ async function exportAllData() {
 async function importAllData(jsonString) {
   const data = JSON.parse(jsonString);
   await db.transaction('rw',
-    [db.projects, db.ideas, db.snippets, db.resources, db.collaborators, db.kanbanColumns, db.snippetCollections],
+    [db.projects, db.ideas, db.snippets, db.resources, db.collaborators,
+     db.kanbanColumns, db.snippetCollections, db.submissions, db.meetings, db.references],
     async () => {
       await Promise.all([
-        db.projects.clear(),     db.ideas.clear(),
-        db.snippets.clear(),     db.resources.clear(),
-        db.collaborators.clear(), db.kanbanColumns.clear(),
-        db.snippetCollections.clear()
+        db.projects.clear(),          db.ideas.clear(),
+        db.snippets.clear(),          db.resources.clear(),
+        db.collaborators.clear(),     db.kanbanColumns.clear(),
+        db.snippetCollections.clear(), db.submissions.clear(),
+        db.meetings.clear(),          db.references.clear()
       ]);
       await Promise.all([
         db.projects.bulkAdd(data.projects || []),
@@ -220,7 +228,10 @@ async function importAllData(jsonString) {
         db.resources.bulkAdd(data.resources || []),
         db.collaborators.bulkAdd(data.collaborators || []),
         db.kanbanColumns.bulkAdd(data.kanbanColumns || []),
-        db.snippetCollections.bulkAdd(data.snippetCollections || [])
+        db.snippetCollections.bulkAdd(data.snippetCollections || []),
+        db.submissions.bulkAdd(data.submissions || []),
+        db.meetings.bulkAdd(data.meetings || []),
+        db.references.bulkAdd(data.references || [])
       ]);
     }
   );
@@ -231,9 +242,9 @@ async function mergeAllData(jsonString) {
   const data = JSON.parse(jsonString);
   await db.transaction('rw',
     [db.projects, db.ideas, db.snippets, db.resources,
-     db.collaborators, db.kanbanColumns, db.snippetCollections],
+     db.collaborators, db.kanbanColumns, db.snippetCollections,
+     db.submissions, db.meetings, db.references],
     async () => {
-      // Para cada tabla, sólo añadir registros con IDs que no existen aún
       const addNew = async (table, items = []) => {
         const existing = new Set((await table.toArray()).map(r => r.id));
         const fresh = items.filter(r => !existing.has(r.id));
@@ -248,6 +259,9 @@ async function mergeAllData(jsonString) {
         addNew(db.collaborators,      data.collaborators      || []),
         addNew(db.kanbanColumns,      data.kanbanColumns      || []),
         addNew(db.snippetCollections, data.snippetCollections || []),
+        addNew(db.submissions,        data.submissions        || []),
+        addNew(db.meetings,           data.meetings           || []),
+        addNew(db.references,         data.references         || []),
       ]);
       return counts.reduce((a,b) => a+b, 0);
     }

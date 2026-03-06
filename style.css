@@ -472,12 +472,38 @@ body.inspector-closed {
   transform: translateY(-1px);
 }
 .kanban-card.dragging { opacity: .4; }
-.kanban-card-title {
+.kanban-card-title,
+.kanban-card-title-text {
   font-size: .83rem;
   font-weight: 500;
   color: var(--text-1);
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   line-height: 1.35;
+}
+.kanban-card-title-text {
+  border-radius: var(--radius-sm);
+  padding: 1px 3px;
+  margin: -1px -3px;
+  transition: box-shadow 150ms var(--ease), background 150ms var(--ease);
+}
+.kanban-card-title-text:hover {
+  background: var(--bg-hover);
+  box-shadow: 0 0 0 1.5px var(--border-str);
+  cursor: text;
+}
+.kanban-card-title-text:hover::after {
+  content: ' ✎';
+  font-size: .6rem; color: var(--text-3);
+}
+.kanban-card-badges { margin-bottom: 6px; }
+.kanban-card-stale {
+  opacity: 0.65;
+  border-style: dashed;
+}
+.kanban-card-stale .kanban-card-title-text::before {
+  content: '○ ';
+  font-size: .65rem;
+  color: var(--text-3);
 }
 .kanban-card-meta {
   display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
@@ -493,6 +519,15 @@ body.inspector-closed {
 .kanban-card-date {
   font-size: .68rem; color: var(--text-3); font-family: var(--font-mono);
 }
+.kanban-idea-badge {
+  display: inline-block;
+  margin-left: 6px;
+  font-family: var(--font-mono); font-size: .6rem;
+  background: color-mix(in srgb, var(--amber) 15%, transparent);
+  color: var(--amber);
+  padding: 1px 5px; border-radius: 99px;
+  vertical-align: middle;
+}
 .kanban-add-btn {
   display: flex; align-items: center; gap: 6px;
   width: 100%; padding: 8px 10px;
@@ -503,6 +538,17 @@ body.inspector-closed {
   margin: 0 10px 10px; width: calc(100% - 20px);
 }
 .kanban-add-btn:hover { color: var(--text-1); border-color: var(--accent); background: var(--accent-d); }
+
+.kanban-inline-input {
+  width: 100%; padding: 2px 4px;
+  background: var(--bg-base);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  font-size: .83rem; font-weight: 500;
+  font-family: var(--font-body);
+  outline: none; margin-bottom: 4px;
+}
 
 /* Kanban view header */
 .kanban-view-header {
@@ -1461,6 +1507,13 @@ body.focus-mode .pomodoro-widget { opacity: 1 !important; pointer-events: all !i
   transition: transform 120ms var(--ease);
   flex-shrink: 0;
 }
+.heatmap-cell-clickable { cursor: pointer; }
+.heatmap-cell-clickable:hover {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  transform: scale(1.3);
+  z-index: 2; position: relative;
+}
 .heatmap-cell:hover { transform: scale(1.4); z-index: 2; }
 .heatmap-cell[data-level="1"] { background: rgba(56,189,248,.25); border-color: rgba(56,189,248,.4); }
 .heatmap-cell[data-level="2"] { background: rgba(56,189,248,.5);  border-color: rgba(56,189,248,.6); }
@@ -2117,6 +2170,38 @@ body.presentation-mode .kanban-col { width: 300px; }
   border-radius: 99px;
   padding: 2px 8px;
 }
+.hub-activity-strip {
+  margin: 10px 0 0;
+  padding: 10px 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+}
+.hub-activity-label {
+  font-size: .6rem; font-family: var(--font-mono);
+  letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-3); display: block; margin-bottom: 8px;
+}
+.hub-activity-track {
+  display: flex; gap: 0; flex-direction: column;
+}
+.hub-activity-event {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 0;
+  border-left: 1px dashed var(--border-str);
+  padding-left: 10px;
+  position: relative;
+  font-size: .75rem;
+}
+.hub-activity-dot {
+  position: absolute; left: -4px;
+  width: 7px; height: 7px; border-radius: 50%;
+  border: 1.5px solid var(--bg-elevated);
+  flex-shrink: 0;
+}
+.hub-activity-text { flex: 1; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-activity-ts   { font-family: var(--font-mono); font-size: .62rem; color: var(--text-3); flex-shrink: 0; }
 .hub-header-actions {
   display: flex; flex-wrap: wrap; gap: 6px;
   flex-shrink: 0; align-items: flex-start;
@@ -2269,10 +2354,19 @@ body.presentation-mode .kanban-col { width: 300px; }
 ══════════════════════════════════════════════════════════════ */
 .triage-view { max-width: 600px; margin: 0 auto; }
 
-.triage-progress-track {
-  height: 4px; background: var(--bg-elevated);
-  border-radius: 99px; overflow: hidden;
+.triage-progress-header {
+  display: flex; align-items: center; gap: 12px;
   margin-bottom: 24px;
+}
+.triage-progress-track {
+  flex: 1; height: 4px; background: var(--bg-elevated);
+  border-radius: 99px; overflow: hidden;
+}
+.triage-counter {
+  font-family: var(--font-mono); font-size: .75rem; font-weight: 700;
+  color: var(--accent); white-space: nowrap;
+  background: var(--accent-d); padding: 2px 8px;
+  border-radius: 99px; flex-shrink: 0;
 }
 .triage-progress-bar {
   height: 100%; background: var(--accent);
@@ -2469,4 +2563,93 @@ body.presentation-mode .kanban-col { width: 300px; }
   flex-shrink: 0;
   min-width: 68px;
   text-align: center;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   HOVER CONTEXT CARD
+══════════════════════════════════════════════════════════════ */
+.hover-card {
+  display: none;
+  position: fixed; z-index: 2000;
+  width: 260px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-str);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 12px 14px;
+  pointer-events: all;
+  animation: hcFadeIn 140ms var(--ease);
+}
+@keyframes hcFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+.hc-title {
+  font-size: .83rem; font-weight: 600; color: var(--text-1);
+  margin-bottom: 7px; line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.hc-meta { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
+.hc-chip {
+  font-size: .62rem; font-family: var(--font-mono);
+  background: var(--bg-card); border: 1px solid var(--border);
+  padding: 1px 6px; border-radius: 99px; color: var(--text-2);
+}
+.hc-row {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 4px; flex-wrap: wrap;
+}
+.hc-key {
+  font-size: .65rem; font-family: var(--font-mono);
+  color: var(--text-3); min-width: 70px;
+}
+.hc-stale {
+  font-size: .65rem; font-family: var(--font-mono);
+  color: var(--text-3); margin: 4px 0;
+  padding: 2px 6px; border-radius: 99px;
+  background: var(--bg-card); display: inline-block;
+}
+.hc-hint {
+  font-size: .6rem; color: var(--text-3);
+  font-family: var(--font-mono); margin-top: 8px;
+  border-top: 1px solid var(--border); padding-top: 6px;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   IN-PLACE EDITING
+══════════════════════════════════════════════════════════════ */
+.inplace-field {
+  border-radius: var(--radius-sm);
+  transition: box-shadow 160ms var(--ease), background 160ms var(--ease);
+  cursor: default;
+  padding: 1px 3px;
+  margin: -1px -3px;
+}
+.inplace-field:hover {
+  background: var(--bg-hover);
+  box-shadow: 0 0 0 1.5px var(--border-str);
+  cursor: text;
+}
+.inplace-field:hover::after {
+  content: ' ✎';
+  font-size: .6rem;
+  color: var(--text-3);
+  vertical-align: middle;
+}
+.inplace-input {
+  background: var(--bg-base);
+  border: 1.5px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  font-family: var(--font-body);
+  font-size: .82rem;
+  padding: 2px 5px;
+  outline: none;
+  width: auto;
+  min-width: 80px;
+  max-width: 180px;
+}
+.inplace-input:focus {
+  box-shadow: 0 0 0 3px var(--accent-d);
 }
