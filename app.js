@@ -6275,6 +6275,10 @@ function _showWelcomeModal() {
         <div class="ws-row"><kbd>→ / L</kbd><span>Siguiente idea en Revisión rápida</span></div>
         <div class="ws-row"><kbd>Esc</kbd><span>Cerrar modal / inspector / paleta</span></div>
       </div>
+      <div class="welcome-section-title" style="margin-top:20px">Datos de ejemplo</div>
+      <p class="welcome-intro" style="margin-bottom:18px;">
+        Para ver las capacidades de ResearchOS, puedes <a href="researchos-tutorial.json" download="json">descargar los datos de ejemplo</a> e importarlos en "Settings & Export".
+      </p>
     </div>
     <div class="modal-footer" style="justify-content:space-between;align-items:center">
       <label style="display:flex;align-items:center;gap:8px;font-size:.75rem;color:var(--text-2);cursor:pointer">

@@ -1,0 +1,667 @@
+{
+  "_version": 3,
+  "_tutorial": true,
+  "_description": "Datos de ejemplo para ResearchOS — Lab de Ecología del Paisaje. Importa este archivo desde Settings → Importar JSON para explorar todas las funcionalidades de la app.",
+  "exportedAt": "2026-03-01T10:00:00.000Z",
+
+  "kanbanColumns": [
+    { "id": 1, "title": "Ideación",          "order": 0, "color": "#3b82f6", "isDefault": true },
+    { "id": 2, "title": "Limpieza de Datos", "order": 1, "color": "#f59e0b", "isDefault": true },
+    { "id": 3, "title": "Análisis",          "order": 2, "color": "#8b5cf6", "isDefault": true },
+    { "id": 4, "title": "Escritura",         "order": 3, "color": "#10b981", "isDefault": true },
+    { "id": 5, "title": "Peer Review",       "order": 4, "color": "#f97316", "isDefault": true },
+    { "id": 6, "title": "Completado",        "order": 5, "color": "#14b8a6", "isDefault": true }
+  ],
+
+  "snippetCollections": [
+    { "id": 1, "name": "Análisis Estadístico", "createdAt": "2025-04-01T09:00:00.000Z" },
+    { "id": 2, "name": "Datos y Descargas",    "createdAt": "2025-06-10T09:00:00.000Z" },
+    { "id": 3, "name": "Visualización",        "createdAt": "2025-09-01T09:00:00.000Z" }
+  ],
+
+  "collaborators": [
+    {
+      "id": 1,
+      "name": "Dr. Pablo Fuentes",
+      "role": "Coinvestigador",
+      "affiliation": "Universidad de Concepción — Dpto. de Botánica",
+      "email": "p.fuentes@udec.cl",
+      "projectIds": [1, 2, 4],
+      "notes": "Especialista en taxonomía de Nothofagaceae y ecología funcional. Co-PI del grant FONDECYT. Disponible para reuniones virtuales los martes y jueves. Tiene acceso al herbario CONC.",
+      "createdAt": "2025-04-01T09:00:00.000Z",
+      "updatedAt": "2026-01-15T10:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "name": "Lic. Andrea Vega",
+      "role": "Asistente de investigación",
+      "affiliation": "Laboratorio de Ecología del Paisaje — UCT",
+      "email": "a.vega@uct.cl",
+      "projectIds": [1, 3],
+      "notes": "Especialista en teledetección y SIG. A cargo del pipeline Landsat. Tesista de doctorado, disponible tiempo completo hasta julio 2026. Dominio avanzado de R y Google Earth Engine.",
+      "createdAt": "2025-06-01T09:00:00.000Z",
+      "updatedAt": "2026-01-10T11:00:00.000Z"
+    },
+    {
+      "id": 3,
+      "name": "Prof. James McKenzie",
+      "role": "Colaborador internacional",
+      "affiliation": "University of Edinburgh — School of GeoSciences",
+      "email": "j.mckenzie@ed.ac.uk",
+      "projectIds": [1],
+      "notes": "Referente mundial en SDM con variables climáticas de alta resolución. Posible revisor externo del proyecto. Contactado para carta de apoyo institucional — respondió positivamente en octubre 2025.",
+      "createdAt": "2025-10-15T09:00:00.000Z",
+      "updatedAt": "2025-10-15T09:00:00.000Z"
+    }
+  ],
+
+  "projects": [
+    {
+      "id": 1,
+      "title": "FONDECYT: Impacto del Cambio Climático en Biodiversidad Andina",
+      "type": "Grant",
+      "columnId": 4,
+      "priority": "Alta",
+      "responsible": "Dra. María Castillo",
+      "coauthors": ["Dr. Pablo Fuentes", "Lic. Andrea Vega"],
+      "deadline": "2026-08-15",
+      "description": "## Objetivo General\nEvaluar los efectos del cambio climático sobre la biodiversidad de ecosistemas andinos entre los 1.500–3.500 m.s.n.m. en la zona centro-sur de Chile.\n\n## Objetivos Específicos\n1. Caracterizar cambios en distribución de 45 especies clave (plantas vasculares y aves)\n2. Modelar escenarios futuros bajo IPCC SSP2-4.5 y SSP5-8.5 (horizonte 2070)\n3. Proponer estrategias de conservación adaptativa con indicadores de monitoreo\n\n## Financiamiento solicitado\n$42.000.000 CLP · 36 meses · Convocatoria FONDECYT Regular 2026\n\n## Estado actual\nBorrador de propuesta al 65%. Necesita sección de metodología expandida y cartas de apoyo de McKenzie y CONAF.",
+      "tags": ["cambio climático", "biodiversidad", "Andes", "FONDECYT", "SDM"],
+      "starred": true,
+      "archived": false,
+      "columnHistory": [
+        { "colId": 1, "enteredAt": "2025-04-10T09:00:00.000Z", "exitedAt": "2025-05-20T14:00:00.000Z" },
+        { "colId": 2, "enteredAt": "2025-05-20T14:00:00.000Z", "exitedAt": "2025-08-01T09:00:00.000Z" },
+        { "colId": 3, "enteredAt": "2025-08-01T09:00:00.000Z", "exitedAt": "2025-11-15T14:00:00.000Z" },
+        { "colId": 4, "enteredAt": "2025-11-15T14:00:00.000Z", "exitedAt": null }
+      ],
+      "_history": [
+        {
+          "ts": "2025-08-01T09:00:00.000Z",
+          "title": "FONDECYT: Impacto del Cambio Climático en Biodiversidad Andina",
+          "type": "Grant", "priority": "Media", "deadline": "2026-10-01",
+          "responsible": "Dra. María Castillo", "description": "Versión inicial de la propuesta."
+        },
+        {
+          "ts": "2025-11-15T14:00:00.000Z",
+          "title": "FONDECYT: Impacto del Cambio Climático en Biodiversidad Andina",
+          "type": "Grant", "priority": "Alta", "deadline": "2026-08-15",
+          "responsible": "Dra. María Castillo", "description": "Propuesta revisada con objetivos específicos definidos."
+        }
+      ],
+      "createdAt": "2025-04-10T09:00:00.000Z",
+      "updatedAt": "2026-02-20T11:30:00.000Z"
+    },
+    {
+      "id": 2,
+      "title": "Paper: Diversidad funcional en bosques siempreverdes",
+      "type": "Paper",
+      "columnId": 5,
+      "priority": "Alta",
+      "responsible": "Dra. María Castillo",
+      "coauthors": ["Dr. Pablo Fuentes"],
+      "deadline": "2026-04-30",
+      "description": "## Resumen\nAnálisis de rasgos funcionales foliares (SLA, LDMC, CNC) en 12 especies dominantes de *Nothofagus* a lo largo de un gradiente altitudinal (800–1.800 m) en la Cordillera de Nahuelbuta.\n\n## Estado actual\nManuscrito en revisión mayor en *Functional Ecology* (Rev. #2). Deadline para reenvío: 30 de abril 2026.\n\n## Cambios solicitados por revisores\n- Revisor 1 ✓ (comentarios menores resueltos)\n- Revisor 2 ✗ Ampliar discusión comparando con meta-análisis europeos\n- Revisor 2 ✗ Agregar Table S1 con rasgos completos por especie y sitio\n\n## Target Journal\n*Functional Ecology* — IF 5.2 · Q1 Ecology",
+      "tags": ["Nothofagus", "rasgos funcionales", "gradiente altitudinal", "ecología", "SLA"],
+      "starred": false,
+      "archived": false,
+      "columnHistory": [
+        { "colId": 1, "enteredAt": "2025-03-15T09:00:00.000Z", "exitedAt": "2025-04-01T10:00:00.000Z" },
+        { "colId": 2, "enteredAt": "2025-04-01T10:00:00.000Z", "exitedAt": "2025-06-15T09:00:00.000Z" },
+        { "colId": 3, "enteredAt": "2025-06-15T09:00:00.000Z", "exitedAt": "2025-09-01T09:00:00.000Z" },
+        { "colId": 4, "enteredAt": "2025-09-01T09:00:00.000Z", "exitedAt": "2026-01-20T16:00:00.000Z" },
+        { "colId": 5, "enteredAt": "2026-01-20T16:00:00.000Z", "exitedAt": null }
+      ],
+      "_history": [
+        {
+          "ts": "2025-09-01T09:00:00.000Z",
+          "title": "Paper: Diversidad funcional en bosques siempreverdes",
+          "type": "Paper", "priority": "Media", "deadline": "2026-06-01",
+          "responsible": "Dra. María Castillo", "description": "Borrador inicial completado."
+        },
+        {
+          "ts": "2026-01-20T16:00:00.000Z",
+          "title": "Paper: Diversidad funcional en bosques siempreverdes",
+          "type": "Paper", "priority": "Alta", "deadline": "2026-04-30",
+          "responsible": "Dra. María Castillo", "description": "Revisión mayor recibida — prioridad aumentada."
+        }
+      ],
+      "createdAt": "2025-03-15T09:00:00.000Z",
+      "updatedAt": "2026-02-28T15:45:00.000Z"
+    },
+    {
+      "id": 3,
+      "title": "Análisis NDVI — Series de tiempo Landsat 8/9 (2013–2025)",
+      "type": "Análisis",
+      "columnId": 3,
+      "priority": "Media",
+      "responsible": "Lic. Andrea Vega",
+      "coauthors": [],
+      "deadline": "2026-06-30",
+      "description": "## Descripción\nProcesamiento de imágenes satelitales Landsat 8 y 9 (2013–2025) para calcular NDVI estacional en las 48 parcelas de monitoreo del proyecto FONDECYT.\n\n## Pipeline\n1. Descarga GEE → corrección atmosférica (LaSRC)\n2. Enmascaramiento de nubes (CFmask)\n3. Cálculo NDVI y EVI por escena\n4. Extracción de valores por parcela (buffer 30 m)\n5. Análisis de tendencia temporal (Mann-Kendall)\n6. Visualización y exportación de resultados\n\n## Estado\nPasos 1–3 completados. Paso 4 en progreso (60% de parcelas procesadas).\n\n## Software\nR 4.3 · `terra` · `rgee` · `Kendall`",
+      "tags": ["teledetección", "NDVI", "Landsat", "R", "GEE", "series de tiempo"],
+      "starred": false,
+      "archived": false,
+      "columnHistory": [
+        { "colId": 1, "enteredAt": "2025-07-01T09:00:00.000Z", "exitedAt": "2025-09-10T09:00:00.000Z" },
+        { "colId": 2, "enteredAt": "2025-09-10T09:00:00.000Z", "exitedAt": "2026-01-10T09:00:00.000Z" },
+        { "colId": 3, "enteredAt": "2026-01-10T09:00:00.000Z", "exitedAt": null }
+      ],
+      "_history": [],
+      "createdAt": "2025-07-01T09:00:00.000Z",
+      "updatedAt": "2026-02-15T10:00:00.000Z"
+    },
+    {
+      "id": 4,
+      "title": "Dataset: Flora Vascular Patagónica (1900–2025)",
+      "type": "Dataset",
+      "columnId": 2,
+      "priority": "Baja",
+      "responsible": "Dr. Pablo Fuentes",
+      "coauthors": [],
+      "deadline": null,
+      "description": "## Descripción\nCompilación de registros históricos de flora vascular patagónica desde herbarios digitalizados y literatura gris.\n\n## Fuentes\n- Herbario CONC (n ≈ 5.400 registros)\n- Herbario SGO (n ≈ 3.100)\n- GBIF portal (n ≈ 4.800)\n- Literatura gris pre-1960 (n ≈ 900)\n\n## Variables\n- Especie, familia, coordenadas decimales, altitud, fecha de colecta, colector, precisión geográfica\n\n## Estado\nEstandarización taxonómica con *Plants of the World Online* al 78%. Georreferenciación manual de registros pre-1950 en curso.",
+      "tags": ["flora", "Patagonia", "herbario", "ocurrencias", "biodiversidad", "datos abiertos"],
+      "starred": false,
+      "archived": false,
+      "columnHistory": [
+        { "colId": 1, "enteredAt": "2025-10-01T09:00:00.000Z", "exitedAt": "2026-01-05T09:00:00.000Z" },
+        { "colId": 2, "enteredAt": "2026-01-05T09:00:00.000Z", "exitedAt": null }
+      ],
+      "_history": [],
+      "createdAt": "2025-10-01T09:00:00.000Z",
+      "updatedAt": "2026-01-20T09:00:00.000Z"
+    },
+    {
+      "id": 5,
+      "title": "Ponencia ISME 2026 — Microbioma del suelo andino",
+      "type": "Presentación",
+      "columnId": 1,
+      "priority": "Baja",
+      "responsible": "Dra. María Castillo",
+      "coauthors": [],
+      "deadline": "2026-09-10",
+      "description": "## Evento\n**ISME18** — International Symposium on Microbial Ecology\nCape Town, 9–14 Sep 2026\n\n## Formato\nTalk oral · 15 min + 5 min preguntas\n\n## Abstract\nResultados preliminares sobre diversidad de microbioma rizosférico en parcelas de alto y bajo impacto antrópico en gradiente altitudinal andino. Se presentarán datos 16S rRNA (V4) de n=32 muestras.\n\n## Pendiente\n- Confirmar aceptación del abstract (respuesta esperada: mayo 2026)\n- Gestionar financiamiento para viaje",
+      "tags": ["microbioma", "ISME", "congreso", "suelo", "16S"],
+      "starred": false,
+      "archived": false,
+      "columnHistory": [
+        { "colId": 1, "enteredAt": "2026-02-01T09:00:00.000Z", "exitedAt": null }
+      ],
+      "_history": [],
+      "createdAt": "2026-02-01T09:00:00.000Z",
+      "updatedAt": "2026-02-01T09:00:00.000Z"
+    },
+    {
+      "id": 6,
+      "title": "Coordinación Lab — Semestre 1 · 2026",
+      "type": "Proyecto",
+      "columnId": 3,
+      "priority": "Media",
+      "responsible": "Dra. María Castillo",
+      "coauthors": [],
+      "deadline": "2026-07-15",
+      "description": "## Descripción\nGestión operacional del laboratorio durante el primer semestre de 2026.\n\n## Actividades principales\n- Supervisión de tesistas (n=3: 2 magíster, 1 doctorado)\n- Gestión de presupuesto operacional ($3.2M CLP)\n- Organización de 6 seminarios internos mensuales\n- Mantención de equipos de campo (GPS, dataloggers, estaciones micro-climáticas)\n- Renovación de convenios con CONAF y MMA\n\n> **Nota:** El tipo **Proyecto** es para cualquier actividad que no encaje en las categorías Grant, Paper, Análisis, Dataset o Presentación. Ideal para gestión, coordinación y proyectos transversales.",
+      "tags": ["gestión", "laboratorio", "coordinación", "administración"],
+      "starred": false,
+      "archived": false,
+      "columnHistory": [
+        { "colId": 1, "enteredAt": "2025-12-15T09:00:00.000Z", "exitedAt": "2026-03-01T09:00:00.000Z" },
+        { "colId": 3, "enteredAt": "2026-03-01T09:00:00.000Z", "exitedAt": null }
+      ],
+      "_history": [],
+      "createdAt": "2025-12-15T09:00:00.000Z",
+      "updatedAt": "2026-03-01T09:00:00.000Z"
+    },
+    {
+      "id": 7,
+      "title": "Tesis Magíster: Conectividad de bosques en Nahuelbuta",
+      "type": "Proyecto",
+      "columnId": 4,
+      "priority": "Media",
+      "responsible": "Sebastián Mora (tesista)",
+      "coauthors": ["Dra. María Castillo"],
+      "deadline": "2026-11-30",
+      "description": "## Alumno\nSebastián Mora — Magíster en Ciencias Biológicas, mención Ecología\n\n## Tema\nAnálisis de conectividad estructural y funcional de parches de *Nothofagus dombeyi* en la Cordillera de Nahuelbuta usando métricas de paisaje y modelación de movimiento de fauna.\n\n## Estado\nCapítulos 1 y 2 completados (revisados). Capítulo 3 (análisis de conectividad) en desarrollo.\n\n## Próximo hito\nPresentación de avance comisión: 15 de junio 2026.",
+      "tags": ["tesis", "conectividad", "Nahuelbuta", "Nothofagus", "paisaje"],
+      "starred": false,
+      "archived": false,
+      "columnHistory": [
+        { "colId": 1, "enteredAt": "2025-03-01T09:00:00.000Z", "exitedAt": "2025-05-01T09:00:00.000Z" },
+        { "colId": 2, "enteredAt": "2025-05-01T09:00:00.000Z", "exitedAt": "2025-08-15T09:00:00.000Z" },
+        { "colId": 3, "enteredAt": "2025-08-15T09:00:00.000Z", "exitedAt": "2025-11-01T09:00:00.000Z" },
+        { "colId": 4, "enteredAt": "2025-11-01T09:00:00.000Z", "exitedAt": null }
+      ],
+      "_history": [],
+      "createdAt": "2025-03-01T09:00:00.000Z",
+      "updatedAt": "2026-02-10T09:00:00.000Z"
+    },
+    {
+      "id": 8,
+      "title": "Paper completado: Fenología reproductiva de Araucaria",
+      "type": "Paper",
+      "columnId": 6,
+      "priority": "Baja",
+      "responsible": "Dra. María Castillo",
+      "coauthors": ["Dr. Pablo Fuentes", "Lic. Andrea Vega"],
+      "deadline": null,
+      "description": "## Estado\n✓ **Publicado** — *Plant Ecology* Vol. 224, pp. 451–468 (2025)\nDOI: 10.1007/s11258-025-01512-3\n\n## Resumen\nDescripción de patrones fenológicos reproductivos de *Araucaria araucana* en una red de 18 poblaciones a lo largo de un gradiente latitudinal (37°–40° S). Identificamos un avance de 8.3 días/década en el inicio de la fructificación correlacionado con anomalías de temperatura primaveral.\n\n> Este proyecto ilustra el uso de la columna **Completado** y del tipo archivado una vez finalizado.",
+      "tags": ["Araucaria", "fenología", "publicado", "Plant Ecology"],
+      "starred": true,
+      "archived": false,
+      "columnHistory": [
+        { "colId": 4, "enteredAt": "2024-09-01T09:00:00.000Z", "exitedAt": "2025-01-15T09:00:00.000Z" },
+        { "colId": 5, "enteredAt": "2025-01-15T09:00:00.000Z", "exitedAt": "2025-06-01T09:00:00.000Z" },
+        { "colId": 6, "enteredAt": "2025-06-01T09:00:00.000Z", "exitedAt": null }
+      ],
+      "_history": [],
+      "createdAt": "2024-09-01T09:00:00.000Z",
+      "updatedAt": "2025-06-05T10:00:00.000Z"
+    }
+  ],
+
+  "ideas": [
+    {
+      "id": 1,
+      "title": "Incluir variables de microhábitat en el modelo de distribución",
+      "content": "Los modelos actuales usan solo clima (bio1–bio19 de WorldClim). Agregar variables de microhábitat (cobertura de canopia vía LiDAR, pendiente local, exposición) podría mejorar el AUC en ~8% según estudios similares en los Alpes (Mod et al., 2016, Ecology Letters). Valdría testear MaxEnt vs. BRT con y sin estas variables.",
+      "status": "reviewed",
+      "projectId": 1,
+      "projectIds": [1],
+      "tags": ["SDM", "microhábitat", "MaxEnt", "modelación"],
+      "subtasks": [
+        { "id": "st1a", "text": "Revisar literatura SDM con variables de microhábitat", "done": true },
+        { "id": "st1b", "text": "Extraer variables LiDAR para las 48 parcelas", "done": true },
+        { "id": "st1c", "text": "Correr modelo comparativo con/sin microhábitat", "done": false },
+        { "id": "st1d", "text": "Reportar delta-AUC y evaluar parsimonia del modelo", "done": false }
+      ],
+      "createdAt": "2025-05-12T10:00:00.000Z",
+      "updatedAt": "2025-11-20T14:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "title": "Sección discusión: comparar con meta-análisis de Parmesan 2003",
+      "content": "El meta-análisis de Parmesan & Yohe (2003, Nature) documenta un desplazamiento promedio de 6.1 km/década hacia los polos en 1.700 sp. Nuestros resultados sugieren 9.3 km/década en el gradiente norte-sur patagónico. Vale la pena discutirlo explícitamente — ¿diferencia biogeográfica real o artefacto del método de cálculo?",
+      "status": "unread",
+      "projectId": 2,
+      "projectIds": [2],
+      "tags": ["discusión", "meta-análisis", "distribución", "Parmesan"],
+      "subtasks": [
+        { "id": "st2a", "text": "Verificar que el método de cálculo sea comparable con Parmesan", "done": false },
+        { "id": "st2b", "text": "Redactar párrafo de ~200 palabras para la discusión", "done": false }
+      ],
+      "createdAt": "2026-01-25T09:30:00.000Z",
+      "updatedAt": "2026-01-25T09:30:00.000Z"
+    },
+    {
+      "id": 3,
+      "title": "Sesgo de detección en registros de herbario pre-1950",
+      "content": "Los registros del herbario CONC previos a 1950 están georreferenciados a nivel de cuadrícula 0.1°, introduciendo un error posicional de hasta 11 km. Esto podría sesgar el modelo de distribución histórica. Posibles soluciones: (a) filtrar registros con precisión > 5 km, (b) usar downsampling espacial, (c) modelar la incertidumbre explícitamente (ver BIEN 3.0 framework).",
+      "status": "unread",
+      "projectId": 4,
+      "projectIds": [4],
+      "tags": ["calidad de datos", "sesgo espacial", "herbario", "georeferenciación"],
+      "subtasks": [
+        { "id": "st3a", "text": "Calcular proporción de registros pre-1950 con baja precisión", "done": false },
+        { "id": "st3b", "text": "Consultar con curador del herbario CONC (Dr. Ramírez)", "done": false },
+        { "id": "st3c", "text": "Evaluar impacto en modelos con análisis de sensibilidad", "done": false }
+      ],
+      "createdAt": "2026-02-03T11:00:00.000Z",
+      "updatedAt": "2026-02-03T11:00:00.000Z"
+    },
+    {
+      "id": 4,
+      "title": "Automatizar descarga Landsat con rgee en loop mensual",
+      "content": "Actualmente el pipeline de descarga desde GEE es semimanual (requiere ejecutar el script mes a mes). Con `rgee` + `purrr` se puede escribir un loop que descargue por año-mes automáticamente y aplique la corrección atmosférica LaSRC en el mismo paso. Estimo unas 6 horas de trabajo para implementar, con ganancia de ~3 h/mes en operación.",
+      "status": "reviewed",
+      "projectId": 3,
+      "projectIds": [3],
+      "tags": ["automatización", "R", "GEE", "pipeline", "rgee"],
+      "subtasks": [
+        { "id": "st4a", "text": "Escribir función `download_landsat_batch(year, month)`", "done": true },
+        { "id": "st4b", "text": "Testear con datos 2023 completo (12 meses)", "done": true },
+        { "id": "st4c", "text": "Documentar en README del repositorio", "done": false }
+      ],
+      "createdAt": "2025-09-12T15:00:00.000Z",
+      "updatedAt": "2026-02-05T09:00:00.000Z"
+    },
+    {
+      "id": 5,
+      "title": "Proponer sesiones de lectura sobre ecología funcional",
+      "content": "El equipo necesita nivelar conocimientos sobre ecología funcional antes de la reunión con el revisor externo en abril. Proponer 3 sesiones de 1 h en el lab: (1) Rasgos funcionales y su medición, (2) CWM, FRic y métricas de FD, (3) Framework respuesta-efecto (Lavorel & Garnier 2002). Formato: un paper leído + 30 min de discusión.",
+      "status": "unread",
+      "projectId": null,
+      "projectIds": [],
+      "tags": ["laboratorio", "formación", "ecología funcional", "lectura"],
+      "subtasks": [],
+      "createdAt": "2026-02-18T08:00:00.000Z",
+      "updatedAt": "2026-02-18T08:00:00.000Z"
+    },
+    {
+      "id": 6,
+      "title": "Análisis de conectividad estructural con landscapemetrics",
+      "content": "Si ya tenemos la clasificación de cobertura del suelo desde Landsat, podría correrse `landscapemetrics` en R para calcular COHESION, PLADJ y MESH para cada imagen anual (2013–2025). Esto agregaría una sección de resultados sobre cambios en conectividad estructural del paisaje — potencialmente publicable como segundo artículo derivado del análisis de teledetección.",
+      "status": "unread",
+      "projectId": 1,
+      "projectIds": [1, 3],
+      "tags": ["conectividad", "paisaje", "landscapemetrics", "R"],
+      "subtasks": [],
+      "createdAt": "2026-02-22T14:30:00.000Z",
+      "updatedAt": "2026-02-22T14:30:00.000Z"
+    },
+    {
+      "id": 7,
+      "title": "Ridge plot de distribución altitudinal para el paper",
+      "content": "Un panel tipo ridgeplot (ggridges) mostrando la distribución altitudinal de cada especie en dos períodos (pre-2000 vs. post-2010) sería visualmente muy poderoso para el abstract gráfico de Functional Ecology. La revista acepta figuras hasta 180 mm de ancho. Ver snippet #4 en ResearchOS para el código base.",
+      "status": "unread",
+      "projectId": 2,
+      "projectIds": [2],
+      "tags": ["visualización", "ggplot2", "figuras", "altitud"],
+      "subtasks": [
+        { "id": "st7a", "text": "Hacer borrador con datos actuales (n=12 sp)", "done": false },
+        { "id": "st7b", "text": "Ajustar paleta según guía de estilo de la revista", "done": false }
+      ],
+      "createdAt": "2026-02-28T10:00:00.000Z",
+      "updatedAt": "2026-02-28T10:00:00.000Z"
+    },
+    {
+      "id": 8,
+      "title": "¡Bienvenido/a a ResearchOS! — Idea de ejemplo sin proyecto",
+      "content": "Esta es una **idea huérfana**: no está vinculada a ningún proyecto. Las ideas sin proyecto aparecen en la vista **Huérfanos** y en el **Inbox de Ideas**.\n\nPuedes:\n- Asignarla a un proyecto desde el Inspector (botón ✎ Editar)\n- Revisar todas las ideas sin proyecto en la vista Huérfanos\n- Usar la revisión rápida (Triage) para procesar ideas pendientes\n- Añadir subtareas con checkboxes para hacer seguimiento de pasos\n\nLa paleta de comandos (Ctrl+K) te permite buscar en todos los proyectos, ideas, snippets, reuniones y referencias a la vez.",
+      "status": "unread",
+      "projectId": null,
+      "projectIds": [],
+      "tags": ["tutorial", "bienvenida", "ResearchOS"],
+      "subtasks": [
+        { "id": "st8a", "text": "Explorar el Kanban y mover proyectos entre columnas", "done": false },
+        { "id": "st8b", "text": "Abrir el Hub de un proyecto desde el Inspector", "done": false },
+        { "id": "st8c", "text": "Probar la búsqueda global con Ctrl+K", "done": false },
+        { "id": "st8d", "text": "Revisar el heatmap de actividad en el Dashboard", "done": false },
+        { "id": "st8e", "text": "Exportar un proyecto como Markdown desde su Hub", "done": false }
+      ],
+      "createdAt": "2026-03-01T10:00:00.000Z",
+      "updatedAt": "2026-03-01T10:00:00.000Z"
+    },
+    {
+      "id": 9,
+      "title": "Evaluar uso de Zotero + BibTeX para gestión de referencias del lab",
+      "content": "Actualmente cada investigador gestiona sus referencias de forma independiente (Zotero, Mendeley, Paperpile). Estandarizar en Zotero + exportación BibTeX permitiría mantener una biblioteca compartida y aprovechar el módulo de Referencias de ResearchOS para vincular citas directamente a proyectos.",
+      "status": "reviewed",
+      "projectId": 6,
+      "projectIds": [6],
+      "tags": ["referencias", "Zotero", "BibTeX", "gestión"],
+      "subtasks": [
+        { "id": "st9a", "text": "Consultar con el equipo sobre herramientas actuales", "done": true },
+        { "id": "st9b", "text": "Crear biblioteca grupal Zotero de prueba", "done": false }
+      ],
+      "createdAt": "2025-12-20T10:00:00.000Z",
+      "updatedAt": "2026-01-08T09:00:00.000Z"
+    },
+    {
+      "id": 10,
+      "title": "Métricas de paisaje para tesis de Sebastián: MESH y PLADJ",
+      "content": "Para la tesis de conectividad de Sebastián Mora, calcular MESH (Effective Mesh Size) y PLADJ (Percentage of Like Adjacencies) con `landscapemetrics` a tres escalas espaciales (parche, clase, paisaje) para los años 2000, 2010 y 2022. Comparar entre las cuencas de estudio.",
+      "status": "unread",
+      "projectId": 7,
+      "projectIds": [7],
+      "tags": ["tesis", "Sebastián", "connectividad", "landscapemetrics"],
+      "subtasks": [
+        { "id": "st10a", "text": "Definir ventanas de análisis (extensión y resolución)", "done": false },
+        { "id": "st10b", "text": "Correr landscapemetrics para los 3 años", "done": false }
+      ],
+      "createdAt": "2026-01-30T11:00:00.000Z",
+      "updatedAt": "2026-01-30T11:00:00.000Z"
+    }
+  ],
+
+  "snippets": [
+    {
+      "id": 1,
+      "title": "Cálculo de NDVI con terra (R)",
+      "language": "R",
+      "code": "library(terra)\n\n# Cargar bandas Landsat (B4 = rojo, B5 = NIR para L8/L9)\nred <- rast(\"L8_B4.tif\")\nnir <- rast(\"L8_B5.tif\")\n\n# Calcular NDVI\nndvi <- (nir - red) / (nir + red)\nnames(ndvi) <- \"NDVI\"\n\n# Visualizar\nplot(ndvi, main = \"NDVI\", col = colorRampPalette(c(\"#d73027\",\"#fee08b\",\"#1a9850\"))(100))\n\n# Guardar resultado\nwriteRaster(ndvi, \"outputs/ndvi_output.tif\", overwrite = TRUE)\n\n# Estadísticas por parcela (shapefile/geopackage)\nparcelas <- vect(\"data/parcelas.gpkg\")\nndvi_vals <- extract(ndvi, parcelas, fun = mean, na.rm = TRUE)\nhead(ndvi_vals)\n\n# Unir con atributos de parcelas\nresult <- cbind(as.data.frame(parcelas), ndvi_vals[, -1])\nwrite.csv(result, \"outputs/ndvi_por_parcela.csv\", row.names = FALSE)",
+      "description": "Cálculo de NDVI desde bandas Landsat 8/9 con terra. Incluye visualización, exportación raster y extracción de valores por parcela.",
+      "projectId": 3,
+      "tags": ["NDVI", "Landsat", "teledetección", "terra"],
+      "collectionId": 1,
+      "createdAt": "2025-09-15T10:00:00.000Z",
+      "updatedAt": "2026-01-20T11:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "title": "Modelo lineal mixto — diversidad funcional (lme4)",
+      "language": "R",
+      "code": "library(lme4)\nlibrary(lmerTest)   # p-valores Satterthwaite\nlibrary(MuMIn)      # R² Nakagawa & Schielzeth\n\n# Modelo: FRic ~ gradiente altitudinal + precipitación\n# Efectos aleatorios: sitio y año de muestreo\nmod_full <- lmer(\n  FRic ~ altitud_std + precip_std + altitud_std:precip_std +\n    (1 | sitio) + (1 | anio),\n  data    = df_funcional,\n  REML    = TRUE,\n  control = lmerControl(optimizer = \"bobyqa\")\n)\n\n# Resumen con pruebas de hipótesis\nsummary(mod_full)\nanova(mod_full)   # Wald chi-square\n\n# Diagnósticos visuales\npar(mfrow = c(1, 2))\nplot(mod_full)           # residuos vs. valores ajustados\nqqnorm(resid(mod_full)); qqline(resid(mod_full))\n\n# Varianza explicada\nr.squaredGLMM(mod_full)  # R² marginal y condicional\n\n# Modelo nulo para LRT\nmod_null <- lmer(FRic ~ 1 + (1 | sitio) + (1 | anio),\n                 data = df_funcional, REML = FALSE)\nmod_comp <- update(mod_full, REML = FALSE)\nanova(mod_null, mod_comp)",
+      "description": "LMM para análisis de diversidad funcional en gradiente altitudinal. Incluye efectos aleatorios anidados, diagnósticos completos y R² de Nakagawa.",
+      "projectId": 2,
+      "tags": ["lme4", "modelos mixtos", "diversidad funcional", "estadística"],
+      "collectionId": 1,
+      "createdAt": "2025-04-20T14:00:00.000Z",
+      "updatedAt": "2026-01-30T09:00:00.000Z"
+    },
+    {
+      "id": 3,
+      "title": "Descarga de ocurrencias GBIF con rgbif (R)",
+      "language": "R",
+      "code": "library(rgbif)\nlibrary(dplyr)\nlibrary(CoordinateCleaner)  # detección de outliers\n\n# --- 1. Obtener clave taxonómica ---\ntaxon_key <- name_backbone(name = \"Nothofagus pumilio\",\n                           rank = \"species\")$usageKey\n\n# --- 2. Descarga asíncrona con DOI citable ---\ndl <- occ_download(\n  pred(\"taxonKey\", taxon_key),\n  pred_in(\"country\", c(\"CL\", \"AR\")),\n  pred(\"hasCoordinate\", TRUE),\n  pred(\"hasGeospatialIssue\", FALSE),\n  pred_gte(\"year\", 1950),\n  format = \"SIMPLE_CSV\"\n)\nocc_download_wait(dl)  # espera hasta que termine\n\n# --- 3. Importar y limpiar ---\ndf_raw <- occ_download_get(dl) |> occ_download_import()\n\ndf_clean <- df_raw |>\n  filter(\n    !is.na(decimalLatitude),\n    coordinateUncertaintyInMeters < 5000 | is.na(coordinateUncertaintyInMeters)\n  ) |>\n  cc_zero()   |>  # coords (0,0)\n  cc_cap()    |>  # capitales\n  cc_inst()       # instituciones\n\ncat(\"Registros originales:\", nrow(df_raw), \"\\n\")\ncat(\"Registros limpios:   \", nrow(df_clean), \"\\n\")",
+      "description": "Descarga reproducible (con DOI) de ocurrencias GBIF. Incluye filtros de calidad básicos y limpieza con CoordinateCleaner.",
+      "projectId": 4,
+      "tags": ["GBIF", "ocurrencias", "rgbif", "biodiversidad", "limpieza"],
+      "collectionId": 2,
+      "createdAt": "2025-10-05T11:00:00.000Z",
+      "updatedAt": "2026-01-22T11:00:00.000Z"
+    },
+    {
+      "id": 4,
+      "title": "Ridge plot de distribución altitudinal (ggridges)",
+      "language": "R",
+      "code": "library(ggplot2)\nlibrary(ggridges)\nlibrary(dplyr)\n\n# df_species debe tener columnas: especie, altitud, periodo\n# periodo: factor con niveles c(\"pre-2000\", \"post-2010\")\ndf_plot <- df_species |>\n  mutate(\n    periodo  = factor(periodo, levels = c(\"pre-2000\", \"post-2010\")),\n    especie  = reorder(especie, altitud, median)  # orden por mediana\n  )\n\np <- ggplot(df_plot, aes(x = altitud, y = especie, fill = periodo)) +\n  geom_density_ridges(\n    alpha          = 0.65,\n    scale          = 1.3,\n    rel_min_height = 0.01,\n    quantile_lines = TRUE,\n    quantiles      = 2        # línea de mediana\n  ) +\n  scale_fill_manual(\n    values = c(\"pre-2000\"  = \"#38bdf8\",\n               \"post-2010\" = \"#f59e0b\")\n  ) +\n  scale_x_continuous(labels = scales::comma) +\n  labs(\n    x        = \"Altitud (m.s.n.m.)\",\n    y        = NULL,\n    title    = \"Desplazamiento altitudinal por especie\",\n    subtitle = \"Comparación pre-2000 vs. post-2010 | Nothofagus spp.\",\n    fill     = \"Período\",\n    caption  = \"Línea vertical = mediana\"\n  ) +\n  theme_ridges(grid = FALSE, center_axis_labels = TRUE) +\n  theme(legend.position = \"top\")\n\nggsave(\"figures/ridgeplot_altitud.pdf\", p,\n       width = 18, height = 14, units = \"cm\", device = cairo_pdf)",
+      "description": "Ridgeplot comparando distribución altitudinal de especies entre dos períodos. Listo para publicación (exporta PDF vectorial).",
+      "projectId": 2,
+      "tags": ["ggplot2", "visualización", "altitud", "figuras", "ggridges"],
+      "collectionId": 3,
+      "createdAt": "2026-02-10T11:30:00.000Z",
+      "updatedAt": "2026-02-28T11:30:00.000Z"
+    },
+    {
+      "id": 5,
+      "title": "Análisis de tendencia Mann-Kendall con mktrend (R)",
+      "language": "R",
+      "code": "library(trend)      # mk.test, sens.slope\nlibrary(dplyr)\nlibrary(purrr)\n\n# df_ndvi: columnas 'parcela', 'anio', 'ndvi_mean'\n# Aplicar MK test a cada parcela por separado\nresultados_mk <- df_ndvi |>\n  group_by(parcela) |>\n  group_modify(~ {\n    ts_vals <- .x |> arrange(anio) |> pull(ndvi_mean)\n    mk  <- mk.test(ts_vals)\n    sen <- sens.slope(ts_vals)\n    tibble(\n      n          = length(ts_vals),\n      tau        = mk$estimates[\"tau\"],\n      p_valor    = mk$p.value,\n      tendencia  = ifelse(mk$p.value < 0.05,\n                          ifelse(sen$estimates > 0, \"Positiva\", \"Negativa\"),\n                          \"Sin tendencia\"),\n      pendiente  = as.numeric(sen$estimates)  # cambio/año (Sen's slope)\n    )\n  }) |>\n  ungroup()\n\n# Resumen\ntable(resultados_mk$tendencia)\nsummary(resultados_mk$pendiente)",
+      "description": "Prueba de tendencia temporal no paramétrica (Mann-Kendall) aplicada por parcela con pendiente de Sen. Útil para series de tiempo ambientales.",
+      "projectId": 3,
+      "tags": ["Mann-Kendall", "tendencia", "series de tiempo", "estadística"],
+      "collectionId": 1,
+      "createdAt": "2026-01-18T09:00:00.000Z",
+      "updatedAt": "2026-01-18T09:00:00.000Z"
+    }
+  ],
+
+  "references": [
+    {
+      "id": 1,
+      "title": "Fingerprints of global warming on wild animals and plants",
+      "authors": "Parmesan, C., Yohe, G.",
+      "year": 2003,
+      "journal": "Nature",
+      "volume": "421",
+      "pages": "37–42",
+      "doi": "10.1038/nature01286",
+      "notes": "Meta-análisis clásico de 1.700 sp. Documenta desplazamiento promedio de 6.1 km/década hacia los polos. **Referencia ineludible** en la introducción y discusión del grant y el paper. Ver Idea #2 sobre comparación con nuestros resultados.",
+      "projectId": 1,
+      "tags": ["meta-análisis", "cambio climático", "distribución", "referencia clave"],
+      "createdAt": "2025-04-15T10:00:00.000Z",
+      "updatedAt": "2025-04-15T10:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "title": "A global meta-analysis of the relative extent of intraspecific trait variation in plant communities",
+      "authors": "Siefert, A., Violle, C., Chalmandrier, L., Albert, C.H., Taudiere, A., Fajardo, A.",
+      "year": 2015,
+      "journal": "Ecology Letters",
+      "volume": "18",
+      "pages": "1406–1419",
+      "doi": "10.1111/ele.12508",
+      "notes": "Muestra que la variación intraespecífica de rasgos representa ~25% de la variación total en comunidades vegetales. Relevante para discutir si usamos CWM o FD con varianza intra-específica en el análisis de rasgos funcionales.",
+      "projectId": 2,
+      "tags": ["rasgos funcionales", "variación intraespecífica", "meta-análisis"],
+      "createdAt": "2025-04-10T09:00:00.000Z",
+      "updatedAt": "2025-09-15T09:00:00.000Z"
+    },
+    {
+      "id": 3,
+      "title": "Open-source machine learning for remote sensing time series analysis",
+      "authors": "Pelletier, C., Webb, G.I., Petitjean, F.",
+      "year": 2019,
+      "journal": "IEEE Transactions on Geoscience and Remote Sensing",
+      "volume": "57",
+      "pages": "6256–6270",
+      "doi": "10.1109/TGRS.2019.2905582",
+      "notes": "Método de clasificación de series de tiempo satelitales con RF y LSTM. Podría reemplazar el clasificador actual de cobertura del suelo si necesitamos mayor precisión en la separación bosque/matorral.",
+      "projectId": 3,
+      "tags": ["teledetección", "ML", "series de tiempo", "clasificación"],
+      "createdAt": "2025-10-08T11:00:00.000Z",
+      "updatedAt": "2025-10-08T11:00:00.000Z"
+    },
+    {
+      "id": 4,
+      "title": "Terrestrial and Inland Water Systems — IPCC AR5 Working Group II, Chapter 4",
+      "authors": "Settele, J., Scholes, R., Betts, R., Bunn, S., Leadley, P., Nepstad, D.",
+      "year": 2014,
+      "journal": "Climate Change 2014: Impacts, Adaptation, and Vulnerability — Cambridge University Press",
+      "volume": null,
+      "pages": "271–359",
+      "doi": null,
+      "notes": "Capítulo de referencia para el marco conceptual de impactos del cambio climático en ecosistemas terrestres e interiores. Usar en la introducción del grant FONDECYT para contextualizar la relevancia del proyecto.",
+      "projectId": 1,
+      "tags": ["IPCC", "cambio climático", "ecosistemas", "marco conceptual"],
+      "createdAt": "2025-05-10T10:00:00.000Z",
+      "updatedAt": "2025-05-10T10:00:00.000Z"
+    },
+    {
+      "id": 5,
+      "title": "landscapemetrics: An open-source R toolkit for calculating landscape metrics",
+      "authors": "Hesselbarth, M.H.K., Sciaini, M., With, K.A., Wiegand, K., Nowosad, J.",
+      "year": 2019,
+      "journal": "Ecography",
+      "volume": "42",
+      "pages": "1648–1657",
+      "doi": "10.1111/ecog.04617",
+      "notes": "Paquete R para cálculo de métricas de paisaje (FRAGSTATS-compatible). Ver ideas #6 y #10 sobre su uso para análisis de conectividad en el proyecto FONDECYT y la tesis de Mora.",
+      "projectId": 7,
+      "tags": ["landscapemetrics", "R", "paisaje", "conectividad"],
+      "createdAt": "2026-01-25T09:00:00.000Z",
+      "updatedAt": "2026-01-25T09:00:00.000Z"
+    }
+  ],
+
+  "meetings": [
+    {
+      "id": 1,
+      "title": "Reunión de avance FONDECYT — Enero 2026",
+      "date": "2026-01-28",
+      "participants": "Dra. María Castillo, Dr. Pablo Fuentes, Lic. Andrea Vega",
+      "agreements": "Se revisó el avance del primer hito del proyecto FONDECYT. El análisis de distribución está al 70% (modelación en proceso). Se acordó priorizar el pipeline satelital de Vega antes del 28 de febrero. Castillo enviará borrador del informe técnico a ANID antes del 28 de febrero. La próxima reunión de avance queda agendada para el 15 de abril.",
+      "projectId": 1,
+      "actionItems": [
+        { "id": "ai1a", "text": "Castillo: enviar borrador informe técnico a ANID (fecha límite: 28 feb)", "done": true },
+        { "id": "ai1b", "text": "Vega: completar pipeline Landsat hasta el 28 de febrero", "done": true },
+        { "id": "ai1c", "text": "Fuentes: revisar y comentar sección de métodos del paper #2", "done": false },
+        { "id": "ai1d", "text": "Castillo: gestionar carta de apoyo de Prof. McKenzie (Edimburgo)", "done": false }
+      ],
+      "tags": ["FONDECYT", "avance", "informe", "planificación"],
+      "createdAt": "2026-01-28T09:00:00.000Z",
+      "updatedAt": "2026-02-10T10:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "title": "Revisión revisores paper — Functional Ecology",
+      "date": "2026-02-14",
+      "participants": "Dra. María Castillo, Dr. Pablo Fuentes",
+      "agreements": "Se analizaron los comentarios del Editor Asociado y los dos revisores. Revisor 1 aprueba con correcciones menores (ya incorporadas). Revisor 2 solicita: (a) ampliar discusión comparando con meta-análisis europeos, especialmente Siefert et al. 2015; (b) agregar Table S1 con todos los rasgos por especie y sitio. Se dividió el trabajo: Castillo redacta discusión expandida, Fuentes prepara el supplementary. Deadline autoimpuesto: 15 de abril para enviar nueva versión.",
+      "projectId": 2,
+      "actionItems": [
+        { "id": "ai2a", "text": "Castillo: redactar discusión expandida (~1.500 palabras nuevas)", "done": false },
+        { "id": "ai2b", "text": "Fuentes: preparar Table S1 con rasgos completos (formato journal)", "done": false },
+        { "id": "ai2c", "text": "Castillo: respuesta a revisores (carta punto a punto)", "done": false },
+        { "id": "ai2d", "text": "Ambos: revisión cruzada del manuscrito revisado antes del 10 de abril", "done": false }
+      ],
+      "tags": ["paper", "revisión", "Functional Ecology", "respuesta revisores"],
+      "createdAt": "2026-02-14T14:00:00.000Z",
+      "updatedAt": "2026-02-14T14:00:00.000Z"
+    },
+    {
+      "id": 3,
+      "title": "Seminario interno: Teledetección con R — sesión práctica",
+      "date": "2026-02-25",
+      "participants": "Dra. Castillo, Dr. Fuentes, Lic. Vega, Sebastián Mora, Carla Ríos (tesista Mg.), Jorge Tapia (tesista Dr.)",
+      "agreements": "Vega presentó los conceptos básicos de procesamiento de imágenes Landsat con R (terra + rgee). El grupo acordó implementar el mismo pipeline base para todos los proyectos con componente satelital. Los scripts están en el repositorio compartido del lab (GitHub privado). Se agenda segunda sesión para el 18 de marzo, sobre clasificación de cobertura del suelo.",
+      "projectId": 3,
+      "actionItems": [
+        { "id": "ai3a", "text": "Todos: instalar paquetes `terra`, `rgee` y `landscapemetrics` antes del 18/03", "done": true },
+        { "id": "ai3b", "text": "Vega: compartir script base comentado en el repo del lab", "done": true },
+        { "id": "ai3c", "text": "Mora: adaptar el pipeline al área de estudio de su tesis", "done": false }
+      ],
+      "tags": ["seminario", "teledetección", "R", "formación", "terra"],
+      "createdAt": "2026-02-25T10:00:00.000Z",
+      "updatedAt": "2026-02-25T10:00:00.000Z"
+    }
+  ],
+
+  "submissions": [
+    {
+      "id": 1,
+      "title": "Functional trait diversity along elevation gradients in Nothofagus forests",
+      "type": "Paper",
+      "targetVenue": "Functional Ecology",
+      "status": "en_revision",
+      "projectId": 2,
+      "notes": "Enviado el 20 de enero 2026. Revisión mayor recibida el 10 de febrero. Revisor 1: aceptable con modificaciones menores. Revisor 2: revisión mayor (ampliar discusión, agregar supplementary). Deadline para reenvío: 30 de abril 2026.",
+      "deadlineAt": "2026-04-30",
+      "submittedAt": "2026-01-20",
+      "createdAt": "2026-01-20T16:00:00.000Z",
+      "updatedAt": "2026-02-10T09:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "title": "FONDECYT Regular 2026: Efectos del cambio climático en la biodiversidad andina de Chile centro-sur",
+      "type": "Grant",
+      "targetVenue": "ANID FONDECYT Regular 2026",
+      "status": "preparacion",
+      "projectId": 1,
+      "notes": "Convocatoria cierra en agosto 2026. Pendiente: completar formulario SIGES (65%), obtener cartas de apoyo institucional (McKenzie-Edimburgo, CONAF), confirmar presupuesto con administración UCT. Revisar bases actualizadas en www.anid.cl.",
+      "deadlineAt": "2026-08-15",
+      "submittedAt": null,
+      "createdAt": "2025-11-01T09:00:00.000Z",
+      "updatedAt": "2026-02-20T11:30:00.000Z"
+    },
+    {
+      "id": 3,
+      "title": "Altitudinal shifts of vascular plants in Patagonian ecosystems (1970–2025): a compilation from herbarium records",
+      "type": "Paper",
+      "targetVenue": "Global Change Biology",
+      "status": "preparacion",
+      "projectId": 1,
+      "notes": "Segundo paper derivado del proyecto FONDECYT, basado en el dataset patagónico (proyecto #4). Target: Global Change Biology (IF > 10, Q1). Borrador de outline completado. Escritura dependiente de la finalización del dataset.",
+      "deadlineAt": null,
+      "submittedAt": null,
+      "createdAt": "2026-02-01T09:00:00.000Z",
+      "updatedAt": "2026-02-01T09:00:00.000Z"
+    },
+    {
+      "id": 4,
+      "title": "Phenological responses of Araucaria araucana to warming spring temperatures along a latitudinal gradient",
+      "type": "Paper",
+      "targetVenue": "Plant Ecology",
+      "status": "aceptado",
+      "projectId": 8,
+      "notes": "PUBLICADO — Plant Ecology Vol. 224, pp. 451–468, 2025. DOI: 10.1007/s11258-025-01512-3. 14 citas en Google Scholar a la fecha.",
+      "deadlineAt": null,
+      "submittedAt": "2024-11-10",
+      "createdAt": "2024-11-10T10:00:00.000Z",
+      "updatedAt": "2025-06-05T10:00:00.000Z"
+    }
+  ],
+
+  "resources": []
+}
