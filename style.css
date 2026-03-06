@@ -334,6 +334,8 @@ body.inspector-closed {
 .badge-paper   { background: rgba(56,189,248,.12); color: var(--accent); }
 .badge-analisis{ background: rgba(167,139,250,.12); color: var(--purple); }
 .badge-dataset { background: rgba(45,212,191,.12); color: var(--teal); }
+.badge-presentacion { background: rgba(248,113,113,.10); color: #f87171; }
+.badge-proyecto     { background: rgba(148,163,184,.12); color: var(--text-2); border-color: var(--border-str); }
 .badge-prio-alta  { background: rgba(248,113,113,.12); color: var(--red); }
 .badge-prio-media { background: rgba(251,191,36,.12);  color: var(--amber); }
 .badge-prio-baja  { background: rgba(52,211,153,.12);  color: var(--green); }
@@ -483,7 +485,6 @@ body.inspector-closed {
 .kanban-card-title-text {
   border-radius: var(--radius-sm);
   padding: 1px 3px;
-  margin: -1px -3px;
   transition: box-shadow 150ms var(--ease), background 150ms var(--ease);
 }
 .kanban-card-title-text:hover {
@@ -1520,11 +1521,17 @@ body.focus-mode .pomodoro-widget { opacity: 1 !important; pointer-events: all !i
 .heatmap-cell[data-level="3"] { background: rgba(56,189,248,.75); border-color: rgba(56,189,248,.8); }
 .heatmap-cell[data-level="4"] { background: var(--accent);        border-color: var(--accent); }
 .heatmap-month-labels {
-  display: flex; gap: 3px; margin-bottom: 4px;
+  position: relative;
+  height: 16px;
+  margin-bottom: 4px;
   font-family: var(--font-mono); font-size: .6rem; color: var(--text-3);
-  padding-left: 0;
 }
-.heatmap-month-label { min-width: 52px; }   /* ~4 weeks × 13px + gaps */
+.heatmap-month-label {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+  /* Sin transform: el label empieza exactamente en el borde izquierdo de su semana */
+}
 .heatmap-legend {
   display: flex; align-items: center; gap: 4px;
   margin-top: 8px;

@@ -514,12 +514,23 @@ async function renderActivityHeatmap() {
     weeks.push(week);
   }
 
-  // Month labels (one per ~4 weeks)
+  // Month labels: detectar la primera semana de cada mes y anotar su índice exacto
+  const CELL_STRIDE = 15; // 12px celda + 3px gap
   const months = [];
+  let lastMonth = -1;
   weeks.forEach((week, wi) => {
-    const firstDay = new Date(week[0].iso + 'T12:00:00');
-    if (firstDay.getDate() <= 7 || wi === 0) {
-      months.push({ label: firstDay.toLocaleDateString('es-CL', { month: 'short' }), weekIdx: wi });
+    // Buscar el primer día NO futuro de la semana para leer su mes
+    const firstReal = week.find(c => !c.future);
+    if (!firstReal) return;
+    const d = new Date(firstReal.iso + 'T12:00:00');
+    const mo = d.getMonth();
+    // Emitir label cuando cambia el mes (o en la primera semana)
+    if (mo !== lastMonth) {
+      months.push({
+        label: d.toLocaleDateString('es-CL', { month: 'short' }),
+        left:  wi * CELL_STRIDE   // posición absoluta en px
+      });
+      lastMonth = mo;
     }
   });
 
@@ -539,7 +550,7 @@ async function renderActivityHeatmap() {
       </div>
       <div class="heatmap-scroll">
         <div class="heatmap-month-labels">
-          ${months.map(m => `<span class="heatmap-month-label" style="margin-left:${m.weekIdx > 0 ? 0 : 0}px">${m.label}</span>`).join('')}
+          ${months.map(m => `<span class="heatmap-month-label" style="left:${m.left}px">${m.label}</span>`).join('')}
         </div>
         <div class="heatmap-grid" id="heatmapGrid">
           ${weeks.map(week => `
@@ -1022,7 +1033,7 @@ async function renderProjects() {
     (f.column   === 'all' || p.columnId === +f.column)
   );
 
-  const types    = ['all','Grant','Paper','Análisis','Dataset','Presentación'];
+  const types    = ['all','Proyecto','Grant','Paper','Análisis','Dataset','Presentación'];
   const prios    = ['all','Alta','Media','Baja'];
   const hasActiveFilters = f.type !== 'all' || f.priority !== 'all' || f.column !== 'all';
 
@@ -4652,7 +4663,7 @@ const PROJECT_TEMPLATES = {
     tags: ['data', 'pipeline'],
     description: '## Descripción de datos\n- Fuente:\n- Formato:\n- Período:\n\n## Pipeline de procesamiento',
   },
-  blank: { label: '⬡ En blanco', type: 'Paper', priority: 'Media', tags: [], description: '' },
+  blank: { label: '⬡ En blanco', type: 'Proyecto', priority: 'Media', tags: [], description: '' },
 };
 
 async function showAddProjectModal(defaultColId, defaultParentId = null) {
@@ -4695,7 +4706,7 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
       <div class="form-group">
         <label class="form-label">Tipo</label>
         <select class="form-select" id="mp-type">
-          ${['Grant','Paper','Análisis','Dataset','Presentación'].map(t =>
+          ${['Proyecto','Grant','Paper','Análisis','Dataset','Presentación'].map(t =>
             `<option ${t === tpl.type ? 'selected' : ''}>${t}</option>`).join('')}
         </select>
       </div>
@@ -5621,7 +5632,7 @@ async function showEditProjectModal(p) {
       <div class="form-group">
         <label class="form-label">Tipo</label>
         <select class="form-select" id="ep-type">
-          ${['Grant','Paper','Análisis','Dataset','Presentación'].map(t => `<option ${t===p.type?'selected':''}>${t}</option>`).join('')}
+          ${['Proyecto','Grant','Paper','Análisis','Dataset','Presentación'].map(t => `<option ${t===p.type?'selected':''}>${t}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -5899,7 +5910,11 @@ function esc(str) {
 }
 
 function typeBadgeClass(type) {
-  const map = { Grant:'badge-grant', Paper:'badge-paper', Análisis:'badge-analisis', Dataset:'badge-dataset' };
+  const map = {
+    Grant:'badge-grant', Paper:'badge-paper',
+    Análisis:'badge-analisis', Dataset:'badge-dataset',
+    Presentación:'badge-presentacion', Proyecto:'badge-proyecto'
+  };
   return map[type] || 'badge-type';
 }
 
@@ -6021,7 +6036,7 @@ async function previewImportCSV(file) {
     return;
   }
 
-  const VALID_TYPES    = ['Grant','Paper','Análisis','Dataset','Presentación'];
+  const VALID_TYPES    = ['Proyecto','Grant','Paper','Análisis','Dataset','Presentación'];
   const VALID_PRIORITY = ['Alta','Media','Baja'];
 
   const toImport = rows.filter(r => r.title?.trim()).map(r => ({
