@@ -4562,14 +4562,10 @@ function prioBadgeClass(prio) {
 async function projectCompleteness(p) {
   let score = 0;
   if (p.title?.trim())       score += 20;
-  if (p.description?.trim()) score += 15;
-  if (p.deadline)            score += 15;
-  if (p.responsible?.trim()) score += 10;
-  if ((p.tags||[]).length)   score += 10;
-  const ideas    = await db.ideas.where('projectId').equals(p.id).count();
-  const snippets = await db.snippets.where('projectId').equals(p.id).count();
-  if (ideas    > 0)          score += 15;
-  if (snippets > 0)          score += 15;
+  if (p.description?.trim()) score += 20;
+  if (p.deadline)            score += 20;
+  if (p.responsible?.trim()) score += 20;
+  if ((p.tags||[]).length)   score += 20;
   return Math.min(score, 100);
 }
 
