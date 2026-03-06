@@ -2143,35 +2143,140 @@ body.presentation-mode .kanban-col { width: 300px; }
 ══════════════════════════════════════════════════════════════ */
 .hub-view { max-width: 820px; }
 
+/* ── Header: apilado vertical, sin competencia de espacio ── */
 .hub-header {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
+  flex-direction: column;
+  gap: 6px;
   margin-bottom: 16px;
-  padding-bottom: 16px;
+  padding-bottom: 14px;
   border-bottom: 1px solid var(--border);
 }
-.hub-header-left { flex: 1; min-width: 0; }
+
+/* Fila 1: badges de tipo/prioridad/flags */
+.hub-header-flags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.hub-flag {
+  font-size: .65rem; font-family: var(--font-mono);
+  padding: 2px 7px; border-radius: 99px;
+  border: 1px solid transparent;
+}
+.hub-flag-star { color: var(--amber); background: rgba(251,191,36,.1); border-color: rgba(251,191,36,.25); }
+.hub-flag-arch { color: var(--text-3); background: var(--bg-elevated); border-color: var(--border); }
+
+/* Fila 2: título */
 .hub-title {
-  font-size: 1.5rem;
+  font-size: 1.35rem;
   font-weight: 700;
   color: var(--text-1);
-  margin: 0 0 8px;
+  margin: 0;
   line-height: 1.25;
+  word-break: break-word;
 }
-.hub-meta-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
+/* Fila 3: chips de meta */
+.hub-meta-row {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+/* Tags del hub — visualmente separados de los chips de meta */
+.hub-tags-row {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  margin-top: 2px;
+}
+
 .hub-meta-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: .72rem; font-family: var(--font-mono);
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: .71rem; font-family: var(--font-mono);
   color: var(--text-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 99px;
-  padding: 2px 8px;
+  padding: 3px 9px;
+  white-space: nowrap;
 }
+.hub-meta-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%; flex-shrink: 0;
+}
+.hub-meta-icon { font-size: .75rem; }
+
+/* Fila 4: barra de acciones */
+.hub-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.hub-action-primary {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Menú "+ Agregar" */
+.hub-add-menu-wrap { position: relative; }
+.hub-add-trigger   { display: flex; align-items: center; gap: 5px; }
+.hub-add-trigger.active { background: var(--accent-d); border-color: var(--accent); }
+.hub-add-caret {
+  font-size: .65rem;
+  transition: transform 200ms var(--ease);
+  display: inline-block;
+}
+.hub-add-trigger.active .hub-add-caret { transform: rotate(180deg); }
+
+.hub-add-dropdown {
+  display: none;
+  position: absolute;
+  right: 0; top: calc(100% + 6px);
+  min-width: 160px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-str);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 400;
+  overflow: hidden;
+  animation: ddFadeIn 130ms var(--ease);
+}
+.hub-add-dropdown.open { display: block; }
+@keyframes ddFadeIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.hub-add-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 14px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
+  font-size: .82rem;
+  font-family: var(--font-body);
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms var(--ease);
+}
+.hub-add-item:last-child  { border-bottom: none; }
+.hub-add-item:hover       { background: var(--bg-hover); color: var(--accent); }
+
 .hub-activity-strip {
-  margin: 10px 0 0;
+  margin: 10px 0 10px;
   padding: 10px 14px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -2202,10 +2307,6 @@ body.presentation-mode .kanban-col { width: 300px; }
 }
 .hub-activity-text { flex: 1; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hub-activity-ts   { font-family: var(--font-mono); font-size: .62rem; color: var(--text-3); flex-shrink: 0; }
-.hub-header-actions {
-  display: flex; flex-wrap: wrap; gap: 6px;
-  flex-shrink: 0; align-items: flex-start;
-}
 
 .hub-section {
   border: 1px solid var(--border);

@@ -3575,36 +3575,82 @@ async function renderProjectHub() {
       <div class="hub-section-body" id="hubBody-${id}">${content}</div>
     </div>`;
 
+  // ── Deadline display con color de urgencia ──────────────
+  const today0 = new Date(); today0.setHours(0,0,0,0);
+  const dlDiff = p.deadline
+    ? Math.ceil((new Date(p.deadline + 'T00:00:00') - today0) / 86400000) : null;
+  const dlColor = dlDiff === null ? 'var(--text-3)'
+    : dlDiff < 0  ? 'var(--red)'
+    : dlDiff <= 7 ? 'var(--amber)'
+    : 'var(--text-2)';
+  const dlLabel = dlDiff === null ? null
+    : dlDiff < 0  ? `Vencido hace ${Math.abs(dlDiff)}d`
+    : dlDiff === 0 ? '¡Hoy!'
+    : dlDiff <= 7  ? `en ${dlDiff}d`
+    : formatDate(p.deadline);
+
   mainContent.innerHTML = `
     <div class="view hub-view">
-      <!-- Header del Hub -->
+      <!-- ── Hub Header ──────────────────────────────────── -->
       <div class="hub-header">
-        <div class="hub-header-left">
-          <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
-            <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
-            <span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority)}</span>
-            ${p.starred ? '<span style="color:var(--amber)">★</span>' : ''}
-            ${p.archived ? '<span class="badge" style="background:rgba(120,120,120,.15);color:var(--text-3)">Archivado</span>' : ''}
+
+        <!-- Fila 1: tipo + prioridad + flags -->
+        <div class="hub-header-flags">
+          <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
+          <span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority)}</span>
+          ${p.starred   ? `<span class="hub-flag hub-flag-star">★ Favorito</span>` : ''}
+          ${p.archived  ? `<span class="hub-flag hub-flag-arch">Archivado</span>` : ''}
+        </div>
+
+        <!-- Fila 2: título -->
+        <h1 class="hub-title">${esc(p.title)}</h1>
+
+        <!-- Fila 3a: chips de estado/responsable/deadline -->
+        <div class="hub-meta-row">
+          ${col ? `
+            <span class="hub-meta-chip">
+              <span class="hub-meta-dot" style="background:${col.color}"></span>
+              ${esc(col.title)}
+            </span>` : ''}
+          ${p.responsible ? `
+            <span class="hub-meta-chip">
+              <span class="hub-meta-icon">👤</span>${esc(p.responsible)}
+            </span>` : ''}
+          ${dlLabel ? `
+            <span class="hub-meta-chip" style="color:${dlColor};border-color:${dlColor === 'var(--text-2)' ? '' : dlColor}20">
+              <span class="hub-meta-icon">⏱</span>${dlLabel}
+            </span>` : ''}
+        </div>
+
+        <!-- Fila 3b: tags (solo si existen) -->
+        ${(p.tags||[]).length ? `
+        <div class="hub-tags-row">
+          ${(p.tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
+        </div>` : ''}
+
+        <!-- Fila 4: barra de acciones -->
+        <div class="hub-action-bar">
+          <!-- Acciones primarias -->
+          <div class="hub-action-primary">
+            <button class="btn btn-ghost btn-sm" id="hubEditBtn">✎ Editar</button>
+            <button class="btn btn-ghost btn-sm" id="hubExportBtn">⬇ Exportar MD</button>
           </div>
-          <h1 class="hub-title">${esc(p.title)}</h1>
-          <div class="hub-meta-row">
-            ${col ? `<span class="hub-meta-chip" style="border-color:${col.color}">
-              <span style="width:7px;height:7px;border-radius:50%;background:${col.color};display:inline-block"></span>
-              ${esc(col.title)}</span>` : ''}
-            ${p.responsible ? `<span class="hub-meta-chip">👤 ${esc(p.responsible)}</span>` : ''}
-            ${p.deadline ? `<span class="hub-meta-chip">⏱ ${formatDate(p.deadline)}</span>` : ''}
-            ${(p.tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
+
+          <!-- Menú "+ Agregar" -->
+          <div class="hub-add-menu-wrap" id="hubAddMenuWrap">
+            <button class="btn btn-primary btn-sm hub-add-trigger" id="hubAddTrigger">
+              + Agregar <span class="hub-add-caret">▾</span>
+            </button>
+            <div class="hub-add-dropdown" id="hubAddDropdown">
+              <button class="hub-add-item" id="hubAddIdeaBtn">◎ Idea</button>
+              <button class="hub-add-item" id="hubAddMeetingBtn">🗓 Reunión</button>
+              <button class="hub-add-item" id="hubAddRefBtn">📚 Referencia</button>
+              <button class="hub-add-item" id="hubAddSubBtn">📤 Submission</button>
+              <button class="hub-add-item" id="hubAddSnipBtn">⟨/⟩ Snippet</button>
+            </div>
           </div>
         </div>
-        <div class="hub-header-actions">
-          <button class="btn btn-ghost btn-sm" id="hubEditBtn">✎ Editar</button>
-          <button class="btn btn-ghost btn-sm" id="hubExportBtn">⬇ Exportar</button>
-          <button class="btn btn-ghost btn-sm" id="hubAddIdeaBtn">+ Idea</button>
-          <button class="btn btn-ghost btn-sm" id="hubAddMeetingBtn">+ Reunión</button>
-          <button class="btn btn-ghost btn-sm" id="hubAddRefBtn">+ Ref</button>
-          <button class="btn btn-ghost btn-sm" id="hubAddSubBtn">+ Submission</button>
-          <button class="btn btn-ghost btn-sm" id="hubAddSnipBtn">+ Snippet</button>
-        </div>
+
       </div>
 
       <!-- Completeness bar -->
@@ -3767,6 +3813,29 @@ async function renderProjectHub() {
       const s = await db.snippets.get(+el.dataset.inspectSnip);
       if (s) inspectSnippet(s);
     }));
+
+  // Toggle del menú "+ Agregar"
+  const addTrigger  = $('hubAddTrigger');
+  const addDropdown = $('hubAddDropdown');
+  addTrigger?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = addDropdown.classList.toggle('open');
+    addTrigger.classList.toggle('active', open);
+  });
+  document.addEventListener('click', function closeHubMenu(e) {
+    if (!$('hubAddMenuWrap')?.contains(e.target)) {
+      addDropdown?.classList.remove('open');
+      addTrigger?.classList.remove('active');
+      document.removeEventListener('click', closeHubMenu);
+    }
+  });
+  // Cerrar dropdown al elegir una opción
+  addDropdown?.querySelectorAll('.hub-add-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      addDropdown.classList.remove('open');
+      addTrigger?.classList.remove('active');
+    });
+  });
 
   // Header actions
   $('hubEditBtn').addEventListener('click', () => showEditProjectModal(p));
