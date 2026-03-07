@@ -122,8 +122,16 @@ const DeadlineReminder = {
 /** Wraps any IndexedDB write: shows saving → saved indicator. */
 async function dbWrite(fn) {
   SaveIndicator.show();
-  try { const r = await fn(); SaveIndicator.done(); return r; }
-  catch(e) { SaveIndicator.error(); throw e; }
+  try {
+    const r = await fn();
+    SaveIndicator.done();
+    GoogleSync.scheduleAutoSave();
+    return r;
+  } catch(e) {
+    SaveIndicator.error();
+    throw e;
+  }
+
 }
 
 // ── Breadcrumbs ──────────────────────────────────────────────
@@ -4649,10 +4657,11 @@ async function renderGoogleSyncSection() {
   const container = document.getElementById('googleSyncSection');
   if (!container) return;
 
-  const connected = GoogleSync.isConnected();
-  const lastSync  = await GoogleSync.getLastSync();
-  const autoRow   = await db.settings.get('google_auto_sync');
-  const lastLabel = lastSync
+  const connected       = GoogleSync.isConnected();
+  const lastSync        = await GoogleSync.getLastSync();
+  const autoInitRow     = await db.settings.get('google_auto_sync');
+  const autoChangeRow   = await db.settings.get('google_auto_save_on_change');
+  const lastLabel       = lastSync
     ? new Date(lastSync).toLocaleString('es', { dateStyle: 'short', timeStyle: 'short' })
     : 'Nunca';
 
@@ -4660,39 +4669,40 @@ async function renderGoogleSyncSection() {
     <div class="settings-row">
       <div>
         <div class="settings-row-label">Cuenta conectada</div>
-        <div class="settings-row-desc">Archivos en <code>appDataFolder</code> — invisibles para el usuario en Drive</div>
+        <div class="settings-row-desc">Archivos en <code>appDataFolder</code> — privados y gestionados por ResearchOS</div>
       </div>
       <button class="btn btn-ghost btn-sm" id="gSignOutBtn">Desconectar</button>
     </div>
+
     <div class="settings-row" style="margin-top:6px">
       <div>
         <div class="settings-row-label">Última sincronización</div>
         <div class="settings-row-desc" style="font-family:var(--font-mono)">${lastLabel}</div>
       </div>
     </div>
-    <div class="settings-row" style="margin-top:6px">
-      <div style="flex:1">
-        <div class="settings-row-label">Nombre del archivo en Drive</div>
-        <div class="settings-row-desc">Identifica el backup dentro de <code>appDataFolder</code></div>
-        <div style="display:flex;gap:8px;margin-top:6px">
-          <input class="form-input" id="gFileNameInput"
-                 value="${(await GoogleSync.loadSetting('google_drive_file_name')) || 'researchos-backup.json'}"
-                 placeholder="researchos-backup.json"
-                 style="font-family:var(--font-mono);font-size:.8rem;max-width:260px">
-          <button class="btn btn-ghost btn-sm" id="gFileNameSaveBtn">Guardar</button>
-        </div>
-      </div>
-    </div>
+
     <div class="settings-row" style="margin-top:6px">
       <div>
         <div class="settings-row-label">Auto-sync al iniciar</div>
         <div class="settings-row-desc">Sube los datos automáticamente al abrir la app</div>
       </div>
       <label class="toggle-switch">
-        <input type="checkbox" id="gAutoSyncToggle" ${autoRow?.value === 'true' ? 'checked' : ''}>
+        <input type="checkbox" id="gAutoSyncToggle" ${autoInitRow?.value === 'true' ? 'checked' : ''}>
         <span class="toggle-slider"></span>
       </label>
     </div>
+
+    <div class="settings-row" style="margin-top:6px">
+      <div>
+        <div class="settings-row-label">Auto-guardar tras cambios</div>
+        <div class="settings-row-desc">Sube a Drive 1 minuto después del último cambio realizado</div>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="gAutoSaveChangeToggle" ${autoChangeRow?.value === 'true' ? 'checked' : ''}>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+
     <div class="gsync-actions" style="margin-top:12px">
       <button class="btn btn-primary btn-sm" id="gPushBtn">☁ Subir a Drive</button>
       <button class="btn btn-ghost btn-sm"   id="gPullMergeBtn">⬇ Descargar (merge)</button>
@@ -4710,25 +4720,28 @@ async function renderGoogleSyncSection() {
     </div>
   `;
 
-  document.getElementById('gSignInBtn')?.addEventListener('click',  () => GoogleSync.signIn());
+  // ── Listeners ────────────────────────────────────────────
+  document.getElementById('gSignInBtn')?.addEventListener('click', () => GoogleSync.signIn());
+
   document.getElementById('gSignOutBtn')?.addEventListener('click', () => GoogleSync.signOut());
-  document.getElementById('gPushBtn')?.addEventListener('click',    () => GoogleSync.push());
+
+  document.getElementById('gPushBtn')?.addEventListener('click', () => GoogleSync.push());
+
   document.getElementById('gPullMergeBtn')?.addEventListener('click', () => GoogleSync.pull({ mode: 'merge' }));
+
   document.getElementById('gPullReplaceBtn')?.addEventListener('click', async () => {
     if (!confirm('⚠ ¿Reemplazar TODOS los datos locales con los de Drive? Esta acción es irreversible.')) return;
     await GoogleSync.pull({ mode: 'replace' });
   });
+
   document.getElementById('gAutoSyncToggle')?.addEventListener('change', async e => {
     await db.settings.put({ key: 'google_auto_sync', value: String(e.target.checked) });
-    showToast(e.target.checked ? 'Auto-sync activado ✓' : 'Auto-sync desactivado', 'success');
+    showToast(e.target.checked ? 'Auto-sync al iniciar activado ✓' : 'Auto-sync al iniciar desactivado', 'success');
   });
-  document.getElementById('gFileNameSaveBtn')?.addEventListener('click', async () => {
-    const val = document.getElementById('gFileNameInput')?.value.trim();
-    if (!val) return;
-    // Al cambiar el nombre, invalidar el fileId cacheado para forzar nueva búsqueda
-    await db.settings.put({ key: 'google_drive_file_name', value: val });
-    await db.settings.put({ key: 'google_drive_file_id',   value: null });
-    showToast('Nombre de archivo actualizado ✓', 'success');
+
+  document.getElementById('gAutoSaveChangeToggle')?.addEventListener('change', async e => {
+    await db.settings.put({ key: 'google_auto_save_on_change', value: String(e.target.checked) });
+    showToast(e.target.checked ? 'Auto-guardado en Drive activado ✓' : 'Auto-guardado en Drive desactivado', 'success');
   });
 }
 
@@ -6460,8 +6473,10 @@ const GoogleSync = (() => {
     if (token && expiry && Date.now() < Number(expiry)) {
       accessToken = token;
       setStatus('ok');
+      // Auto-sync al iniciar: push inmediato si está habilitado
       const autoSync = await loadSetting('google_auto_sync');
       if (autoSync === 'true') await push({ silent: true });
+      // No llamar scheduleAutoSave aquí: el timer solo debe activarse tras cambios del usuario
     }
 
     // Preparar cliente OAuth2 (no lanza popup hasta que el usuario lo pida)
@@ -6595,16 +6610,26 @@ const GoogleSync = (() => {
     }
   }
 
+  // ── Auto-save tras cambios: dispara push 60 s después del último dbWrite ──
+  let _autoSaveTimer = null;
+
+  async function scheduleAutoSave() {
+    if (!accessToken) return;
+    const enabled = await loadSetting('google_auto_save_on_change');
+    if (enabled !== 'true') return;
+    clearTimeout(_autoSaveTimer);
+    _autoSaveTimer = setTimeout(() => push({ silent: true }), 60000);
+  }
+
   return {
     init,
     signIn,
     signOut,
     push,
     pull,
-    isConnected:  () => !!accessToken,
-    getLastSync:  ()  => loadSetting('google_sync_last'),
-    loadSetting,                         // ← exponer para uso externo
-    getFileName,                         // ← exponer para uso externo
+    scheduleAutoSave,                    // ← nuevo
+    isConnected: () => !!accessToken,
+    getLastSync: ()  => loadSetting('google_sync_last'),
   };
 })();
 
