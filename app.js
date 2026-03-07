@@ -4676,7 +4676,7 @@ async function renderGoogleSyncSection() {
         <div class="settings-row-desc">Identifica el backup dentro de <code>appDataFolder</code></div>
         <div style="display:flex;gap:8px;margin-top:6px">
           <input class="form-input" id="gFileNameInput"
-                 value="${(await loadSetting('google_drive_file_name')) || 'researchos-backup.json'}"
+                 value="${(await GoogleSync.loadSetting('google_drive_file_name')) || 'researchos-backup.json'}"
                  placeholder="researchos-backup.json"
                  style="font-family:var(--font-mono);font-size:.8rem;max-width:260px">
           <button class="btn btn-ghost btn-sm" id="gFileNameSaveBtn">Guardar</button>
@@ -6601,8 +6601,10 @@ const GoogleSync = (() => {
     signOut,
     push,
     pull,
-    isConnected: () => !!accessToken,
-    getLastSync: ()  => loadSetting('google_sync_last'),
+    isConnected:  () => !!accessToken,
+    getLastSync:  ()  => loadSetting('google_sync_last'),
+    loadSetting,                         // ← exponer para uso externo
+    getFileName,                         // ← exponer para uso externo
   };
 })();
 
