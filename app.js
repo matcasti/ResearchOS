@@ -6275,17 +6275,18 @@ function _showWelcomeModal() {
         <div class="ws-row"><kbd>→ / L</kbd><span>Siguiente idea en Revisión rápida</span></div>
         <div class="ws-row"><kbd>Esc</kbd><span>Cerrar modal / inspector / paleta</span></div>
       </div>
-      <div class="welcome-section-title" style="margin-top:20px">Datos de ejemplo</div>
-      <p class="welcome-intro" style="margin-bottom:18px;">
-        Para ver las capacidades de ResearchOS, puedes <a href="researchos-tutorial.json" download="json">descargar los datos de ejemplo</a> e importarlos en "Settings & Export".
-      </p>
     </div>
-    <div class="modal-footer" style="justify-content:space-between;align-items:center">
+    <div class="modal-footer" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
       <label style="display:flex;align-items:center;gap:8px;font-size:.75rem;color:var(--text-2);cursor:pointer">
         <input type="checkbox" id="welcomeDontShow">
         No mostrar al iniciar
       </label>
-      <button class="btn btn-primary" id="welcomeStart">Comenzar →</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-ghost btn-sm" id="welcomeLoadDemo" title="Carga un lab de ecología de ejemplo con proyectos, ideas, snippets, reuniones y referencias">
+          ⬡ Cargar datos de ejemplo
+        </button>
+        <button class="btn btn-primary" id="welcomeStart">Comenzar →</button>
+      </div>
     </div>`);
 
   $('welcomeStart').addEventListener('click', () => {
@@ -6293,6 +6294,28 @@ function _showWelcomeModal() {
       localStorage.setItem('ros-welcomed', '1');
     }
     closeModal();
+  });
+
+  $('welcomeLoadDemo').addEventListener('click', async () => {
+    const btn = $('welcomeLoadDemo');
+    btn.disabled = true;
+    btn.textContent = '⏳ Cargando…';
+    try {
+      const res  = await fetch('researchos-tutorial.json');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      await mergeAllData(text);
+      if ($('welcomeDontShow')?.checked) {
+        localStorage.setItem('ros-welcomed', '1');
+      }
+      closeModal();
+      showToast('Datos de ejemplo cargados ✓ — explora el Dashboard', 'success');
+      navigate('dashboard');
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = '⬡ Cargar datos de ejemplo';
+      showToast('No se pudo cargar el archivo de ejemplo: ' + err.message, 'error');
+    }
   });
 }
 
