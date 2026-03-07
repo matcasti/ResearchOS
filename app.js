@@ -4466,6 +4466,14 @@ async function renderSettings() {
         </div>
       </div>
 
+      <!-- Google Drive Sync -->
+      <div class="settings-section">
+        <div class="settings-section-title">☁ Sincronización con Google Drive</div>
+        <div class="settings-body" id="googleSyncSection">
+          <div style="color:var(--text-3);font-size:.8rem;padding:4px 0">Cargando estado…</div>
+        </div>
+      </div>
+
       <!-- Danger zone -->
       <div class="settings-section settings-danger-zone">
         <div class="settings-section-title">⚠ Zona de peligro</div>
@@ -4514,6 +4522,8 @@ async function renderSettings() {
         </div>
       </div>
     </div>`;
+
+  renderGoogleSyncSection(); // poblar sección Google Sync
 
   $('exportJsonBtn').addEventListener('click', async () => {
     const json = await exportAllData();
@@ -4631,6 +4641,94 @@ async function renderSettings() {
     new Notification('⬡ ResearchOS — Prueba', {
       body: 'Las notificaciones de deadline funcionan correctamente.',
     });
+  });
+}
+
+// ── Renderiza (o refresca) el bloque Google Sync dentro de Settings ──
+async function renderGoogleSyncSection() {
+  const container = document.getElementById('googleSyncSection');
+  if (!container) return;
+
+  const connected = GoogleSync.isConnected();
+  const lastSync  = await GoogleSync.getLastSync();
+  const autoRow   = await db.settings.get('google_auto_sync');
+  const lastLabel = lastSync
+    ? new Date(lastSync).toLocaleString('es', { dateStyle: 'short', timeStyle: 'short' })
+    : 'Nunca';
+
+  container.innerHTML = connected ? `
+    <div class="settings-row">
+      <div>
+        <div class="settings-row-label">Cuenta conectada</div>
+        <div class="settings-row-desc">Archivos en <code>appDataFolder</code> — invisibles para el usuario en Drive</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="gSignOutBtn">Desconectar</button>
+    </div>
+    <div class="settings-row" style="margin-top:6px">
+      <div>
+        <div class="settings-row-label">Última sincronización</div>
+        <div class="settings-row-desc" style="font-family:var(--font-mono)">${lastLabel}</div>
+      </div>
+    </div>
+    <div class="settings-row" style="margin-top:6px">
+      <div style="flex:1">
+        <div class="settings-row-label">Nombre del archivo en Drive</div>
+        <div class="settings-row-desc">Identifica el backup dentro de <code>appDataFolder</code></div>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <input class="form-input" id="gFileNameInput"
+                 value="${(await loadSetting('google_drive_file_name')) || 'researchos-backup.json'}"
+                 placeholder="researchos-backup.json"
+                 style="font-family:var(--font-mono);font-size:.8rem;max-width:260px">
+          <button class="btn btn-ghost btn-sm" id="gFileNameSaveBtn">Guardar</button>
+        </div>
+      </div>
+    </div>
+    <div class="settings-row" style="margin-top:6px">
+      <div>
+        <div class="settings-row-label">Auto-sync al iniciar</div>
+        <div class="settings-row-desc">Sube los datos automáticamente al abrir la app</div>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="gAutoSyncToggle" ${autoRow?.value === 'true' ? 'checked' : ''}>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    <div class="gsync-actions" style="margin-top:12px">
+      <button class="btn btn-primary btn-sm" id="gPushBtn">☁ Subir a Drive</button>
+      <button class="btn btn-ghost btn-sm"   id="gPullMergeBtn">⬇ Descargar (merge)</button>
+      <button class="btn btn-danger btn-sm"  id="gPullReplaceBtn">⬇ Descargar (reemplazar)</button>
+    </div>
+  ` : `
+    <div class="settings-row">
+      <div>
+        <div class="settings-row-label">No conectado</div>
+        <div class="settings-row-desc">Vincula tu cuenta para sincronizar entre dispositivos</div>
+      </div>
+      <button class="btn btn-primary btn-sm gsync-connect-btn" id="gSignInBtn">
+        <span class="gsync-g-icon">G</span> Conectar Google
+      </button>
+    </div>
+  `;
+
+  document.getElementById('gSignInBtn')?.addEventListener('click',  () => GoogleSync.signIn());
+  document.getElementById('gSignOutBtn')?.addEventListener('click', () => GoogleSync.signOut());
+  document.getElementById('gPushBtn')?.addEventListener('click',    () => GoogleSync.push());
+  document.getElementById('gPullMergeBtn')?.addEventListener('click', () => GoogleSync.pull({ mode: 'merge' }));
+  document.getElementById('gPullReplaceBtn')?.addEventListener('click', async () => {
+    if (!confirm('⚠ ¿Reemplazar TODOS los datos locales con los de Drive? Esta acción es irreversible.')) return;
+    await GoogleSync.pull({ mode: 'replace' });
+  });
+  document.getElementById('gAutoSyncToggle')?.addEventListener('change', async e => {
+    await db.settings.put({ key: 'google_auto_sync', value: String(e.target.checked) });
+    showToast(e.target.checked ? 'Auto-sync activado ✓' : 'Auto-sync desactivado', 'success');
+  });
+  document.getElementById('gFileNameSaveBtn')?.addEventListener('click', async () => {
+    const val = document.getElementById('gFileNameInput')?.value.trim();
+    if (!val) return;
+    // Al cambiar el nombre, invalidar el fileId cacheado para forzar nueva búsqueda
+    await db.settings.put({ key: 'google_drive_file_name', value: val });
+    await db.settings.put({ key: 'google_drive_file_id',   value: null });
+    showToast('Nombre de archivo actualizado ✓', 'success');
   });
 }
 
@@ -6320,11 +6418,203 @@ function _showWelcomeModal() {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  GOOGLE DRIVE SYNC
+// ══════════════════════════════════════════════════════════════
+const GoogleSync = (() => {
+  const CLIENT_ID  = '257501914353-5m71aadp4u4qr8qfq9g6d2nc6upm5hod.apps.googleusercontent.com'; // ← reemplazar
+  const SCOPE      = 'https://www.googleapis.com/auth/drive.appdata';
+  const DEFAULT_FILE_NAME = 'researchos-backup.json';
+  const getFileName = async () => {
+    const stored = await loadSetting('google_drive_file_name');
+    return stored || DEFAULT_FILE_NAME;
+  };
+
+  let tokenClient  = null;
+  let accessToken  = null;
+
+  // ── Helpers: reutilizan la tabla `settings` de Dexie ──────
+  const saveSetting = (k, v) => db.settings.put({ key: k, value: v });
+  const loadSetting = async k => { const r = await db.settings.get(k); return r?.value ?? null; };
+
+  // ── Estado visual del indicador en sidebar ────────────────
+  function setStatus(state) {
+    const dot  = document.getElementById('syncDot');
+    const text = document.getElementById('saveIndicatorText');
+    const MAP  = {
+      idle:        ['',        'Local Only'    ],
+      syncing:     ['syncing', 'Sincronizando…'],
+      ok:          ['ok',      'Drive ✓'       ],
+      error:       ['error',   'Sync Error'    ],
+      disconnected:['',        'Local Only'    ],
+    };
+    const [cls, label] = MAP[state] ?? MAP.idle;
+    if (dot)  dot.className  = 'status-dot' + (cls ? ' sync-' + cls : '');
+    if (text) text.textContent = label;
+  }
+
+  // ── Inicializar: restaurar token guardado ─────────────────
+  async function init() {
+    const token  = await loadSetting('google_access_token');
+    const expiry = await loadSetting('google_token_expiry');
+
+    if (token && expiry && Date.now() < Number(expiry)) {
+      accessToken = token;
+      setStatus('ok');
+      const autoSync = await loadSetting('google_auto_sync');
+      if (autoSync === 'true') await push({ silent: true });
+    }
+
+    // Preparar cliente OAuth2 (no lanza popup hasta que el usuario lo pida)
+    if (typeof google !== 'undefined') {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPE,
+        callback: async resp => {
+          if (resp.error) {
+            setStatus('error');
+            showToast('Error de autenticación con Google', 'error');
+            return;
+          }
+          accessToken = resp.access_token;
+          await saveSetting('google_access_token', accessToken);
+          await saveSetting('google_token_expiry', String(Date.now() + (resp.expires_in - 60) * 1000));
+          setStatus('ok');
+          showToast('Cuenta de Google conectada ✓', 'success');
+          renderGoogleSyncSection(); // refrescar panel de settings si está abierto
+        }
+      });
+    }
+  }
+
+  function signIn() {
+    if (!tokenClient) { showToast('Google Identity Services no disponible', 'error'); return; }
+    tokenClient.requestAccessToken({ prompt: accessToken ? '' : 'consent' });
+  }
+
+  async function signOut() {
+    if (accessToken) google.accounts.oauth2.revoke(accessToken);
+    accessToken = null;
+    await Promise.all([
+      saveSetting('google_access_token', null),
+      saveSetting('google_token_expiry',  null),
+      saveSetting('google_drive_file_id', null),
+    ]);
+    setStatus('disconnected');
+    showToast('Sesión de Google cerrada', 'success');
+    renderGoogleSyncSection();
+  }
+
+  // ── Drive API: wrapper con manejo de token expirado ───────
+  async function driveRequest(url, options = {}) {
+    const res = await fetch(url, {
+      ...options,
+      headers: { Authorization: `Bearer ${accessToken}`, ...(options.headers || {}) },
+    });
+    if (res.status === 401) {
+      accessToken = null;
+      setStatus('disconnected');
+      throw new Error('Token expirado — reconecta tu cuenta Google');
+    }
+    return res;
+  }
+
+  async function resolveFileId() {
+    let fileId = await loadSetting('google_drive_file_id');
+    if (fileId) return fileId;
+    const fileName = await getFileName();
+    const res  = await driveRequest(
+      `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name=%27${fileName}%27&fields=files(id)`
+    );
+    const data = await res.json();
+    fileId = data.files?.[0]?.id ?? null;
+    if (fileId) await saveSetting('google_drive_file_id', fileId);
+    return fileId;
+  }
+
+  // ── Push: sube datos locales → Drive (reutiliza exportAllData) ──
+  async function push({ silent = false } = {}) {
+    if (!accessToken) { showToast('Conecta tu cuenta Google primero', 'error'); return; }
+    setStatus('syncing');
+    try {
+      const payload = await exportAllData();           // ← función existente en db.js
+      const blob    = new Blob([payload], { type: 'application/json' });
+      let   fileId  = await resolveFileId();
+
+      if (fileId) {
+        await driveRequest(
+          `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
+          { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: blob }
+        );
+      } else {
+        const fileName = await getFileName();
+        const meta = JSON.stringify({ name: fileName, parents: ['appDataFolder'] });
+        const form = new FormData();
+        form.append('metadata', new Blob([meta], { type: 'application/json' }));
+        form.append('file', blob);
+        const res  = await driveRequest(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+          { method: 'POST', body: form }
+        );
+        const newFile = await res.json();
+        await saveSetting('google_drive_file_id', newFile.id);
+      }
+
+      await saveSetting('google_sync_last', new Date().toISOString());
+      setStatus('ok');
+      if (!silent) showToast('Datos subidos a Google Drive ✓', 'success');
+    } catch (err) {
+      setStatus('error');
+      if (!silent) showToast('Error al subir: ' + err.message, 'error');
+    }
+  }
+
+  // ── Pull: descarga Drive → local (reutiliza importAllData / mergeAllData) ──
+  async function pull({ mode = 'merge' } = {}) {
+    if (!accessToken) { showToast('Conecta tu cuenta Google primero', 'error'); return; }
+    setStatus('syncing');
+    try {
+      const fileId = await resolveFileId();
+      if (!fileId) { setStatus('ok'); showToast('No hay backup en Drive todavía', 'error'); return; }
+
+      const res  = await driveRequest(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+      const text = await res.text();
+
+      if (mode === 'replace') {
+        await importAllData(text);  // ← función existente en db.js
+      } else {
+        await mergeAllData(text);   // ← función existente en db.js
+      }
+
+      await saveSetting('google_sync_last', new Date().toISOString());
+      setStatus('ok');
+      showToast(`Datos descargados de Drive (${mode}) ✓`, 'success');
+      navigate('dashboard');
+    } catch (err) {
+      setStatus('error');
+      showToast('Error al descargar: ' + err.message, 'error');
+    }
+  }
+
+  return {
+    init,
+    signIn,
+    signOut,
+    push,
+    pull,
+    isConnected: () => !!accessToken,
+    getLastSync: ()  => loadSetting('google_sync_last'),
+  };
+})();
+
+// ══════════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════════
 async function init() {
   // Seed database defaults
   await seedDefaults();
+
+  // Google Drive Sync — restaurar sesión si hay token guardado
+  await GoogleSync.init();
 
   // ── Iniciar deadline reminders ─────────────────────
   const notifEnabled = localStorage.getItem('ros-notif-enabled') === 'true';

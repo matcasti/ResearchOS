@@ -965,7 +965,7 @@ body.inspector-closed .inspector-panel { width: 0; padding: 0; overflow: hidden;
   background: var(--bg-elevated);
   border: 1px solid var(--border-str);
   border-radius: var(--radius-lg);
-  width: 480px; max-width: 90vw;
+  width: 600px; max-width: 90vw;
   max-height: 90vh;
   overflow-y: auto;
   box-shadow: var(--shadow-lg);
@@ -2760,4 +2760,45 @@ body.presentation-mode .kanban-col { width: 300px; }
 }
 .inplace-input:focus {
   box-shadow: 0 0 0 3px var(--accent-d);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   GOOGLE DRIVE SYNC
+══════════════════════════════════════════════════════════════ */
+
+/* Estado del dot en el save-indicator */
+.status-dot.sync-syncing {
+  background: var(--amber);
+  animation: pulse 1s infinite;
+}
+.status-dot.sync-ok    { background: var(--green); }
+.status-dot.sync-error { background: var(--red);   }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: .35; }
+}
+
+/* Fila de acciones push/pull */
+.gsync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Botón "Conectar Google" con la G característica */
+.gsync-connect-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.gsync-g-icon {
+  font-family: Arial, sans-serif;
+  font-weight: 700;
+  font-size: .85rem;
+  background: linear-gradient(135deg, #4285F4, #34A853, #FBBC05, #EA4335);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  line-height: 1;
 }
