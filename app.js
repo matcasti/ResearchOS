@@ -22,7 +22,13 @@ const App = {
   savedViews:       null,
   triageIdx:        0,
   triageQueue:      [],
-  _refFilterProject: 'all',
+  _refFilterProject:  'all',
+  groupBy:            'none',   // 'none'|'type'|'priority'|'column'|'responsible'|'area'
+  filterResponsible:  'all',
+  _projPage:          1,
+  _lastFilterKey:     '',
+  _searchIdx:         new Map(),
+  projViewMode:       'grid',   // 'grid' | 'list'
 };
 
 // ── DOM refs ─────────────────────────────────────────────────
@@ -126,6 +132,8 @@ async function dbWrite(fn) {
     const r = await fn();
     SaveIndicator.done();
     GoogleSync.scheduleAutoSave();
+    _buildSearchIndex().catch(() => {});
+    _renderResearchStatus().catch(() => {});
     return r;
   } catch(e) {
     SaveIndicator.error();
@@ -247,6 +255,7 @@ async function renderView(view) {
     focus:         [{label:'Dashboard', view:'dashboard'}, {label:'Focus Feed',   view:'focus'}],
     orphans:       [{label:'Dashboard', view:'dashboard'}, {label:'Huérfanos',    view:'orphans'}],
     triage:        [{label:'Dashboard', view:'dashboard'}, {label:'Ideas Inbox',  view:'ideas'}, {label:'Revisión rápida', view:'triage'}],
+    areas:         [{label:'Dashboard', view:'dashboard'}, {label:'Áreas', view:'areas'}],
   };
 
   // Render first, then inject BC at top so innerHTML overwrites don't destroy it
@@ -271,6 +280,7 @@ async function renderView(view) {
     case 'focus':        await renderFocusFeed();       break;
     case 'orphans':      await renderOrphans();         break;
     case 'triage':       await renderIdeaTriage();      break;
+    case 'areas':        await renderAreas();           break;
     default:             await renderDashboard();
   }
 
@@ -494,6 +504,9 @@ async function renderDashboard() {
 
   // Render heatmap
   await renderActivityHeatmap();
+
+  // ── Panel de alertas (zombie, urgentes, stale) ──────
+  await _renderAlertPanel(container);
 }
 
 async function renderActivityHeatmap() {
@@ -746,13 +759,21 @@ async function renderKanban() {
     if (i.projectId) unreadByProject[i.projectId] = (unreadByProject[i.projectId] || 0) + 1;
   });
 
-  const boardHTML = kanbanData.map(col => `
+  const kanbanResps = [...new Set(
+    kanbanData.flatMap(c => c.cards).map(p => p.responsible).filter(Boolean)
+  )].sort();
+
+  const boardHTML = kanbanData.map(col => {
+    const visibleCards = col.cards.filter(p =>
+      App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible
+    );
+    return `
     <div class="kanban-col" data-col-id="${col.id}" id="col-${col.id}">
       <div class="kanban-col-header">
         <span class="kanban-col-dot" style="background:${col.color}"></span>
         <span class="kanban-col-title">${esc(col.title)}</span>
-        <span class="kanban-col-count ${col.wip && col.cards.length > col.wip ? 'kanban-wip-exceeded' : ''}">
-          ${col.cards.length}${col.wip ? `<span class="kanban-wip-badge">/${col.wip}</span>` : ''}
+        <span class="kanban-col-count ${col.wip && visibleCards.length > col.wip ? 'kanban-wip-exceeded' : ''}">
+          ${visibleCards.length}${col.wip ? `<span class="kanban-wip-badge">/${col.wip}</span>` : ''}
         </span>
       </div>
       <div class="kanban-cards" id="cards-${col.id}"
@@ -760,11 +781,11 @@ async function renderKanban() {
            ondragover="kanbanDragOver(event)"
            ondragleave="kanbanDragLeave(event)"
            ondrop="kanbanDrop(event)">
-        ${col.cards.map(p => kanbanCardHTML(p, unreadByProject[p.id] || 0)).join('')}
+        ${visibleCards.map(p => kanbanCardHTML(p, unreadByProject[p.id] || 0)).join('')}
       </div>
       <button class="kanban-add-btn" data-add-col="${col.id}">+ Add card</button>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 
   mainContent.innerHTML = `
     <div class="kanban-view-header">
@@ -778,9 +799,20 @@ async function renderKanban() {
         <button class="btn btn-primary" id="kanbanAddProject">+ Nuevo Proyecto</button>
       </div>
     </div>
+    ${kanbanResps.length ? `
+    <div class="kanban-resp-bar">
+      <button class="resp-chip ${App.filterResponsible==='all'?'active':''}" data-kfilt-resp="all">Todos</button>
+      ${kanbanResps.map(r => `<button class="resp-chip ${App.filterResponsible===r?'active':''}" data-kfilt-resp="${esc(r)}">${esc(r)}</button>`).join('')}
+    </div>` : ''}
     <div class="kanban-board">${boardHTML}</div>`;
 
   $('kanbanAddProject').addEventListener('click', showAddProjectModal);
+  mainContent.querySelectorAll('[data-kfilt-resp]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      App.filterResponsible = btn.dataset.kfiltResp;
+      renderKanban();
+    });
+  });
   $('kanbanManageCols')?.addEventListener('click', showManageColumnsModal);
 
   $('kanbanPresBtn').addEventListener('click', () => {
@@ -1038,17 +1070,20 @@ async function renderProjects() {
   let projects = allProjects.filter(p =>
     (f.type     === 'all' || p.type     === f.type) &&
     (f.priority === 'all' || p.priority === f.priority) &&
-    (f.column   === 'all' || p.columnId === +f.column)
+    (f.column   === 'all' || p.columnId === +f.column) &&
+    (App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible)
   );
 
-  const types    = ['all','Proyecto','Grant','Paper','Análisis','Dataset','Presentación'];
-  const prios    = ['all','Alta','Media','Baja'];
-  const hasActiveFilters = f.type !== 'all' || f.priority !== 'all' || f.column !== 'all';
+  const types        = ['all','Proyecto','Grant','Paper','Análisis','Dataset','Presentación'];
+  const prios        = ['all','Alta','Media','Baja'];
+  const responsables = [...new Set(allProjects.map(p => p.responsible).filter(Boolean))].sort();
+  const hasActiveFilters = f.type !== 'all' || f.priority !== 'all' || f.column !== 'all' || App.filterResponsible !== 'all';
 
   const activePills = [];
-  if (f.type     !== 'all') activePills.push({ key:'type',     label:`Tipo: ${f.type}` });
-  if (f.priority !== 'all') activePills.push({ key:'priority', label:`Prioridad: ${f.priority}` });
-  if (f.column   !== 'all') activePills.push({ key:'column',   label:`Columna: ${colMap[+f.column]?.title || f.column}` });
+  if (f.type             !== 'all') activePills.push({ key:'type',        label:`Tipo: ${f.type}` });
+  if (f.priority         !== 'all') activePills.push({ key:'priority',    label:`Prioridad: ${f.priority}` });
+  if (f.column           !== 'all') activePills.push({ key:'column',      label:`Columna: ${colMap[+f.column]?.title || f.column}` });
+  if (App.filterResponsible !== 'all') activePills.push({ key:'responsible', label:`Responsable: ${App.filterResponsible}` });
 
   mainContent.insertAdjacentHTML('beforeend', `
     <div class="view">
@@ -1071,7 +1106,13 @@ async function renderProjects() {
               </button>`).join('')}
           </div>`;
         })()}
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <div class="view-toggle-group">
+            <button class="view-toggle-btn ${App.projViewMode==='grid'?'active':''}"
+                    id="viewModeGrid" title="Vista cuadrícula">⊞</button>
+            <button class="view-toggle-btn ${App.projViewMode==='list'?'active':''}"
+                    id="viewModeList" title="Vista lista / tabla">☰</button>
+          </div>
           <button class="btn btn-ghost" id="bulkToggleBtn"
             style="color:${App.bulkMode ? 'var(--accent)' : 'var(--text-2)'}">
             ${App.bulkMode ? '✕ Cancelar selección' : '⊞ Seleccionar'}
@@ -1101,6 +1142,26 @@ async function renderProjects() {
             ${cols.map(c => `<button class="filter-chip ${f.column==c.id?'active':''}" data-fcol="${c.id}">${esc(c.title)}</button>`).join('')}
           </div>
         </div>
+        <div class="cross-filter-group">
+          <div class="cross-filter-label">Responsable</div>
+          <div class="cross-filter-chips">
+            <button class="filter-chip ${App.filterResponsible==='all'?'active':''}" data-fresp="all">Todos</button>
+            ${responsables.map(r => `<button class="filter-chip ${App.filterResponsible===r?'active':''}" data-fresp="${esc(r)}">${esc(r)}</button>`).join('')}
+          </div>
+        </div>
+        <div class="cross-filter-group">
+          <div class="cross-filter-label">Agrupar por</div>
+          <div class="cross-filter-chips">
+            <select class="form-select" id="groupBySelect" style="font-size:.73rem;padding:4px 10px;height:auto">
+              <option value="none"        ${App.groupBy==='none'        ?'selected':''}>Sin agrupación</option>
+              <option value="type"        ${App.groupBy==='type'        ?'selected':''}>Tipo</option>
+              <option value="priority"    ${App.groupBy==='priority'    ?'selected':''}>Prioridad</option>
+              <option value="column"      ${App.groupBy==='column'      ?'selected':''}>Columna</option>
+              <option value="responsible" ${App.groupBy==='responsible' ?'selected':''}>Responsable</option>
+              <option value="area"        ${App.groupBy==='area'        ?'selected':''}>Área</option>
+            </select>
+          </div>
+        </div>
         ${hasActiveFilters ? `<button class="btn btn-ghost btn-sm" id="clearFiltersBtn" style="align-self:flex-end">✕ Limpiar filtros</button>` : ''}
       </div>
 
@@ -1108,14 +1169,16 @@ async function renderProjects() {
         ${activePills.map(p => `<span class="active-filter-pill" data-clear-filter="${p.key}">${esc(p.label)} ✕</span>`).join('')}
       </div>` : ''}
 
-      <div class="projects-grid" id="projectsGrid">
-        <div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text-3);font-size:.8rem">
+      <div id="projectsContainer">
+        <div style="text-align:center;padding:20px;color:var(--text-3);font-size:.8rem">
           Calculando métricas…
         </div>
       </div>
     </div>`);
 
   $('projAddBtn').addEventListener('click', showAddProjectModal);
+  $('viewModeGrid')?.addEventListener('click', () => { App.projViewMode = 'grid'; renderView('projects'); });
+  $('viewModeList')?.addEventListener('click', () => { App.projViewMode = 'list'; renderView('projects'); });
   $('saveViewBtn')?.addEventListener('click', () => {
     const name = prompt('Nombre para esta vista (p.ej. "Papers Alta Prioridad"):');
     if (!name?.trim()) return;
@@ -1140,6 +1203,9 @@ async function renderProjects() {
   });
   $('clearFiltersBtn')?.addEventListener('click', () => {
     App.filters = { type:'all', priority:'all', column:'all' };
+    App.filterResponsible = 'all';
+    App.groupBy = 'none';
+    App._projPage = 1;
     renderView('projects');
   });
   mainContent.querySelectorAll('[data-ftype]').forEach(btn => {
@@ -1153,31 +1219,185 @@ async function renderProjects() {
   });
   mainContent.querySelectorAll('[data-clear-filter]').forEach(pill => {
     pill.addEventListener('click', () => {
-      App.filters[pill.dataset.clearFilter] = 'all';
+      if (pill.dataset.clearFilter === 'responsible') App.filterResponsible = 'all';
+      else App.filters[pill.dataset.clearFilter] = 'all';
+      App._projPage = 1;
       renderView('projects');
     });
   });
 
+  // ── Responsable + Agrupación ───────────────────────────
+  mainContent.querySelectorAll('[data-fresp]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      App.filterResponsible = btn.dataset.fresp; App._projPage = 1; renderView('projects');
+    });
+  });
+  $('groupBySelect')?.addEventListener('change', e => {
+    App.groupBy = e.target.value; App._projPage = 1; renderView('projects');
+  });
+
+  // ── Panel de alertas ────────────────────────────────
+  _renderAlertPanel(mainContent.querySelector('.view')).catch(() => {});
+
   // Async: compute completeness for each card then render
   (async () => {
-    const grid = $('projectsGrid');
-    if (!grid) return;
+    const container = $('projectsContainer');
+    if (!container) return;
+    // Para bulk mode seguimos necesitando un ref al grid
+    const grid = container;
     if (!projects.length) {
       grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
         <span class="empty-state-icon">◉</span>
-        <h3>Sin proyectos</h3><p>Crea tu primer proyecto</p></div>`;
+        <h3>Sin proyectos</h3>
+        <p>Prueba cambiando los filtros activos</p></div>`;
       return;
     }
-    const cards = await Promise.all(
-      projects.map(async p => {
-        const pct = await projectCompleteness(p);
-        return projectCardHTML(p, colMap[p.columnId], pct);
-      })
-    );
-    grid.innerHTML = cards.join('');
-    grid.querySelectorAll('[data-inspect-project]').forEach(el => {
+
+    // ── Datos auxiliares: unread, áreas, hijos (rollup) ───
+    const [unreadIdeas, areas] = await Promise.all([
+      db.ideas.where('status').equals('unread').toArray(),
+      _getAreas()
+    ]);
+    const areaMap   = Object.fromEntries(areas.map(a => [a.id, a]));
+    const unreadMap = {};
+    unreadIdeas.forEach(i => { if (i.projectId) unreadMap[i.projectId] = (unreadMap[i.projectId]||0)+1; });
+    const allActive = await db.projects.filter(p => !p.archived).toArray();
+    const childMap  = {};
+    allActive.filter(p => p.parentId).forEach(p => {
+      if (!childMap[p.parentId]) childMap[p.parentId] = [];
+      childMap[p.parentId].push(p);
+    });
+
+    const nowMs      = Date.now();
+    const isZombie   = p => !!p.updatedAt && (nowMs - new Date(p.updatedAt)) > 30 * 86400000;
+    const getRollup  = pid => {
+      const ch = childMap[pid] || [];
+      if (!ch.length) return null;
+      const unread   = ch.reduce((s, c) => s + (unreadMap[c.id]||0), 0);
+      const nearest  = ch.filter(c => c.deadline).map(c => c.deadline).sort()[0] || null;
+      return { count: ch.length, unread, nearest };
+    };
+    const getGroupKey = p => {
+      if (App.groupBy === 'type')        return p.type        || 'Sin tipo';
+      if (App.groupBy === 'priority')    return p.priority    || 'Sin prioridad';
+      if (App.groupBy === 'column')      return colMap[p.columnId]?.title || 'Sin columna';
+      if (App.groupBy === 'responsible') return p.responsible || 'Sin responsable';
+      if (App.groupBy === 'area')        return areaMap[p.areaId]?.name   || 'Sin área';
+      return 'all';
+    };
+
+    // ── Paginación ─────────────────────────────────────────
+    const PAGE_SIZE  = 25;
+    const filterKey  = JSON.stringify([App.filters, App.filterResponsible, App.groupBy]);
+    if (App._lastFilterKey !== filterKey) { App._projPage = 1; App._lastFilterKey = filterKey; }
+    const totalFiltered = projects.length;
+    const visible       = projects.slice(0, App._projPage * PAGE_SIZE);
+
+    const renderCard = async p => {
+      const pct    = await projectCompleteness(p);
+      const zombie = isZombie(p);
+      const area   = p.areaId ? areaMap[p.areaId] : null;
+      const rollup = getRollup(p.id);
+      return projectCardHTML(p, colMap[p.columnId], pct, zombie, area, rollup);
+    };
+
+    if (App.projViewMode === 'list') {
+      // ── VISTA TABLA ──────────────────────────────────────
+      const rows = await Promise.all(visible.map(async p => {
+        const pct     = await projectCompleteness(p);
+        const zombie  = isZombie(p);
+        const area    = p.areaId ? areaMap[p.areaId] : null;
+        const rollup  = getRollup(p.id);
+        const col     = colMap[p.columnId];
+        const today   = new Date(); today.setHours(0,0,0,0);
+        const daysLeft = p.deadline
+          ? Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000) : null;
+        const dlColor  = daysLeft === null ? 'var(--text-3)'
+          : daysLeft < 0 ? 'var(--red)' : daysLeft <= 7 ? 'var(--amber)' : 'var(--text-2)';
+        return `
+          <tr class="proj-table-row ${zombie?'proj-table-zombie':''}"
+              data-inspect-project="${p.id}">
+            <td class="ptd ptd-title">
+              ${p.starred ? '<span style="color:var(--amber);margin-right:4px">★</span>' : ''}
+              ${esc(p.title)}
+              ${rollup ? `<span class="rollup-badge" style="vertical-align:middle;margin-left:4px">⊕${rollup.count}</span>` : ''}
+              ${zombie ? `<span class="zombie-badge" style="vertical-align:middle;margin-left:4px">zombie</span>` : ''}
+            </td>
+            <td class="ptd"><span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span></td>
+            <td class="ptd"><span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority||'—')}</span></td>
+            <td class="ptd" style="color:var(--text-2);font-size:.74rem">${esc(col?.title||'—')}</td>
+            <td class="ptd" style="color:var(--text-2);font-size:.74rem">${esc(p.responsible||'—')}</td>
+            ${area
+              ? `<td class="ptd"><span class="area-chip" style="border-color:${area.color};color:${area.color}">⊡ ${esc(area.name)}</span></td>`
+              : `<td class="ptd" style="color:var(--text-3);font-size:.72rem">—</td>`}
+            <td class="ptd" style="color:${dlColor};font-family:var(--font-mono);font-size:.72rem">
+              ${p.deadline ? formatDate(p.deadline) : '—'}
+              ${daysLeft !== null ? `<span style="font-size:.62rem">(${daysLeft < 0 ? 'vencido' : daysLeft+'d'})</span>` : ''}
+            </td>
+            <td class="ptd">
+              <div class="ptd-pct-bar">
+                <div style="width:${pct}%;height:100%;background:${pct>=80?'var(--green)':pct>=50?'var(--amber)':'var(--red)'};border-radius:99px"></div>
+              </div>
+              <span style="font-size:.6rem;font-family:var(--font-mono);color:var(--text-3)">${pct}%</span>
+            </td>
+          </tr>`;
+      }));
+      container.innerHTML = `
+        <table class="proj-table">
+          <thead>
+            <tr>
+              <th class="pth">Título</th>
+              <th class="pth">Tipo</th>
+              <th class="pth">Prioridad</th>
+              <th class="pth">Columna</th>
+              <th class="pth">Responsable</th>
+              <th class="pth">Área</th>
+              <th class="pth">Deadline</th>
+              <th class="pth">Completitud</th>
+            </tr>
+          </thead>
+          <tbody>${rows.join('')}</tbody>
+        </table>`;
+    } else if (App.groupBy === 'none') {
+      const cards = await Promise.all(visible.map(renderCard));
+      container.className = 'projects-grid';
+      container.innerHTML = cards.join('');
+    } else {
+      container.className = '';
+      const groups = new Map();
+      for (const p of visible) {
+        const key = getGroupKey(p);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(p);
+      }
+      const sections = [];
+      for (const [key, grp] of groups) {
+        const cards = await Promise.all(grp.map(renderCard));
+        sections.push(`
+          <div class="proj-group">
+            <div class="proj-group-header">
+              <span>${esc(key)}</span>
+              <span class="proj-group-count">${grp.length}</span>
+            </div>
+            <div class="proj-group-body">${cards.join('')}</div>
+          </div>`);
+      }
+      container.innerHTML = sections.join('');
+    }
+
+    // ── "Cargar más" ──────────────────────────────────────
+    if (totalFiltered > App._projPage * PAGE_SIZE) {
+      container.insertAdjacentHTML('beforeend', `
+        <div style="grid-column:1/-1;text-align:center;padding:12px 0">
+          <button class="btn btn-ghost" id="loadMoreProj">
+            ▼ Cargar más · ${totalFiltered - App._projPage * PAGE_SIZE} restante(s)
+          </button>
+        </div>`);
+      $('loadMoreProj')?.addEventListener('click', () => { App._projPage++; renderView('projects'); });
+    }
+    container.querySelectorAll('[data-inspect-project]').forEach(el => {
       el.addEventListener('click', (e) => {
-        if (App.bulkMode) return; // En modo selección, no abrir inspector
+        if (App.bulkMode) return;
         inspectProject(+el.dataset.inspectProject);
       });
     });
@@ -1249,10 +1469,10 @@ async function renderProjects() {
       };
 
       // Observar cuando el grid async se puebla
-      const grid = $('projectsGrid');
-      if (grid) {
+      const gcont = $('projectsContainer');
+      if (gcont) {
         const mo = new MutationObserver(patchCards);
-        mo.observe(grid, { childList: true });
+        mo.observe(gcont, { childList: true, subtree: true });
         patchCards();
       }
 
@@ -1333,7 +1553,7 @@ async function renderProjects() {
   })();
 }
 
-function projectCardHTML(p, col, completeness = null) {
+function projectCardHTML(p, col, completeness = null, zombie = false, area = null, rollup = null) {
   const tags   = (p.tags || []).slice(0,4).map(t => `<span class="tag">${esc(t)}</span>`).join('');
   const starEl = p.starred
     ? `<span title="Favorito" style="color:var(--amber);margin-right:4px">★</span>` : '';
@@ -1341,6 +1561,12 @@ function projectCardHTML(p, col, completeness = null) {
     ? `<span class="badge" style="background:rgba(120,120,120,.15);color:var(--text-3)">Archivado</span>` : '';
   return `
     <div class="card clickable" data-inspect-project="${p.id}">
+      ${zombie ? `<span class="zombie-badge" title="Sin actividad >30 días">⊘ zombie</span>` : ''}
+      ${area   ? `<span class="area-chip" style="border-color:${area.color};color:${area.color}"
+                        title="Área: ${esc(area.name)}">⊡ ${esc(area.name)}</span>` : ''}
+      ${rollup ? `<span class="rollup-badge" title="${rollup.count} subproyecto(s)">
+                    ⊕ ${rollup.count} sub${rollup.unread ? ` · ${rollup.unread} ◎` : ''}${rollup.nearest ? ` · ⏱ ${formatDate(rollup.nearest)}` : ''}
+                  </span>` : ''}
       ${p.parentId ? `<div class="project-card-parent-label">↳ subproyecto</div>` : ''}
       <div class="project-card-header">
         <div class="project-card-title">${starEl}${esc(p.title)}</div>
@@ -2026,6 +2252,15 @@ async function renderTimeline() {
   const allWithDL = projects.filter(p => p.deadline)
     .sort((a,b) => new Date(a.deadline) - new Date(b.deadline));
 
+  // ── Ideas con deadline ─────────────────────────────────
+  const allIdeasWithDL = await db.ideas.filter(i => !!i.deadline).toArray();
+  const ideasByProject = {};
+  allIdeasWithDL.forEach(i => {
+    const key = i.projectId || '_orphan';
+    if (!ideasByProject[key]) ideasByProject[key] = [];
+    ideasByProject[key].push(i);
+  });
+
   const PRIO_COLORS = { Alta:'var(--red)', Media:'var(--amber)', Baja:'var(--green)' };
   const TYPE_COLORS = { Grant:'var(--amber)', Paper:'var(--accent)', 'Análisis':'var(--purple)', Dataset:'var(--teal)' };
 
@@ -2166,7 +2401,32 @@ async function renderTimeline() {
             </div>
           </div>
           ${visible.map(p => {
-            const isOverdue = new Date(p.deadline + 'T12:00:00') < today;
+            const isOverdue  = new Date(p.deadline + 'T12:00:00') < today;
+            // Ideas de este proyecto en la ventana visible
+            const projIdeas  = (ideasByProject[p.id] || []).filter(i => {
+              const d = new Date(i.deadline + 'T12:00:00');
+              return (showOverdue || d >= today) && d >= start && d <= end;
+            });
+            const ideaRows   = projIdeas.map(i => {
+              const iD = new Date(i.deadline + 'T12:00:00');
+              const ic = iD < today ? 'var(--red)'
+                       : (iD - today) < 7*86400000 ? 'var(--amber)' : 'var(--purple)';
+              return `
+                <div class="timeline-row timeline-idea-subrow">
+                  <div class="timeline-row-label timeline-idea-label" title="${esc(i.title)}">
+                    ◎ ${esc(i.title)}
+                  </div>
+                  <div class="timeline-track">
+                    <div class="timeline-today-line" style="left:${todayX}"></div>
+                    <div class="timeline-deadline-dot"
+                         style="left:${toX(i.deadline)};background:${ic};width:8px;height:8px"
+                         title="${esc(i.title)} — ${formatDate(i.deadline)}"></div>
+                    <span class="timeline-deadline-label" style="left:${toX(i.deadline)}">
+                      ${formatDate(i.deadline)}
+                    </span>
+                  </div>
+                </div>`;
+            }).join('');
             return `
               <div class="timeline-row ${isOverdue ? 'tl-row-overdue' : ''}">
                 <div class="timeline-row-label" data-inspect-project="${p.id}" title="${esc(p.title)}">
@@ -2186,8 +2446,45 @@ async function renderTimeline() {
                     ${formatDate(p.deadline)}
                   </span>
                 </div>
-              </div>`;
+              </div>
+              ${ideaRows}`;
           }).join('')}
+          ${(() => {
+            // Ideas huérfanas (sin proyecto o cuyo proyecto no tiene deadline)
+            const orphans = (ideasByProject['_orphan'] || []).filter(i => {
+              const d = new Date(i.deadline + 'T12:00:00');
+              return (showOverdue || d >= today) && d >= start && d <= end;
+            });
+            if (!orphans.length) return '';
+            return `
+              <div class="timeline-header-row"
+                   style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px">
+                <div style="font-family:var(--font-mono);font-size:.67rem;color:var(--text-3)">
+                  ◎ Ideas sin proyecto asociado
+                </div>
+                <div></div>
+              </div>
+              ${orphans.map(i => {
+                const iD = new Date(i.deadline + 'T12:00:00');
+                const ic = iD < today ? 'var(--red)'
+                         : (iD - today) < 7*86400000 ? 'var(--amber)' : 'var(--purple)';
+                return `
+                  <div class="timeline-row timeline-idea-subrow">
+                    <div class="timeline-row-label timeline-idea-label" title="${esc(i.title)}">
+                      ◎ ${esc(i.title)}
+                    </div>
+                    <div class="timeline-track">
+                      <div class="timeline-today-line" style="left:${todayX}"></div>
+                      <div class="timeline-deadline-dot"
+                           style="left:${toX(i.deadline)};background:${ic};width:8px;height:8px"
+                           title="${esc(i.title)} — ${formatDate(i.deadline)}"></div>
+                      <span class="timeline-deadline-label" style="left:${toX(i.deadline)}">
+                        ${formatDate(i.deadline)}
+                      </span>
+                    </div>
+                  </div>`;
+              }).join('')}`;
+          })()}
         </div>
       </div>`;
 
@@ -2549,6 +2846,41 @@ async function renderSubmissions() {
     </div>`;
 
   $('addSubmissionBtn').addEventListener('click', showAddSubmissionModal);
+
+  // ── Papers sin submission: visibilidad cruzada ──────────
+  const paperProjects = projects.filter(p =>
+    p.type === 'Paper' && !p.archived &&
+    !subs.some(s => s.projectId === p.id)
+  );
+  if (paperProjects.length) {
+    const pendingSection = document.createElement('div');
+    pendingSection.innerHTML = `
+      <div class="inspector-related-title" style="margin-top:16px;display:flex;align-items:center;justify-content:space-between">
+        <span>◉ Papers sin submission registrada (${paperProjects.length})</span>
+      </div>
+      <div class="sub-list">
+        ${paperProjects.map(p => `
+          <div class="sub-card sub-card-paper-pending" style="opacity:.8">
+            <div class="sub-card-top">
+              <div class="sub-card-title">◉ ${esc(p.title)}</div>
+              <span class="badge" style="background:var(--bg-elevated);color:var(--text-3)">Sin envío</span>
+            </div>
+            <div class="sub-card-meta">
+              ${p.deadline ? `<span style="font-size:.72rem;font-family:var(--font-mono);color:var(--text-3)">⏱ ${formatDate(p.deadline)}</span>` : ''}
+              <button class="btn btn-ghost btn-sm" data-create-sub-for="${p.id}"
+                      style="font-size:.68rem;margin-left:auto">+ Crear submission</button>
+            </div>
+          </div>`).join('')}
+      </div>`;
+    mainContent.querySelector('.view').appendChild(pendingSection);
+
+    pendingSection.querySelectorAll('[data-create-sub-for]').forEach(btn => {
+      const proj = paperProjects.find(p => p.id === +btn.dataset.createSubFor);
+      btn.addEventListener('click', () =>
+        showAddSubmissionModal(proj?.deadline || null, proj?.id || null));
+    });
+  }
+
   mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
     el.addEventListener('click', (e) => {
       if (e.target.closest('[data-inspect-project]')) return;
@@ -4862,6 +5194,14 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
             .map(p => `<option value="${p.id}" ${p.id === defaultParentId ? 'selected' : ''}>${esc(p.title)}</option>`).join('')}
         </select>
       </div>
+      <div class="form-group">
+        <label class="form-label">Área de investigación</label>
+        <select class="form-select" id="mp-area">
+          <option value="">— Sin área —</option>
+          ${(await _getAreas()).map(a =>
+            `<option value="${a.id}">${esc(a.name)}</option>`).join('')}
+        </select>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" id="mpCancel">Cancelar</button>
@@ -4885,6 +5225,7 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
       description: $('mp-desc').value.trim(),
       tags:        $('mp-tags').value.split(',').map(s => s.trim()).filter(Boolean),
       parentId:    +$('mp-parent').value || null,
+      areaId:      +$('mp-area').value   || null,
       status:      'active',
       archived:    false,
       starred:     false,
@@ -4952,6 +5293,10 @@ async function showAddIdeaModal() {
           ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
         </select>
       </div>
+      <div class="form-group">
+        <label class="form-label">Deadline (opcional)</label>
+        <input type="date" class="form-input" id="mi-deadline">
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" id="miCancel">Cancelar</button>
@@ -4968,6 +5313,7 @@ async function showAddIdeaModal() {
       title, content: $('mi-content').value.trim(),
       status: 'unread',
       projectId: +$('mi-project').value || null,
+      deadline:  $('mi-deadline').value  || null,
       tags: [], subtasks: [],
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
     }));
@@ -5004,6 +5350,10 @@ async function showEditIdeaModal(idea) {
         <input class="form-input" id="ei-tags" value="${(idea.tags || []).join(', ')}">
       </div>
       <div class="form-group">
+        <label class="form-label">Deadline (opcional)</label>
+        <input type="date" class="form-input" id="ei-deadline" value="${idea.deadline || ''}">
+      </div>
+      <div class="form-group">
         <label class="form-label">Estado</label>
         <select class="form-select" id="ei-status">
           <option value="unread"   ${idea.status === 'unread'   ? 'selected' : ''}>Sin revisar</option>
@@ -5024,6 +5374,7 @@ async function showEditIdeaModal(idea) {
       title,
       content:   $('ei-content').value.trim(),
       projectId: +$('ei-project').value || null,
+      deadline:  $('ei-deadline').value || null,
       tags:      $('ei-tags').value.split(',').map(s => s.trim()).filter(Boolean),
       status:    $('ei-status').value,
       updatedAt: new Date().toISOString()
@@ -5231,6 +5582,20 @@ async function inspectProject(id) {
           <span class="inspector-meta-key">Estado</span>
           <span class="inspector-meta-val" style="color:var(--text-1)">${esc(col?.title ?? '—')}</span>
         </div>
+        ${await (async () => {
+          if (!p.areaId) return '';
+          const areas = await _getAreas();
+          const area  = areas.find(a => a.id === p.areaId);
+          if (!area) return '';
+          return `<div class="inspector-meta-row">
+            <span class="inspector-meta-key">Área</span>
+            <span class="inspector-meta-val">
+              <span class="area-chip" style="border-color:${area.color};color:${area.color}">
+                ⊡ ${esc(area.name)}
+              </span>
+            </span>
+          </div>`;
+        })()}
         <div class="inspector-meta-row">
           <span class="inspector-meta-key">Creado</span>
           <span class="inspector-meta-val">${relativeDate(p.createdAt)}</span>
@@ -5312,12 +5677,33 @@ async function inspectProject(id) {
         const refs  = await getReferences(p.id);
         const meets = await getMeetings(p.id);
         let html = '';
-        if (subs.length) html += `
-          <div class="inspector-related-title">Submissions (${subs.length})</div>
-          ${subs.slice(0,3).map(s => `
-            <div class="inspector-related-item" data-inspect-submission="${s.id}" style="cursor:pointer">
-              📤 ${esc(s.title)} ${subStatusBadge(s.status)}
-            </div>`).join('')}`;
+        if (p.type === 'Paper' || subs.length) {
+          html += `<div class="inspector-related-title" style="display:flex;align-items:center;justify-content:space-between">
+            <span>📤 Tracking de Submission${subs.length > 1 ? ` (${subs.length})` : ''}</span>
+            <button class="btn btn-ghost btn-sm" id="insp-new-sub-btn"
+                    style="font-size:.65rem;padding:2px 7px">+ Nuevo envío</button>
+          </div>`;
+          if (subs.length) {
+            html += subs.slice(0, 5).map(s => `
+              <div class="inspector-related-item sub-unified-row"
+                   data-inspect-submission="${s.id}" style="cursor:pointer">
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:.77rem;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                    ${esc(s.targetVenue || s.title)}
+                  </div>
+                  <div style="font-size:.65rem;font-family:var(--font-mono);color:var(--text-3)">
+                    ${s.deadlineAt ? `⏱ ${formatDate(s.deadlineAt)}` : ''}
+                  </div>
+                </div>
+                ${subStatusBadge(s.status)}
+              </div>`).join('');
+          } else {
+            html += `<div class="inspector-related-item"
+                         style="color:var(--text-3);font-size:.74rem;font-style:italic">
+              Sin envíos registrados — haz clic en "+ Nuevo envío"
+            </div>`;
+          }
+        }
         if (refs.length) html += `
           <div class="inspector-related-title">Referencias (${refs.length})</div>
           ${refs.slice(0,3).map(r => `
@@ -5374,6 +5760,14 @@ async function inspectProject(id) {
   }
 
   openInspector();
+
+  // ── Enlace submission desde inspector de Paper ──────
+  $('insp-new-sub-btn')?.addEventListener('click', () => {
+    closeModal();
+    showAddSubmissionModal(p.deadline || null, p.id);
+  });
+  inspectorBody.querySelectorAll('[data-inspect-submission]').forEach(el =>
+    el.addEventListener('click', () => inspectSubmission(+el.dataset.inspectSubmission)));
 
   // In-place editing
   _attachInplaceEditors(async (field, newVal) => {
@@ -5778,6 +6172,14 @@ async function showEditProjectModal(p) {
         <label class="form-label">Etiquetas</label>
         <input class="form-input" id="ep-tags" value="${(p.tags||[]).join(', ')}">
       </div>
+      <div class="form-group">
+        <label class="form-label">Área de investigación</label>
+        <select class="form-select" id="ep-area">
+          <option value="">— Sin área —</option>
+          ${(await _getAreas()).map(a =>
+            `<option value="${a.id}" ${a.id === p.areaId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}
+        </select>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" id="epCancel">Cancelar</button>
@@ -5798,6 +6200,7 @@ async function showEditProjectModal(p) {
       priority:    $('ep-priority').value,
       description: $('ep-desc').value.trim(),
       tags:        $('ep-tags').value.split(',').map(s => s.trim()).filter(Boolean),
+      areaId:      +$('ep-area').value || null,
       updatedAt:   new Date().toISOString()
     });
     closeModal();
@@ -5856,6 +6259,14 @@ async function inspectIdea(id) {
           <span class="inspector-meta-val"
                 style="cursor:pointer;color:var(--accent)"
                 id="inspIdeaNavProj">${esc(proj.title)}</span>
+        </div>` : ''}
+        ${idea.deadline ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">Deadline</span>
+          <span class="inspector-meta-val" style="color:${(() => {
+            const t = new Date(); t.setHours(0,0,0,0);
+            const d = Math.ceil((new Date(idea.deadline + 'T00:00:00') - t) / 86400000);
+            return d < 0 ? 'var(--red)' : d <= 7 ? 'var(--amber)' : 'var(--text-2)';
+          })()}">⏱ ${formatDate(idea.deadline)}</span>
         </div>` : ''}
         <div class="inspector-meta-row">
           <span class="inspector-meta-key">Creada</span>
@@ -6005,6 +6416,8 @@ async function updateBadges() {
     mbadge.textContent = pendingActions;
     mbadge.classList.toggle('visible', pendingActions > 0);
   }
+
+  await _renderResearchStatus();
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -6725,8 +7138,294 @@ async function init() {
     _showWelcomeModal();
   }
 
+  // Índice de búsqueda inicial
+  _buildSearchIndex().catch(() => {});
   // Initial view
   navigate('dashboard');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ÁREAS DE INVESTIGACIÓN  (almacenadas en settings como JSON)
+// ══════════════════════════════════════════════════════════════
+async function _getAreas() {
+  const s = await db.settings.get('ros-areas');
+  return s ? (JSON.parse(s.value) || []) : [];
+}
+async function _saveAreas(areas) {
+  await db.settings.put({ key: 'ros-areas', value: JSON.stringify(areas) });
+}
+
+const AREA_COLORS = ['#3b82f6','#8b5cf6','#10b981','#f59e0b','#ef4444','#14b8a6','#f97316','#ec4899'];
+
+async function renderAreas() {
+  const [areas, projects] = await Promise.all([
+    _getAreas(),
+    db.projects.filter(p => !p.archived).toArray()
+  ]);
+  mainContent.insertAdjacentHTML('beforeend', `
+    <div class="view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">Áreas de Investigación</div>
+          <div class="view-subtitle">${areas.length} área(s)</div>
+        </div>
+        <button class="btn btn-primary" id="addAreaBtn">+ Nueva Área</button>
+      </div>
+      <div class="areas-grid" id="areasGrid">
+        ${areas.length ? areas.map(area => {
+          const count = projects.filter(p => p.areaId === area.id).length;
+          return `
+            <div class="area-card" style="border-top:3px solid ${area.color}">
+              <div class="area-card-header">
+                <span class="area-card-title">${esc(area.name)}</span>
+                <span class="area-card-count">${count} proyecto(s)</span>
+              </div>
+              ${area.description ? `<div class="area-card-desc">${esc(area.description)}</div>` : ''}
+              <div class="area-card-actions">
+                <button class="btn btn-ghost btn-sm" data-edit-area="${area.id}">✎ Editar</button>
+                <button class="btn btn-ghost btn-sm" data-area-filter="${area.id}"
+                        style="color:var(--accent)">◉ Ver proyectos</button>
+                <button class="btn btn-ghost btn-sm" data-del-area="${area.id}"
+                        style="color:var(--red)">✕</button>
+              </div>
+            </div>`;
+        }).join('') : `
+          <div class="empty-state" style="grid-column:1/-1">
+            <span class="empty-state-icon">⊡</span>
+            <h3>Sin áreas definidas</h3>
+            <p>Las áreas agrupan proyectos por temática o línea de investigación</p>
+          </div>`}
+      </div>
+    </div>`);
+
+  $('addAreaBtn').addEventListener('click', () => showAreaModal());
+  mainContent.querySelectorAll('[data-edit-area]').forEach(btn => {
+    const area = areas.find(a => a.id === +btn.dataset.editArea);
+    if (area) btn.addEventListener('click', () => showAreaModal(area));
+  });
+  mainContent.querySelectorAll('[data-del-area]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('¿Eliminar esta área? Los proyectos vinculados quedarán sin área.')) return;
+      const id = +btn.dataset.delArea;
+      await _saveAreas((await _getAreas()).filter(a => a.id !== id));
+      const linked = await db.projects.filter(p => p.areaId === id).toArray();
+      await Promise.all(linked.map(p => db.projects.update(p.id, { areaId: null })));
+      showToast('Área eliminada', 'info');
+      renderView('areas');
+    });
+  });
+  mainContent.querySelectorAll('[data-area-filter]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      App.groupBy = 'area'; App._projPage = 1; navigate('projects');
+    });
+  });
+}
+
+function showAreaModal(area = null) {
+  const isEdit = !!area;
+  showModal(isEdit ? 'Editar Área' : 'Nueva Área', `
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Nombre *</label>
+        <input class="form-input" id="am-name" value="${esc(area?.name||'')}"
+               placeholder="Ej: Ecología, Modelado estadístico…">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Descripción (opcional)</label>
+        <input class="form-input" id="am-desc" value="${esc(area?.description||'')}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Color</label>
+        <div class="area-color-picker">
+          ${AREA_COLORS.map(c => `
+            <span class="area-color-swatch ${(area?.color||AREA_COLORS[0])===c?'selected':''}"
+                  data-color="${c}" style="background:${c}"></span>`).join('')}
+        </div>
+        <input type="hidden" id="am-color" value="${area?.color||AREA_COLORS[0]}">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="amCancel">Cancelar</button>
+      <button class="btn btn-primary" id="amSave">${isEdit?'Guardar cambios':'Crear área'}</button>
+    </div>`);
+
+  modalContent.querySelectorAll('.area-color-swatch').forEach(sw => {
+    sw.addEventListener('click', () => {
+      modalContent.querySelectorAll('.area-color-swatch').forEach(s => s.classList.remove('selected'));
+      sw.classList.add('selected');
+      $('am-color').value = sw.dataset.color;
+    });
+  });
+  $('amCancel').addEventListener('click', closeModal);
+  $('amSave').addEventListener('click', async () => {
+    const name = $('am-name').value.trim();
+    if (!name) { showToast('El nombre es requerido', 'error'); return; }
+    const fresh = await _getAreas();
+    if (isEdit) {
+      const idx = fresh.findIndex(a => a.id === area.id);
+      if (idx >= 0) fresh[idx] = { ...fresh[idx], name,
+        description: $('am-desc').value.trim(), color: $('am-color').value };
+    } else {
+      fresh.push({ id: Date.now(), name,
+        description: $('am-desc').value.trim(), color: $('am-color').value });
+    }
+    await _saveAreas(fresh);
+    closeModal();
+    showToast(isEdit ? 'Área actualizada ✓' : 'Área creada ✓', 'success');
+    renderView('areas');
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ESTADO DE INVESTIGACIÓN — Barra compacta en el sidebar
+// ══════════════════════════════════════════════════════════════
+async function _renderResearchStatus() {
+  const el = $('researchStatus');
+  if (!el) return;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const now   = Date.now();
+  const all   = await db.projects.filter(p => !p.archived).toArray();
+  const zombie = all.filter(p =>
+    !!p.updatedAt && (now - new Date(p.updatedAt)) > 30 * 86400000).length;
+  const urgent = all.filter(p => {
+    if (!p.deadline) return false;
+    const d = Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000);
+    return d >= 0 && d <= 7;
+  }).length;
+  const active = all.length - zombie;
+
+  el.innerHTML = `
+    <div class="research-status-bar">
+      <button class="rs-chip rs-active" data-rs-nav="projects"
+              title="${active} proyectos activos">◉ ${active} activo${active!==1?'s':''}</button>
+      ${urgent ? `<button class="rs-chip rs-urgent" data-rs-nav="timeline"
+              title="${urgent} con deadline en ≤7 días">⏱ ${urgent} urgente${urgent!==1?'s':''}</button>` : ''}
+      ${zombie ? `<button class="rs-chip rs-zombie" data-rs-nav="projects"
+              title="${zombie} sin actividad >30 días">⊘ ${zombie} zombie${zombie!==1?'s':''}</button>` : ''}
+    </div>`;
+  el.querySelectorAll('[data-rs-nav]').forEach(btn =>
+    btn.addEventListener('click', () => navigate(btn.dataset.rsNav)));
+}
+
+// ══════════════════════════════════════════════════════════════
+//  SISTEMA DE ALERTAS — Panel dismissable
+// ══════════════════════════════════════════════════════════════
+async function _evalAlerts() {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const now   = Date.now();
+  const all   = await db.projects.filter(p => !p.archived).toArray();
+  const alerts = [];
+
+  all.forEach(p => {
+    const idleMs = p.updatedAt ? now - new Date(p.updatedAt) : Infinity;
+
+    if (idleMs > 30 * 86400000)
+      alerts.push({ id: `z-${p.id}`, severity: 'warn',
+        msg: `⊘ "${p.title}" sin actividad hace ${Math.floor(idleMs/86400000)}d` });
+
+    if (p.deadline) {
+      const days = Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000);
+      if (days < 0)
+        alerts.push({ id: `ov-${p.id}`, severity: 'error',
+          msg: `🔴 "${p.title}" venció hace ${Math.abs(days)}d` });
+      else if (days <= 3)
+        alerts.push({ id: `ur-${p.id}`, severity: 'error',
+          msg: `⏱ "${p.title}" vence en ${days}d` });
+    }
+
+    if (p.priority === 'Alta' && idleMs > 14 * 86400000)
+      alerts.push({ id: `st-${p.id}`, severity: 'warn',
+        msg: `⚑ "${p.title}" (Alta) sin cambios hace ${Math.floor(idleMs/86400000)}d` });
+  });
+
+  return alerts;
+}
+
+function _getDismissedAlerts() {
+  try { return new Set(JSON.parse(sessionStorage.getItem('ros-dismissed')||'[]')); }
+  catch { return new Set(); }
+}
+
+async function _renderAlertPanel(container) {
+  if (!container) return;
+  const dismissed = _getDismissedAlerts();
+  const alerts    = (await _evalAlerts()).filter(a => !dismissed.has(a.id));
+  if (!alerts.length) return;
+
+  const panel = document.createElement('div');
+  panel.className = 'alert-panel';
+  panel.innerHTML = `
+    <div class="alert-panel-header">
+      <span>⚑ ${alerts.length} alerta${alerts.length>1?'s':''}</span>
+      <button class="btn btn-ghost btn-sm ap-close-all">✕ Todas</button>
+    </div>
+    ${alerts.slice(0, 5).map(a => `
+      <div class="alert-item alert-${a.severity}">
+        <span class="alert-msg">${esc(a.msg)}</span>
+        <button class="alert-dismiss" data-aid="${a.id}" title="Descartar">✕</button>
+      </div>`).join('')}`;
+
+  const bcBar = container.querySelector('.breadcrumb-bar');
+  if (bcBar) bcBar.insertAdjacentElement('afterend', panel);
+  else container.prepend(panel);
+
+  panel.querySelectorAll('[data-aid]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const s = _getDismissedAlerts(); s.add(btn.dataset.aid);
+      sessionStorage.setItem('ros-dismissed', JSON.stringify([...s]));
+      btn.closest('.alert-item').remove();
+      const n = panel.querySelectorAll('.alert-item').length;
+      if (!n) panel.remove();
+      else panel.querySelector('.alert-panel-header span').textContent =
+        `⚑ ${n} alerta${n>1?'s':''}`;
+    });
+  });
+  panel.querySelector('.ap-close-all')?.addEventListener('click', () => {
+    const s = _getDismissedAlerts();
+    alerts.forEach(a => s.add(a.id));
+    sessionStorage.setItem('ros-dismissed', JSON.stringify([...s]));
+    panel.remove();
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ÍNDICE DE BÚSQUEDA EN MEMORIA
+// ══════════════════════════════════════════════════════════════
+async function _buildSearchIndex() {
+  const [projects, ideas, snippets] = await Promise.all([
+    db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray()
+  ]);
+  const refs  = typeof db.references !== 'undefined' ? await db.references.toArray() : [];
+  const meets = typeof db.meetings   !== 'undefined' ? await db.meetings.toArray()   : [];
+
+  const idx = new Map();
+  const tokenize = str => (str || '').toLowerCase()
+    .split(/[\s,;:/\-_()\[\].]+/).filter(t => t.length >= 2);
+  const add = (type, id, toks) => {
+    [...new Set(toks)].forEach(tok => {
+      if (!idx.has(tok)) idx.set(tok, []);
+      idx.get(tok).push({ type, id });
+    });
+  };
+
+  projects.forEach(p => add('project', p.id, [
+    ...tokenize(p.title), ...tokenize(p.description), ...tokenize(p.responsible),
+    ...(p.tags||[]).flatMap(tokenize)
+  ]));
+  ideas.forEach(i => add('idea', i.id, [
+    ...tokenize(i.title), ...tokenize(i.content), ...(i.tags||[]).flatMap(tokenize)
+  ]));
+  snippets.forEach(s => add('snippet', s.id, [
+    ...tokenize(s.title), ...tokenize(s.description), ...tokenize(s.language)
+  ]));
+  refs.forEach(r => add('ref', r.id, [
+    ...tokenize(r.title), ...tokenize(r.authors), ...tokenize(r.journal)
+  ]));
+  meets.forEach(m => add('meeting', m.id, [
+    ...tokenize(m.title), ...tokenize(m.agreements)
+  ]));
+
+  App._searchIdx = idx;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -6772,11 +7471,11 @@ function _scoreMatch(lq, fields) {
 
 async function _searchPalette(q) {
   const lq = q.trim().toLowerCase();
-  const [projects, ideas, snippets] = await Promise.all([
+  let [projects, ideas, snippets] = await Promise.all([
     db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray()
   ]);
-  const refs  = typeof db.references  !== 'undefined' ? await db.references.toArray()  : [];
-  const meets = typeof db.meetings    !== 'undefined' ? await db.meetings.toArray()     : [];
+  let refs  = typeof db.references  !== 'undefined' ? await db.references.toArray()  : [];
+  let meets = typeof db.meetings    !== 'undefined' ? await db.meetings.toArray()     : [];
   const subs  = typeof db.submissions !== 'undefined' ? await db.submissions.toArray()  : [];
 
   const groups = [];
@@ -6800,6 +7499,21 @@ async function _searchPalette(q) {
     { icon:'👥', label:'Colaboradores', sub:'Vista', action: () => { closePalette(); navigate('collaborators'); } },
   ].filter(n => !lq || n.label.toLowerCase().includes(lq));
   if (navItems.length) groups.push({ label: 'Vistas', items: navItems });
+
+  // ── Pre-filtro via índice en memoria (queries ≥ 2 chars) ──
+  if (lq.length >= 2 && App._searchIdx.size > 0) {
+    const hits = { project: new Set(), idea: new Set(), snippet: new Set(),
+                   ref: new Set(), meeting: new Set() };
+    App._searchIdx.forEach((entries, tok) => {
+      if (tok === lq || tok.startsWith(lq) || tok.includes(lq))
+        entries.forEach(e => { if (hits[e.type]) hits[e.type].add(e.id); });
+    });
+    projects = projects.filter(p => hits.project.has(p.id));
+    ideas    = ideas.filter(i    => hits.idea.has(i.id));
+    snippets = snippets.filter(s => hits.snippet.has(s.id));
+    refs     = refs.filter(r     => hits.ref.has(r.id));
+    meets    = meets.filter(m    => hits.meeting.has(m.id));
+  }
 
   // ── Cuando hay query: búsqueda unificada rankeada ──────
   if (lq) {

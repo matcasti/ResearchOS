@@ -1,7 +1,7 @@
 /* ============================================================
    ResearchOS — Stylesheet
    Aesthetic: Scientific Terminal Noir × Swiss Editorial
-   Fonts: Syne (display) · DM Sans (body) · JetBrains Mono (code)
+   Fonts: Syne (display) · DM Sans (body) JetBrains Mono (code)
    ============================================================ */
 
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -2802,3 +2802,186 @@ body.presentation-mode .kanban-col { width: 300px; }
   background-clip: text;
   line-height: 1;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   FEATURES: STATUS BAR · ALERTS · GROUPS · BADGES · AREAS
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Research Status Bar ─────────────────────────────────── */
+#researchStatus { padding: 4px 12px 8px; }
+.research-status-bar { display: flex; flex-wrap: wrap; gap: 4px; }
+.rs-chip {
+  font-family: var(--font-mono); font-size: .62rem; padding: 2px 8px;
+  border-radius: 99px; border: 1px solid var(--border);
+  background: var(--bg-elevated); cursor: pointer; color: var(--text-2);
+  transition: background 120ms var(--ease); white-space: nowrap;
+}
+.rs-chip:hover  { background: var(--bg-hover); }
+.rs-active      { color: var(--accent); border-color: var(--accent-d); }
+.rs-urgent      { color: var(--amber);  border-color: rgba(245,158,11,.3); }
+.rs-zombie      { color: var(--text-3); border-color: var(--border); }
+
+/* ── Alert Panel ─────────────────────────────────────────── */
+.alert-panel {
+  margin-bottom: 12px; border-radius: var(--radius-md);
+  border: 1px solid rgba(239,68,68,.35); overflow: hidden;
+  background: var(--bg-card);
+}
+.alert-panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 12px; background: rgba(239,68,68,.08);
+  font-size: .72rem; font-weight: 600; color: var(--red);
+}
+.alert-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border-top: 1px solid var(--border); font-size: .74rem;
+}
+.alert-item.alert-error { background: rgba(239,68,68,.04); }
+.alert-item.alert-warn  { background: rgba(245,158,11,.04); }
+.alert-msg    { flex: 1; color: var(--text-2); line-height: 1.4; }
+.alert-dismiss {
+  background: none; border: none; cursor: pointer; padding: 2px 5px;
+  color: var(--text-3); font-size: .72rem; border-radius: var(--radius-sm);
+  transition: color 100ms;
+}
+.alert-dismiss:hover { color: var(--text-1); background: var(--bg-elevated); }
+
+/* ── Project Groups ──────────────────────────────────────── */
+.proj-group { grid-column: 1 / -1; }
+.proj-group-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 7px 12px; background: var(--bg-elevated);
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  margin-bottom: 14px; margin-top: 14px; font-size: .78rem; font-weight: 600; color: var(--text-1);
+}
+.proj-group-count {
+  font-family: var(--font-mono); font-size: .62rem;
+  background: var(--bg-card); padding: 2px 8px;
+  border-radius: 99px; color: var(--text-2);
+}
+.proj-group-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px;
+}
+
+/* ── Zombie · Area · Rollup Badges ──────────────────────── */
+.zombie-badge {
+  display: inline-block; font-size: .58rem; font-family: var(--font-mono);
+  color: var(--text-3); background: var(--bg-elevated);
+  border: 1px solid var(--border); border-radius: 99px;
+  padding: 1px 6px; margin-bottom: 5px;
+}
+.area-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: .6rem; font-family: var(--font-mono);
+  padding: 1px 7px; border-radius: 99px; border-width: 1px; border-style: solid;
+  margin-bottom: 4px;
+}
+.rollup-badge {
+  display: inline-block; font-size: .6rem; font-family: var(--font-mono);
+  color: var(--accent); background: var(--accent-d);
+  border-radius: 99px; padding: 1px 7px; margin-bottom: 4px;
+}
+
+/* ── Responsible Filter Bar (Kanban) ─────────────────────── */
+.kanban-resp-bar {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 10px 32px 10px; margin-bottom: 2px;
+}
+.resp-chip {
+  font-family: var(--font-mono); font-size: .68rem; padding: 3px 10px;
+  border-radius: 99px; border: 1px solid var(--border);
+  background: var(--bg-elevated); cursor: pointer; color: var(--text-2);
+  transition: all 120ms var(--ease);
+}
+.resp-chip.active, .resp-chip:hover {
+  background: var(--accent-d); color: var(--accent); border-color: var(--accent-d);
+}
+
+/* ── Areas Grid ──────────────────────────────────────────── */
+.areas-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+}
+.area-card {
+  background: var(--bg-card); border-radius: var(--radius-md);
+  border: 1px solid var(--border); padding: 16px;
+  transition: background 120ms var(--ease);
+}
+.area-card:hover { background: var(--bg-hover); }
+.area-card-header {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.area-card-title  { font-weight: 600; font-size: .88rem; color: var(--text-1); }
+.area-card-count  { font-family: var(--font-mono); font-size: .64rem; color: var(--text-3); }
+.area-card-desc   { font-size: .74rem; color: var(--text-2); margin-bottom: 12px; }
+.area-card-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+.area-color-picker { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.area-color-swatch {
+  width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+  display: inline-block; border: 2px solid transparent;
+  transition: transform 140ms, border-color 140ms;
+}
+.area-color-swatch:hover    { transform: scale(1.2); }
+.area-color-swatch.selected { border-color: var(--text-1); transform: scale(1.15); }
+
+/* ── Timeline: ideas como subelementos ───────────────────── */
+.timeline-idea-subrow { opacity: .85; }
+.timeline-idea-label {
+  font-size: .7rem !important; color: var(--text-3) !important;
+  font-style: italic; padding-left: 20px !important;
+}
+
+/* ── Vista toggle grid/lista ─────────────────────────────── */
+.view-toggle-group {
+  display: flex; border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden;
+}
+.view-toggle-btn {
+  background: var(--bg-elevated); border: none; padding: 5px 10px;
+  cursor: pointer; color: var(--text-3); font-size: .85rem;
+  transition: background 100ms, color 100ms;
+}
+.view-toggle-btn.active { background: var(--accent-d); color: var(--accent); }
+.view-toggle-btn:hover:not(.active) { background: var(--bg-hover); color: var(--text-1); }
+
+/* ── Tabla de proyectos ──────────────────────────────────── */
+.proj-table {
+  width: 100%; border-collapse: collapse; font-size: .78rem;
+}
+#projectsContainer {
+  overflow-x: auto;
+}
+.pth {
+  text-align: left; padding: 7px 10px;
+  font-size: .65rem; font-family: var(--font-mono); font-weight: 600;
+  color: var(--text-3); border-bottom: 1px solid var(--border);
+  white-space: nowrap; position: sticky; top: 0;
+  background: var(--bg-card); z-index: 2;
+}
+.proj-table-row {
+  cursor: pointer; border-bottom: 1px solid var(--border);
+  transition: background 100ms;
+}
+.proj-table-row:hover { background: var(--bg-hover); }
+.proj-table-row:last-child { border-bottom: none; }
+.proj-table-zombie { opacity: .65; }
+.ptd {
+  padding: 8px 10px; vertical-align: middle; color: var(--text-1);
+  max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ptd-title { font-weight: 500; max-width: 260px; }
+.ptd-pct-bar {
+  display: inline-block; width: 52px; height: 4px;
+  background: var(--bg-elevated); border-radius: 99px; overflow: hidden;
+  vertical-align: middle; margin-right: 4px;
+}
+
+/* ── Sub-row unificada Paper/Submission en inspector ─────── */
+.sub-unified-row {
+  display: flex !important; align-items: center; gap: 8px;
+  padding: 6px 6px; border-bottom: 1px solid var(--border);
+}
+.sub-unified-row:last-child { border-bottom: none; }
+.sub-card-paper-pending { border-left: 3px solid var(--text-3); }

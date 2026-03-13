@@ -22,6 +22,11 @@ db.version(1).stores({
   references:         '++id, title, authors, year, journal, doi, projectId, createdAt, updatedAt'
 });
 
+// Version 2: agrega índice deadline a ideas (aditivo, retrocompat)
+db.version(2).stores({
+  ideas: '++id, title, content, status, projectId, starred, createdAt, updatedAt, deadline'
+});
+
 // ── Seed defaults on first run ───────────────────────────────
 async function seedDefaults() {
   const colCount = await db.kanbanColumns.count();
