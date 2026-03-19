@@ -29,6 +29,9 @@ const App = {
   _lastFilterKey:     '',
   _searchIdx:         new Map(),
   projViewMode:       'grid',   // 'grid' | 'list'
+  agendaViewMode:    'week',   // 'week' | 'month'
+  agendaMonthOffset: 0,        // meses desde el actual (0 = este mes)
+  filterArea:        'all',    // filtro de área en vista Proyectos
 };
 
 // ── DOM refs ─────────────────────────────────────────────────
@@ -506,7 +509,7 @@ async function renderDashboard() {
   await renderActivityHeatmap();
 
   // ── Panel de alertas (zombie, urgentes, stale) ──────
-  await _renderAlertPanel(container);
+  await _renderAlertPanel(mainContent.querySelector('.view'));
 }
 
 async function renderActivityHeatmap() {
@@ -1071,19 +1074,27 @@ async function renderProjects() {
     (f.type     === 'all' || p.type     === f.type) &&
     (f.priority === 'all' || p.priority === f.priority) &&
     (f.column   === 'all' || p.columnId === +f.column) &&
-    (App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible)
+    (App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible) &&
+    (App.filterArea        === 'all' || p.areaId === +App.filterArea)
   );
 
   const types        = ['all','Proyecto','Grant','Paper','Análisis','Dataset','Presentación'];
   const prios        = ['all','Alta','Media','Baja'];
   const responsables = [...new Set(allProjects.map(p => p.responsible).filter(Boolean))].sort();
-  const hasActiveFilters = f.type !== 'all' || f.priority !== 'all' || f.column !== 'all' || App.filterResponsible !== 'all';
+  const hasActiveFilters = f.type !== 'all' || f.priority !== 'all' || f.column !== 'all' ||
+                           App.filterResponsible !== 'all' || App.filterArea !== 'all';
 
   const activePills = [];
   if (f.type             !== 'all') activePills.push({ key:'type',        label:`Tipo: ${f.type}` });
   if (f.priority         !== 'all') activePills.push({ key:'priority',    label:`Prioridad: ${f.priority}` });
   if (f.column           !== 'all') activePills.push({ key:'column',      label:`Columna: ${colMap[+f.column]?.title || f.column}` });
   if (App.filterResponsible !== 'all') activePills.push({ key:'responsible', label:`Responsable: ${App.filterResponsible}` });
+
+  if (App.filterArea !== 'all') {
+    const _areas = await _getAreas();
+    const _area  = _areas.find(a => a.id === +App.filterArea);
+    activePills.push({ key:'area', label:`Área: ${_area?.name || App.filterArea}` });
+  }
 
   mainContent.insertAdjacentHTML('beforeend', `
     <div class="view">
@@ -1204,6 +1215,7 @@ async function renderProjects() {
   $('clearFiltersBtn')?.addEventListener('click', () => {
     App.filters = { type:'all', priority:'all', column:'all' };
     App.filterResponsible = 'all';
+    App.filterArea = 'all';
     App.groupBy = 'none';
     App._projPage = 1;
     renderView('projects');
@@ -1220,6 +1232,7 @@ async function renderProjects() {
   mainContent.querySelectorAll('[data-clear-filter]').forEach(pill => {
     pill.addEventListener('click', () => {
       if (pill.dataset.clearFilter === 'responsible') App.filterResponsible = 'all';
+      else if (pill.dataset.clearFilter === 'area')   App.filterArea = 'all';
       else App.filters[pill.dataset.clearFilter] = 'all';
       App._projPage = 1;
       renderView('projects');
@@ -2261,6 +2274,31 @@ async function renderTimeline() {
     ideasByProject[key].push(i);
   });
 
+  // ── Submissions y Reuniones con fecha ──────────────────
+  const [allSubsWithDL, allMeetsWithDate] = await Promise.all([
+    db.submissions.filter(s => !!s.deadlineAt).toArray(),
+    db.meetings.filter(m => !!m.date).toArray(),
+  ]);
+  const subsByProject  = {};
+  allSubsWithDL.forEach(s => {
+    const key = s.projectId || '_orphan';
+    if (!subsByProject[key]) subsByProject[key] = [];
+    subsByProject[key].push(s);
+  });
+  const meetsByProject = {};
+  allMeetsWithDate.forEach(m => {
+    const key = m.projectId || '_orphan';
+    if (!meetsByProject[key]) meetsByProject[key] = [];
+    meetsByProject[key].push(m);
+  });
+  // ── Jerarquía de proyectos ─────────────────────────────
+  const childProjMap  = {};
+  projects.filter(p => p.parentId).forEach(p => {
+    if (!childProjMap[p.parentId]) childProjMap[p.parentId] = [];
+    childProjMap[p.parentId].push(p);
+  });
+  const rootWithDL = allWithDL.filter(p => !p.parentId);
+
   const PRIO_COLORS = { Alta:'var(--red)', Media:'var(--amber)', Baja:'var(--green)' };
   const TYPE_COLORS = { Grant:'var(--amber)', Paper:'var(--accent)', 'Análisis':'var(--purple)', Dataset:'var(--teal)' };
 
@@ -2323,63 +2361,173 @@ async function renderTimeline() {
     };
     const todayX = ((today - start) / totalMs * 100).toFixed(2) + '%';
 
-    // Filtrar proyectos visibles en la ventana actual
-    let visible = allWithDL.filter(p => {
+    // ── Raíces visibles (+ raíces con hijos/sub-items visibles) ──
+    const inWindow = (isoDate) => {
+      if (!isoDate) return false;
+      const d = new Date(isoDate + (isoDate.length === 10 ? 'T12:00:00' : ''));
+      return (showOverdue || d >= today) && d >= start && d <= end;
+    };
+
+    const visibleRoots = rootWithDL.filter(p => {
       const pd = new Date(p.deadline + 'T12:00:00');
       if (!showOverdue && pd < today) return false;
       return pd >= start && pd <= end;
     });
-
-    // Proyectos vencidos fuera de la ventana (banner informativo)
-    const overdueOutside = allWithDL.filter(p => {
-      const pd = new Date(p.deadline + 'T12:00:00');
-      return pd < today && pd < start;
+    // Incluir raíces que solo tienen sub-ítems en la ventana (sin su propio deadline visible)
+    const rootsWithVisibleChildren = rootWithDL.filter(p => {
+      if (visibleRoots.includes(p)) return false;
+      return (childProjMap[p.id]||[]).some(c => inWindow(c.deadline)) ||
+             (ideasByProject[p.id]||[]).some(i => inWindow(i.deadline)) ||
+             (subsByProject[p.id]||[]).some(s => inWindow(s.deadlineAt)) ||
+             (meetsByProject[p.id]||[]).some(m => inWindow(m.date));
     });
+    const allVisibleRoots = [...visibleRoots, ...rootsWithVisibleChildren];
 
+    const totalVisible = allVisibleRoots.length + visibleRoots.length; // rough count
     $('tlSubtitle').textContent =
-      `${visible.length} proyecto(s) en la ventana` +
-      (overdueOutside.length && showOverdue ? ` · ${overdueOutside.length} vencido(s) fuera de rango` : '');
+      `${allVisibleRoots.length} proyecto(s) en la ventana` +
+      (!showOverdue && allWithDL.some(p => new Date(p.deadline+'T12:00:00') < today)
+        ? ' · vencidos ocultos' : '');
 
-    // Etiquetas de escala
-    const ticks = [];
-    const cur = new Date(start); cur.setDate(1);
-    if (zoomLevel === 'week') {
-      // etiquetas diarias
-      const d = new Date(start);
-      while (d <= end) {
-        ticks.push({
-          label: d.toLocaleDateString('es-CL', { weekday:'short', day:'numeric' }),
-          x: ((d - start) / totalMs * 100).toFixed(2) + '%'
+    // ── Helper: filas de sub-ítems para un proyecto ─────────
+    const subRows = (projId, depth = 1) => {
+      const pad = depth === 1 ? '16px' : '28px';
+      const rows = [];
+
+      (childProjMap[projId] || [])
+        .filter(cp => inWindow(cp.deadline))
+        .forEach(cp => {
+          const cpO = new Date(cp.deadline + 'T12:00:00') < today;
+          rows.push(`
+            <div class="timeline-row ${cpO ? 'tl-row-overdue' : ''}"
+                 style="background:var(--bg-surface)">
+              <div class="timeline-row-label" data-inspect-project="${cp.id}"
+                   style="padding-left:${pad}" title="${esc(cp.title)}">
+                <span style="color:var(--text-3);margin-right:3px;font-size:.7rem">↳</span>
+                ${cpO ? '<span class="tl-overdue-badge">vencido</span>' : ''}
+                ${esc(cp.title)}
+              </div>
+              <div class="timeline-track">
+                <div class="timeline-today-line" style="left:${todayX}"></div>
+                <div class="timeline-deadline-dot"
+                     data-inspect-project="${cp.id}"
+                     style="left:${toX(cp.deadline)};background:${getColor(cp)}"
+                     title="${esc(cp.title)} — ${formatDate(cp.deadline)}"></div>
+                <span class="timeline-deadline-label" style="left:${toX(cp.deadline)}">${formatDate(cp.deadline)}</span>
+              </div>
+            </div>`);
+          rows.push(...subRows(cp.id, depth + 1).split('<!-- sep -->').filter(Boolean));
         });
-        d.setDate(d.getDate() + 1);
+
+      (ideasByProject[projId] || []).filter(i => inWindow(i.deadline)).forEach(i => {
+        const ic = new Date(i.deadline+'T12:00:00') < today ? 'var(--red)'
+          : (new Date(i.deadline+'T12:00:00') - today) < 7*86400000 ? 'var(--amber)' : 'var(--purple)';
+        rows.push(`
+          <div class="timeline-row timeline-idea-subrow">
+            <div class="timeline-row-label timeline-idea-label"
+                 data-inspect-idea="${i.id}" style="padding-left:${pad}"
+                 title="${esc(i.title)}">◎ ${esc(i.title)}</div>
+            <div class="timeline-track">
+              <div class="timeline-today-line" style="left:${todayX}"></div>
+              <div class="timeline-deadline-dot"
+                   data-inspect-idea="${i.id}"
+                   style="left:${toX(i.deadline)};background:${ic};width:8px;height:8px"
+                   title="${esc(i.title)} — ${formatDate(i.deadline)}"></div>
+              <span class="timeline-deadline-label" style="left:${toX(i.deadline)}">${formatDate(i.deadline)}</span>
+            </div>
+          </div>`);
+      });
+
+      (subsByProject[projId] || []).filter(s => inWindow(s.deadlineAt)).forEach(s => {
+        const sc = new Date(s.deadlineAt+'T12:00:00') < today ? 'var(--red)'
+          : (new Date(s.deadlineAt+'T12:00:00') - today) < 7*86400000 ? 'var(--amber)' : 'var(--accent)';
+        rows.push(`
+          <div class="timeline-row timeline-idea-subrow tl-sub-sub">
+            <div class="timeline-row-label timeline-idea-label"
+                 data-inspect-submission="${s.id}" style="padding-left:${pad}"
+                 title="${esc(s.title)}">📤 ${esc(s.title)}</div>
+            <div class="timeline-track">
+              <div class="timeline-today-line" style="left:${todayX}"></div>
+              <div class="timeline-deadline-dot"
+                   data-inspect-submission="${s.id}"
+                   style="left:${toX(s.deadlineAt)};background:${sc};width:8px;height:8px"
+                   title="${esc(s.title)} — ${formatDate(s.deadlineAt)}"></div>
+              <span class="timeline-deadline-label" style="left:${toX(s.deadlineAt)}">${formatDate(s.deadlineAt)}</span>
+            </div>
+          </div>`);
+      });
+
+      (meetsByProject[projId] || []).filter(m => inWindow(m.date)).forEach(m => {
+        const mc = new Date(m.date+'T12:00:00') < today ? 'var(--text-3)' : 'var(--teal)';
+        rows.push(`
+          <div class="timeline-row timeline-idea-subrow tl-sub-meeting">
+            <div class="timeline-row-label timeline-idea-label"
+                 data-inspect-meeting="${m.id}" style="padding-left:${pad}"
+                 title="${esc(m.title)}">🗓 ${esc(m.title)}</div>
+            <div class="timeline-track">
+              <div class="timeline-today-line" style="left:${todayX}"></div>
+              <div class="timeline-deadline-dot"
+                   data-inspect-meeting="${m.id}"
+                   style="left:${toX(m.date)};background:${mc};width:8px;height:8px"
+                   title="${esc(m.title)} — ${formatDate(m.date)}"></div>
+              <span class="timeline-deadline-label" style="left:${toX(m.date)}">${formatDate(m.date)}</span>
+            </div>
+          </div>`);
+      });
+
+      return rows.join('<!-- sep -->');
+    };
+
+    // ── Huérfanos (sin proyecto) ───────────────────────────
+    const orphanSections = () => {
+      const oIdeas = (ideasByProject['_orphan']||[]).filter(i => inWindow(i.deadline));
+      const oSubs  = (subsByProject['_orphan'] ||[]).filter(s => inWindow(s.deadlineAt));
+      const oMeets = (meetsByProject['_orphan']||[]).filter(m => inWindow(m.date));
+      if (!oIdeas.length && !oSubs.length && !oMeets.length) return '';
+      return `
+        <div class="timeline-header-row" style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px">
+          <div style="font-family:var(--font-mono);font-size:.67rem;color:var(--text-3)">Sin proyecto asociado</div>
+          <div></div>
+        </div>` + subRows('_orphan', 0).split('<!-- sep -->').join('');
+    };
+
+    // ── Etiquetas de escala temporal ──────────────────────
+    const ticks = [];
+    const _tickCur = new Date(start); _tickCur.setDate(1);
+    if (zoomLevel === 'week') {
+      const _d = new Date(start);
+      while (_d <= end) {
+        ticks.push({
+          label: _d.toLocaleDateString('es-CL', { weekday:'short', day:'numeric' }),
+          x: ((_d - start) / totalMs * 100).toFixed(2) + '%'
+        });
+        _d.setDate(_d.getDate() + 1);
       }
     } else if (zoomLevel === 'month') {
-      // etiquetas semanales
-      const d = new Date(start);
-      while (d <= end) {
+      const _d = new Date(start);
+      while (_d <= end) {
         ticks.push({
-          label: d.toLocaleDateString('es-CL', { day:'numeric', month:'short' }),
-          x: ((d - start) / totalMs * 100).toFixed(2) + '%'
+          label: _d.toLocaleDateString('es-CL', { day:'numeric', month:'short' }),
+          x: ((_d - start) / totalMs * 100).toFixed(2) + '%'
         });
-        d.setDate(d.getDate() + 7);
+        _d.setDate(_d.getDate() + 7);
       }
     } else {
-      // etiquetas mensuales
-      while (cur <= end) {
+      while (_tickCur <= end) {
         ticks.push({
-          label: cur.toLocaleDateString('es-CL', { month:'short', year:'2-digit' }),
-          x: ((cur - start) / totalMs * 100).toFixed(2) + '%'
+          label: _tickCur.toLocaleDateString('es-CL', { month:'short', year:'2-digit' }),
+          x: ((_tickCur - start) / totalMs * 100).toFixed(2) + '%'
         });
-        cur.setMonth(cur.getMonth() + 1);
+        _tickCur.setMonth(_tickCur.getMonth() + 1);
       }
     }
 
     const legendEntries = colorMode === 'priority' ? PRIO_COLORS : TYPE_COLORS;
 
-    container.innerHTML = !visible.length ? `
+    container.innerHTML = !allVisibleRoots.length ? `
       <div class="timeline-empty">
-        Sin proyectos con deadline en esta ventana.
-        ${!showOverdue ? 'Activa "Mostrar vencidos" o cambia el zoom.' : 'Ajusta el zoom para ampliar el rango.'}
+        Sin elementos con fechas en esta ventana.
+        ${!showOverdue ? 'Activa "Mostrar vencidos" o amplía el zoom.' : 'Ajusta el zoom para ampliar el rango.'}
       </div>` : `
       <div class="timeline-legend">
         ${Object.entries(legendEntries).map(([k,v]) =>
@@ -2389,47 +2537,25 @@ async function renderTimeline() {
         <span class="timeline-legend-item">
           <span style="display:inline-block;width:10px;height:2px;background:var(--accent);border-radius:1px"></span>Hoy
         </span>
+        <span class="timeline-legend-item"><span class="tl-dot" style="background:var(--purple)"></span>◎ Idea</span>
+        <span class="timeline-legend-item"><span class="tl-dot" style="background:var(--teal)"></span>🗓 Reunión</span>
+        <span class="timeline-legend-item"><span class="tl-dot" style="background:var(--accent)"></span>📤 Submission</span>
       </div>
       <div class="timeline-wrapper">
         <div class="timeline-grid">
           <div class="timeline-header-row">
-            <div style="font-family:var(--font-mono);font-size:.68rem;color:var(--text-3);padding-bottom:8px">Proyecto</div>
+            <div style="font-family:var(--font-mono);font-size:.68rem;color:var(--text-3);padding-bottom:8px">Elemento</div>
             <div style="position:relative;height:24px">
-              ${ticks.map(t =>
-                `<span class="timeline-month-label" style="left:${t.x}">${t.label}</span>`
-              ).join('')}
+              ${ticks.map(t => `<span class="timeline-month-label" style="left:${t.x}">${t.label}</span>`).join('')}
             </div>
           </div>
-          ${visible.map(p => {
-            const isOverdue  = new Date(p.deadline + 'T12:00:00') < today;
-            // Ideas de este proyecto en la ventana visible
-            const projIdeas  = (ideasByProject[p.id] || []).filter(i => {
-              const d = new Date(i.deadline + 'T12:00:00');
-              return (showOverdue || d >= today) && d >= start && d <= end;
-            });
-            const ideaRows   = projIdeas.map(i => {
-              const iD = new Date(i.deadline + 'T12:00:00');
-              const ic = iD < today ? 'var(--red)'
-                       : (iD - today) < 7*86400000 ? 'var(--amber)' : 'var(--purple)';
-              return `
-                <div class="timeline-row timeline-idea-subrow">
-                  <div class="timeline-row-label timeline-idea-label" title="${esc(i.title)}">
-                    ◎ ${esc(i.title)}
-                  </div>
-                  <div class="timeline-track">
-                    <div class="timeline-today-line" style="left:${todayX}"></div>
-                    <div class="timeline-deadline-dot"
-                         style="left:${toX(i.deadline)};background:${ic};width:8px;height:8px"
-                         title="${esc(i.title)} — ${formatDate(i.deadline)}"></div>
-                    <span class="timeline-deadline-label" style="left:${toX(i.deadline)}">
-                      ${formatDate(i.deadline)}
-                    </span>
-                  </div>
-                </div>`;
-            }).join('');
+          ${allVisibleRoots.map(p => {
+            const isOverdue = new Date(p.deadline + 'T12:00:00') < today;
+            const hasDeadlineInWindow = inWindow(p.deadline);
             return `
               <div class="timeline-row ${isOverdue ? 'tl-row-overdue' : ''}">
-                <div class="timeline-row-label" data-inspect-project="${p.id}" title="${esc(p.title)}">
+                <div class="timeline-row-label" data-inspect-project="${p.id}"
+                     title="${esc(p.title)}">
                   ${isOverdue ? '<span class="tl-overdue-badge">vencido</span>' : ''}
                   ${esc(p.title)}
                 </div>
@@ -2437,60 +2563,30 @@ async function renderTimeline() {
                   <div class="timeline-today-line" style="left:${todayX}">
                     <span class="timeline-today-label">hoy</span>
                   </div>
-                  <div class="timeline-deadline-dot"
-                       style="left:${toX(p.deadline)};background:${getColor(p)}"
-                       data-inspect-project="${p.id}"
-                       title="${esc(p.title)} — ${formatDate(p.deadline)}">
-                  </div>
-                  <span class="timeline-deadline-label" style="left:${toX(p.deadline)}">
-                    ${formatDate(p.deadline)}
-                  </span>
+                  ${hasDeadlineInWindow ? `
+                    <div class="timeline-deadline-dot"
+                         data-inspect-project="${p.id}"
+                         style="left:${toX(p.deadline)};background:${getColor(p)}"
+                         title="${esc(p.title)} — ${formatDate(p.deadline)}"></div>
+                    <span class="timeline-deadline-label" style="left:${toX(p.deadline)}">${formatDate(p.deadline)}</span>
+                  ` : ''}
                 </div>
               </div>
-              ${ideaRows}`;
+              ${subRows(p.id).split('<!-- sep -->').join('')}`;
           }).join('')}
-          ${(() => {
-            // Ideas huérfanas (sin proyecto o cuyo proyecto no tiene deadline)
-            const orphans = (ideasByProject['_orphan'] || []).filter(i => {
-              const d = new Date(i.deadline + 'T12:00:00');
-              return (showOverdue || d >= today) && d >= start && d <= end;
-            });
-            if (!orphans.length) return '';
-            return `
-              <div class="timeline-header-row"
-                   style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px">
-                <div style="font-family:var(--font-mono);font-size:.67rem;color:var(--text-3)">
-                  ◎ Ideas sin proyecto asociado
-                </div>
-                <div></div>
-              </div>
-              ${orphans.map(i => {
-                const iD = new Date(i.deadline + 'T12:00:00');
-                const ic = iD < today ? 'var(--red)'
-                         : (iD - today) < 7*86400000 ? 'var(--amber)' : 'var(--purple)';
-                return `
-                  <div class="timeline-row timeline-idea-subrow">
-                    <div class="timeline-row-label timeline-idea-label" title="${esc(i.title)}">
-                      ◎ ${esc(i.title)}
-                    </div>
-                    <div class="timeline-track">
-                      <div class="timeline-today-line" style="left:${todayX}"></div>
-                      <div class="timeline-deadline-dot"
-                           style="left:${toX(i.deadline)};background:${ic};width:8px;height:8px"
-                           title="${esc(i.title)} — ${formatDate(i.deadline)}"></div>
-                      <span class="timeline-deadline-label" style="left:${toX(i.deadline)}">
-                        ${formatDate(i.deadline)}
-                      </span>
-                    </div>
-                  </div>`;
-              }).join('')}`;
-          })()}
+          ${orphanSections()}
         </div>
       </div>`;
 
-    // Rebind inspect
+    // ── Rebind inspect para todos los tipos ────────────────
     container.querySelectorAll('[data-inspect-project]').forEach(el =>
       el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+    container.querySelectorAll('[data-inspect-idea]').forEach(el =>
+      el.addEventListener('click', () => inspectIdea(+el.dataset.inspectIdea)));
+    container.querySelectorAll('[data-inspect-submission]').forEach(el =>
+      el.addEventListener('click', () => inspectSubmission(+el.dataset.inspectSubmission)));
+    container.querySelectorAll('[data-inspect-meeting]').forEach(el =>
+      el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
   };
 
   // ── Evento inicial: zoom = año por defecto ──────────────
@@ -2656,103 +2752,208 @@ async function renderNestedProjects() {
 //  VIEW: AGENDA SEMANAL (solo lectura — agrega deadlines,
 //        submissions, reuniones y recordatorios de la semana)
 // ══════════════════════════════════════════════════════════════
+
 async function renderWeeklyAgenda() {
   const today = new Date(); today.setHours(0,0,0,0);
-  const days  = Array.from({length: 7}, (_, i) => {
-    const d = new Date(today); d.setDate(today.getDate() + i); return d;
-  });
-  const isoDay = d => d.toISOString().split('T')[0];
+  const viewMode = App.agendaViewMode || 'week';
 
-  // Recoger datos
-  const [projects, submissions, meetings] = await Promise.all([
-    db.projects.filter(p => !p.archived && !!p.deadline).toArray(),
+  // ── Cargar todos los elementos con fecha ────────────────
+  const [projects, submissions, meetings, ideas] = await Promise.all([
+    db.projects.filter(p => !p.archived).toArray(),
     db.submissions.toArray(),
     db.meetings.toArray(),
+    db.ideas.filter(i => !!i.deadline).toArray(),
   ]);
 
-  // Indexar por día
-  const byDay = {};
-  days.forEach(d => { byDay[isoDay(d)] = { deadlines:[], submissions:[], meetings:[] }; });
+  const isoDay  = d => d.toISOString().split('T')[0];
+  const todayIso = isoDay(today);
+  const DAY_LABELS   = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+  const MONTH_SHORT  = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  const MONTH_LONG   = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+                        'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
-  projects.forEach(p => {
-    if (byDay[p.deadline]) byDay[p.deadline].deadlines.push(p);
-  });
-  submissions.forEach(s => {
-    if (s.deadlineAt && byDay[s.deadlineAt]) byDay[s.deadlineAt].submissions.push(s);
-    if (s.submittedAt && byDay[s.submittedAt]) byDay[s.submittedAt].submissions.push({...s, _submitted:true});
-  });
-  meetings.forEach(m => {
-    if (byDay[m.date]) byDay[m.date].meetings.push(m);
-  });
-
-  const dayLabels = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
-  const monthNames = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
-
-  const dayHTML = (d) => {
-    const iso   = isoDay(d);
-    const data  = byDay[iso];
-    const isToday = iso === isoDay(today);
-    const total = data.deadlines.length + data.submissions.length + data.meetings.length;
-    return `
-      <div class="weekly-day ${isToday ? 'weekly-today' : ''} ${total === 0 ? 'weekly-empty' : ''}">
-        <div class="weekly-day-header">
-          <span class="weekly-day-name">${dayLabels[d.getDay()]}</span>
-          <span class="weekly-day-num ${isToday ? 'weekly-day-num-today' : ''}">
-            ${d.getDate()} ${monthNames[d.getMonth()]}
-          </span>
-        </div>
-        <div class="weekly-events">
-          ${data.deadlines.map(p => `
-            <div class="weekly-event weekly-event-deadline" data-inspect-project="${p.id}">
-              <span class="weekly-event-dot" style="background:var(--red)"></span>
-              <span class="weekly-event-text">⏱ ${esc(p.title)}</span>
-              <span class="badge ${typeBadgeClass(p.type)}" style="font-size:.58rem">${esc(p.type)}</span>
-            </div>`).join('')}
-          ${data.submissions.map(s => `
-            <div class="weekly-event weekly-event-submission" data-inspect-submission="${s.id}">
-              <span class="weekly-event-dot" style="background:var(--amber)"></span>
-              <span class="weekly-event-text">📤 ${esc(s.title)}</span>
-              <span class="weekly-event-badge">${s._submitted ? 'Enviado' : 'Deadline'}</span>
-            </div>`).join('')}
-          ${data.meetings.map(m => `
-            <div class="weekly-event weekly-event-meeting" data-inspect-meeting="${m.id}">
-              <span class="weekly-event-dot" style="background:var(--teal)"></span>
-              <span class="weekly-event-text">🗓 ${esc(m.title)}</span>
-            </div>`).join('')}
-          ${total === 0 ? `<div class="weekly-free">—</div>` : ''}
-        </div>
-      </div>`;
+  /** Devuelve todos los eventos para un día ISO dado */
+  const eventsForDay = (iso) => {
+    const evs = [];
+    projects.filter(p => p.deadline === iso).forEach(p =>
+      evs.push({ color:'var(--red)', label:`⏱ ${p.title}`, kind:'project', id:p.id }));
+    ideas.filter(i => i.deadline === iso).forEach(i =>
+      evs.push({ color:'var(--purple)', label:`◎ ${i.title}`, kind:'idea', id:i.id }));
+    submissions.forEach(s => {
+      if (s.deadlineAt === iso)
+        evs.push({ color:'var(--amber)', label:`📤 ${s.title}`, kind:'submission', id:s.id });
+      if (s.submittedAt === iso)
+        evs.push({ color:'var(--green)', label:`✓ ${s.title}`, kind:'submission', id:s.id });
+    });
+    meetings.filter(m => m.date === iso).forEach(m =>
+      evs.push({ color:'var(--teal)', label:`🗓 ${m.title}`, kind:'meeting', id:m.id }));
+    return evs;
   };
 
-  const weekLabel = `${days[0].getDate()} ${monthNames[days[0].getMonth()]} — ${days[6].getDate()} ${monthNames[days[6].getMonth()]} ${days[6].getFullYear()}`;
+  const actionAttr = ev => {
+    if (ev.kind === 'project')    return `data-inspect-project="${ev.id}"`;
+    if (ev.kind === 'idea')       return `data-inspect-idea="${ev.id}"`;
+    if (ev.kind === 'submission') return `data-inspect-submission="${ev.id}"`;
+    if (ev.kind === 'meeting')    return `data-inspect-meeting="${ev.id}"`;
+    return '';
+  };
+
+  // ── Construir contenido según el modo ─────────────────
+  let contentHTML = '', subtitleHTML = '', navHTML = '';
+
+  if (viewMode === 'week') {
+    const days = Array.from({length:7}, (_, i) => {
+      const d = new Date(today); d.setDate(today.getDate() + i); return d;
+    });
+    subtitleHTML = `${days[0].getDate()} ${MONTH_SHORT[days[0].getMonth()]} – ` +
+      `${days[6].getDate()} ${MONTH_SHORT[days[6].getMonth()]} ${days[6].getFullYear()}`;
+
+    contentHTML = `<div class="weekly-grid">` + days.map(d => {
+      const iso  = isoDay(d);
+      const evs  = eventsForDay(iso);
+      const isToday = iso === todayIso;
+      return `
+        <div class="weekly-day ${isToday ? 'weekly-today' : ''}">
+          <div class="weekly-day-header">
+            <span class="weekly-day-name">${DAY_LABELS[d.getDay()]}</span>
+            <span class="weekly-day-num ${isToday ? 'weekly-day-num-today' : ''}">
+              ${d.getDate()} ${MONTH_SHORT[d.getMonth()]}
+            </span>
+          </div>
+          <div class="weekly-events">
+            ${evs.length
+              ? evs.map(ev => `
+                  <div class="weekly-event" ${actionAttr(ev)}>
+                    <span class="weekly-event-dot" style="background:${ev.color}"></span>
+                    <span class="weekly-event-text">${esc(ev.label)}</span>
+                  </div>`).join('')
+              : `<div class="weekly-free">—</div>`}
+          </div>
+        </div>`;
+    }).join('') + `</div>`;
+
+  } else {
+    // ── Vista mensual ───────────────────────────────────
+    const offset = App.agendaMonthOffset || 0;
+    const ref    = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+    const year   = ref.getFullYear();
+    const month  = ref.getMonth();
+    const first  = new Date(year, month, 1);
+    const last   = new Date(year, month + 1, 0);
+    const startDow = first.getDay();           // 0 = Dom
+    const total  = Math.ceil((startDow + last.getDate()) / 7) * 7;
+
+    subtitleHTML = `${MONTH_LONG[month]} ${year}`;
+    navHTML = `
+      <div style="display:flex;gap:4px;align-items:center">
+        <button class="btn btn-ghost btn-sm" id="agendaPrev">←</button>
+        <button class="btn btn-ghost btn-sm" id="agendaToday">Hoy</button>
+        <button class="btn btn-ghost btn-sm" id="agendaNext">→</button>
+      </div>`;
+
+    const MAX_PILLS = 3;
+
+    const cells = Array.from({length: total}, (_, i) => {
+      const d = new Date(year, month, 1 - startDow + i);
+      return { date: d, inMonth: d.getMonth() === month };
+    });
+
+    const dayHeadersHTML = DAY_LABELS.map(l =>
+      `<div class="monthly-day-header-cell">${l}</div>`).join('');
+
+    const gridHTML = cells.map(cell => {
+      const iso  = isoDay(cell.date);
+      const evs  = eventsForDay(iso);
+      const isToday = iso === todayIso;
+      const shown = evs.slice(0, MAX_PILLS);
+      const more  = evs.length - MAX_PILLS;
+      return `
+        <div class="monthly-cell ${!cell.inMonth ? 'monthly-cell-other' : ''} ${isToday ? 'monthly-cell-today' : ''}">
+          <div class="monthly-cell-num ${isToday ? 'monthly-cell-num-today' : ''}">${cell.date.getDate()}</div>
+          ${shown.map(ev => `
+            <span class="monthly-event-pill" ${actionAttr(ev)}
+                  style="border-left-color:${ev.color}"
+                  title="${esc(ev.label.replace(/^[\S]+\s/,''))}">${esc(ev.label)}</span>`).join('')}
+          ${more > 0 ? `<span class="monthly-more" data-month-day="${iso}">+${more} más</span>` : ''}
+        </div>`;
+    }).join('');
+
+    contentHTML = `
+      <div class="monthly-wrapper">
+        <div class="monthly-day-headers">${dayHeadersHTML}</div>
+        <div class="monthly-grid">${gridHTML}</div>
+      </div>`;
+  }
 
   mainContent.innerHTML = `
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">📅 Agenda Semanal</div>
-          <div class="view-subtitle">${weekLabel}</div>
+          <div class="view-title">📅 Agenda</div>
+          <div class="view-subtitle">${subtitleHTML}</div>
         </div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          ${navHTML}
+          <div class="view-toggle-group">
+            <button class="view-toggle-btn ${viewMode==='week'?'active':''}" id="agendaWeekBtn">Semana</button>
+            <button class="view-toggle-btn ${viewMode==='month'?'active':''}" id="agendaMonthBtn">Mes</button>
+          </div>
           <button class="btn btn-ghost btn-sm" id="weeklyAddMeeting">+ Reunión</button>
           <button class="btn btn-ghost btn-sm" id="weeklyAddSubmission">+ Submission</button>
         </div>
       </div>
-      <div class="weekly-grid">
-        ${days.map(dayHTML).join('')}
-      </div>
+      ${contentHTML}
     </div>`;
 
-  // Handlers
-  mainContent.querySelectorAll('[data-inspect-project]').forEach(el =>
-    el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
-  mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
-    el.addEventListener('click', () => inspectSubmission(+el.dataset.inspectSubmission)));
-  mainContent.querySelectorAll('[data-inspect-meeting]').forEach(el =>
-    el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
-
+  // ── Event listeners de navegación ───────────────────────
+  $('agendaWeekBtn').addEventListener('click', () => { App.agendaViewMode = 'week';  renderView('weekly'); });
+  $('agendaMonthBtn').addEventListener('click', () => { App.agendaViewMode = 'month'; renderView('weekly'); });
+  $('agendaPrev')?.addEventListener('click', () => { App.agendaMonthOffset--; renderView('weekly'); });
+  $('agendaNext')?.addEventListener('click', () => { App.agendaMonthOffset++; renderView('weekly'); });
+  $('agendaToday')?.addEventListener('click', () => { App.agendaMonthOffset = 0; renderView('weekly'); });
   $('weeklyAddMeeting')?.addEventListener('click', showAddMeetingModal);
   $('weeklyAddSubmission')?.addEventListener('click', showAddSubmissionModal);
+
+  // ── Handlers de clic sobre eventos ─────────────────────
+  const attachInspectors = (root) => {
+    root.querySelectorAll('[data-inspect-project]').forEach(el =>
+      el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+    root.querySelectorAll('[data-inspect-idea]').forEach(el =>
+      el.addEventListener('click', () => inspectIdea(+el.dataset.inspectIdea)));
+    root.querySelectorAll('[data-inspect-submission]').forEach(el =>
+      el.addEventListener('click', () => inspectSubmission(+el.dataset.inspectSubmission)));
+    root.querySelectorAll('[data-inspect-meeting]').forEach(el =>
+      el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
+  };
+  attachInspectors(mainContent);
+
+  // ── Clic en "+N más" — modal con todos los eventos del día ─
+  mainContent.querySelectorAll('[data-month-day]').forEach(pill => {
+    pill.addEventListener('click', () => {
+      const iso = pill.dataset.monthDay;
+      const evs = eventsForDay(iso);
+      const d   = new Date(iso + 'T12:00:00');
+      const lbl = d.toLocaleDateString('es-CL',
+        { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+      showModal(`📅 ${lbl}`, `
+        <div class="modal-body" style="padding:0">
+          ${evs.map(ev => `
+            <div ${actionAttr(ev)} class="modal-day-ev-row"
+              style="display:flex;align-items:center;gap:10px;padding:9px 16px;
+                     border-bottom:1px solid var(--border);cursor:pointer">
+              <span style="width:9px;height:9px;border-radius:50%;
+                           background:${ev.color};flex-shrink:0"></span>
+              <span style="font-size:.82rem;color:var(--text-1);flex:1">${esc(ev.label)}</span>
+              <span style="font-size:.7rem;color:var(--text-3)">›</span>
+            </div>`).join('')}
+        </div>`);
+      document.querySelectorAll('.modal-day-ev-row').forEach(row => {
+        row.addEventListener('mouseenter', () => row.style.background = 'var(--bg-hover)');
+        row.addEventListener('mouseleave', () => row.style.background = '');
+      });
+      attachInspectors(document.querySelector('.modal'));
+    });
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -3235,6 +3436,9 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
       <button class="btn btn-primary" id="amSave">Guardar</button>
     </div>`);
   setTimeout(() => $('am-title')?.focus(), 60);
+
+  setTimeout(() => _attachCollaboratorAutocomplete($('am-participants'), { multi: true }), 80);
+
   $('amCancel').addEventListener('click', closeModal);
   $('amSave').addEventListener('click', async () => {
     const title = $('am-title').value.trim();
@@ -3353,6 +3557,7 @@ async function inspectMeeting(id) {
         <button class="btn btn-ghost" id="emCancel">Cancelar</button>
         <button class="btn btn-primary" id="emSave">Guardar</button>
       </div>`);
+    setTimeout(() => _attachCollaboratorAutocomplete($('em-participants'), { multi: true }), 80);
     $('emCancel').addEventListener('click', closeModal);
     $('emSave').addEventListener('click', async () => {
       const title = $('em-title').value.trim();
@@ -5210,6 +5415,12 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
 
   showModal('Nuevo Proyecto', body);
   setTimeout(() => $('mp-title')?.focus(), 60);
+
+  setTimeout(() => {
+    _attachCollaboratorAutocomplete($('mp-responsible'));
+    _attachCollaboratorAutocomplete($('mp-coauthors'), { multi: true });
+  }, 80);
+
   $('mpCancel').addEventListener('click', closeModal);
   $('mpSave').addEventListener('click', async () => {
     const title = $('mp-title').value.trim();
@@ -6187,6 +6398,12 @@ async function showEditProjectModal(p) {
     </div>`;
 
   showModal('Editar Proyecto', body);
+
+  setTimeout(() => {
+    _attachCollaboratorAutocomplete($('ep-responsible'));
+    _attachCollaboratorAutocomplete($('ep-coauthors'), { multi: true });
+  }, 80);
+
   $('epCancel').addEventListener('click', closeModal);
   $('epSave').addEventListener('click', async () => {
     await snapshotProject(p.id);          // Save snapshot before overwriting
@@ -7047,6 +7264,87 @@ const GoogleSync = (() => {
 })();
 
 // ══════════════════════════════════════════════════════════════
+//  AUTOCOMPLETE DE COLABORADORES — reutilizable en todos los modales
+// ══════════════════════════════════════════════════════════════
+async function _attachCollaboratorAutocomplete(inputEl, { multi = false } = {}) {
+  if (!inputEl) return;
+  const collabs = await db.collaborators.orderBy('name').toArray();
+  if (!collabs.length) return;
+
+  let popup = null;
+
+  const removePopup = () => { popup?.remove(); popup = null; };
+
+  const showPopup = (query) => {
+    removePopup();
+    const lq = query.toLowerCase().trim();
+    if (!lq) return;
+    const matches = collabs
+      .filter(c => c.name.toLowerCase().includes(lq) ||
+                   (c.role||'').toLowerCase().includes(lq) ||
+                   (c.affiliation||'').toLowerCase().includes(lq))
+      .slice(0, 6);
+    if (!matches.length) return;
+
+    const rect = inputEl.getBoundingClientRect();
+    popup = document.createElement('div');
+    popup.className = 'collab-suggest';
+    popup.style.cssText =
+      `left:${rect.left}px;top:${rect.bottom + 3}px;` +
+      `min-width:${Math.max(rect.width, 240)}px;max-width:360px`;
+
+    matches.forEach(c => {
+      const item = document.createElement('div');
+      item.className = 'collab-suggest-item';
+      item.innerHTML = `
+        <span class="collab-suggest-name">${esc(c.name)}</span>
+        ${c.role || c.affiliation
+          ? `<span class="collab-suggest-meta">${[c.role, c.affiliation].filter(Boolean).map(esc).join(' · ')}</span>`
+          : ''}`;
+      item.addEventListener('mousedown', e => {
+        e.preventDefault();
+        if (multi) {
+          const parts = inputEl.value.split(',').map(s => s.trim()).filter(Boolean);
+          if (!parts[parts.length - 1] ||
+              !c.name.toLowerCase().startsWith(parts[parts.length - 1].toLowerCase()))
+            parts.pop();
+          // Evitar duplicados
+          if (!parts.includes(c.name)) parts.push(c.name);
+          inputEl.value = parts.join(', ');
+        } else {
+          inputEl.value = c.name;
+        }
+        removePopup();
+        inputEl.focus();
+        inputEl.dispatchEvent(new Event('input'));
+      });
+      popup.appendChild(item);
+    });
+
+    document.body.appendChild(popup);
+  };
+
+  const getQuery = () => {
+    if (!multi) return inputEl.value;
+    const parts = inputEl.value.split(',');
+    return parts[parts.length - 1].trim();
+  };
+
+  inputEl.addEventListener('input',  () => showPopup(getQuery()));
+  inputEl.addEventListener('focus',  () => showPopup(getQuery()));
+  inputEl.addEventListener('blur',   () => setTimeout(removePopup, 160));
+  inputEl.addEventListener('keydown', e => {
+    if (!popup) return;
+    if (e.key === 'Escape') { e.stopPropagation(); removePopup(); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); popup.firstElementChild?.focus(); }
+  });
+  popup?.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') e.target.nextElementSibling?.focus();
+    if (e.key === 'ArrowUp')   { e.preventDefault(); e.target.previousElementSibling?.focus() || inputEl.focus(); }
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════════
 async function init() {
@@ -7216,7 +7514,12 @@ async function renderAreas() {
   });
   mainContent.querySelectorAll('[data-area-filter]').forEach(btn => {
     btn.addEventListener('click', () => {
-      App.groupBy = 'area'; App._projPage = 1; navigate('projects');
+      App.filterArea        = btn.dataset.areaFilter;
+      App.filters           = { type:'all', priority:'all', column:'all' };
+      App.filterResponsible = 'all';
+      App.groupBy           = 'none';
+      App._projPage         = 1;
+      navigate('projects');
     });
   });
 }

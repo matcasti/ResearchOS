@@ -2985,3 +2985,85 @@ body.presentation-mode .kanban-col { width: 300px; }
 }
 .sub-unified-row:last-child { border-bottom: none; }
 .sub-card-paper-pending { border-left: 3px solid var(--text-3); }
+
+/* ══════════════════════════════════════════════════════════════
+   AGENDA MENSUAL
+══════════════════════════════════════════════════════════════ */
+.monthly-wrapper { overflow-x: auto; }
+.monthly-day-headers {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px; margin-bottom: 2px;
+}
+.monthly-day-header-cell {
+  font-family: var(--font-mono); font-size: .62rem; color: var(--text-3);
+  text-transform: uppercase; text-align: center; padding: 4px 2px;
+  background: var(--bg-surface); border-radius: var(--radius-sm);
+}
+.monthly-grid {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px; background: var(--border);
+  border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden;
+}
+.monthly-cell {
+  background: var(--bg-card); min-height: 84px;
+  padding: 5px 4px; position: relative;
+  min-width: 0; overflow: hidden;
+}
+.monthly-cell-other  { background: var(--bg-surface); opacity: .55; }
+.monthly-cell-today  { background: color-mix(in srgb, var(--accent) 7%, var(--bg-card)); }
+.monthly-cell-num {
+  font-size: .7rem; font-weight: 600; color: var(--text-3);
+  margin-bottom: 3px; padding: 0 2px;
+}
+.monthly-cell-num-today {
+  color: var(--accent); background: var(--accent-d);
+  border-radius: 99px; padding: 0 5px;
+}
+.monthly-event-pill {
+  display: block; font-size: .6rem; padding: 1px 4px; border-radius: 3px;
+  margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer; color: var(--text-1); background: var(--bg-elevated);
+  border-left: 2px solid transparent;
+  transition: background 100ms var(--ease);
+  line-height: 1.5;
+}
+.monthly-event-pill:hover { background: var(--bg-hover); filter: brightness(1.1); }
+.monthly-more {
+  font-size: .58rem; color: var(--accent); cursor: pointer;
+  font-family: var(--font-mono); padding: 1px 3px;
+  display: block; margin-top: 1px;
+}
+.monthly-more:hover { text-decoration: underline; }
+
+/* ══════════════════════════════════════════════════════════════
+   AUTOCOMPLETE DE COLABORADORES
+══════════════════════════════════════════════════════════════ */
+.collab-suggest {
+  position: fixed; z-index: 5000;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-str);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  max-height: 180px; overflow-y: auto;
+  animation: ddFadeIn 120ms var(--ease);
+}
+.collab-suggest-item {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 7px 12px; cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background 100ms var(--ease);
+}
+.collab-suggest-item:last-child { border-bottom: none; }
+.collab-suggest-item:hover { background: var(--bg-hover); }
+.collab-suggest-name  { font-size: .8rem; color: var(--text-1); }
+.collab-suggest-meta  {
+  font-size: .65rem; color: var(--text-3);
+  font-family: var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   TIMELINE — sub-items de submissions y reuniones
+══════════════════════════════════════════════════════════════ */
+.tl-sub-meeting .timeline-idea-label  { color: var(--teal)   !important; }
+.tl-sub-sub     .timeline-idea-label  { color: var(--accent) !important; }

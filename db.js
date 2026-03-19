@@ -6,7 +6,7 @@
 
 const db = new Dexie('ResearchOS_v2');   // ← nombre nuevo = BD limpia para todos
 
-// Schema final consolidado — versión única, sin cadena de migraciones
+// Schema final consolidado
 db.version(1).stores({
   projects:           '++id, title, type, status, columnId, responsible, deadline, priority, createdAt, updatedAt, archived, starred, parentId',
   ideas:              '++id, title, content, status, projectId, starred, createdAt, updatedAt',
@@ -16,13 +16,12 @@ db.version(1).stores({
   collaborators:      '++id, name, email, role, affiliation, createdAt',
   kanbanColumns:      '++id, title, order, color, isDefault, wip',
   settings:           'key, value',
-  // ── Features nuevas ──────────────────────────────────
   submissions:        '++id, title, type, status, projectId, targetVenue, deadlineAt, submittedAt, createdAt, updatedAt',
   meetings:           '++id, title, date, projectId, createdAt, updatedAt',
   references:         '++id, title, authors, year, journal, doi, projectId, createdAt, updatedAt'
 });
 
-// Version 2: agrega índice deadline a ideas (aditivo, retrocompat)
+// Version 2: agrega índice deadline a ideas
 db.version(2).stores({
   ideas: '++id, title, content, status, projectId, starred, createdAt, updatedAt, deadline'
 });
