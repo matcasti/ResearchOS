@@ -5636,13 +5636,29 @@ async function renderGoogleSyncSection() {
     </div>
 
     <div class="settings-row" style="margin-top:6px">
-      <div>
-        <div class="settings-row-label">📧 Email y Gmail</div>
+      <div style="flex:1">
+        <div class="settings-row-label">📧 Email y permisos Gmail</div>
         <div class="settings-row-desc" id="gEmailDisplay" style="font-family:var(--font-mono)">
-          Verificando permisos…
+          Verificando…
         </div>
       </div>
       <span id="gGmailBadge" class="gsync-gmail-badge gsync-gmail-loading">…</span>
+    </div>
+    <div id="gGmailReauthRow" style="display:none;margin-top:4px">
+      <div style="background:rgba(251,191,36,.07);border:1px solid rgba(251,191,36,.25);
+                  border-radius:var(--radius-md);padding:10px 14px;font-size:.78rem;
+                  color:var(--amber);line-height:1.5;">
+        <strong>Se necesita reconectar tu cuenta</strong> para activar el envío de emails.<br>
+        <span style="font-size:.72rem;color:var(--text-2)">
+          Asegúrate de haber añadido el scope <code style="background:var(--bg-elevated);
+          padding:1px 5px;border-radius:3px;">gmail.send</code> en tu Google Cloud Console antes de continuar.
+        </span>
+        <div style="margin-top:8px">
+          <button class="btn btn-ghost btn-sm" id="gReauthBtn" style="color:var(--amber);border-color:rgba(251,191,36,.4)">
+            🔑 Reconectar con permisos Gmail
+          </button>
+        </div>
+      </div>
     </div>
 
     <div class="settings-row" style="margin-top:6px">
@@ -5708,21 +5724,50 @@ async function renderGoogleSyncSection() {
     showToast(e.target.checked ? 'Auto-guardado en Drive activado ✓' : 'Auto-guardado en Drive desactivado', 'success');
   });
 
+  // Verificar acceso Gmail y mostrar email conectado
   if (connected) {
     GoogleSync.getUserProfile().then(email => {
-      const display = $('gEmailDisplay');
-      const badge   = $('gGmailBadge');
+      const display  = $('gEmailDisplay');
+      const badge    = $('gGmailBadge');
+      const reauthRow = $('gGmailReauthRow');
       if (!display || !badge) return;
+
       if (email) {
         display.textContent = email;
-        badge.textContent   = 'Gmail ✓';
-        badge.className     = 'gsync-gmail-badge gsync-gmail-ok';
+        // Verificar si el token tiene gmail.send probando con una petición mínima
+        fetch('https://www.googleapis.com/gmail/v1/users/me/profile', {
+          headers: { Authorization: `Bearer ${localStorage.getItem('_gsAccessTokenCache') || ''}` }
+        }).catch(() => {});
+
+        // Usamos el propio token almacenado para verificar el scope
+        db.settings.get('google_access_token').then(row => {
+          if (!row?.value) return;
+          return fetch('https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=' + encodeURIComponent(row.value));
+        }).then(res => res?.json()).then(info => {
+          const scopes  = info?.scope || '';
+          const hasGmail = scopes.includes('gmail.send') || scopes.includes('mail.google');
+          badge.textContent = hasGmail ? 'Gmail ✓' : 'Gmail ✗';
+          badge.className   = `gsync-gmail-badge ${hasGmail ? 'gsync-gmail-ok' : 'gsync-gmail-warn'}`;
+          if (!hasGmail && reauthRow) {
+            reauthRow.style.display = 'block';
+            $('gReauthBtn')?.addEventListener('click', () => GoogleSync.reauthorizeWithGmail());
+          }
+        }).catch(() => {
+          badge.textContent = 'Gmail ?';
+          badge.className   = 'gsync-gmail-badge gsync-gmail-warn';
+          if (reauthRow) {
+            reauthRow.style.display = 'block';
+            $('gReauthBtn')?.addEventListener('click', () => GoogleSync.reauthorizeWithGmail());
+          }
+        });
       } else {
-        display.textContent = 'Sin permisos — reconecta tu cuenta para activar Gmail';
-        badge.textContent   = 'Reconectar →';
-        badge.className     = 'gsync-gmail-badge gsync-gmail-warn';
-        badge.style.cursor  = 'pointer';
-        badge.addEventListener('click', () => GoogleSync.signIn());
+        display.textContent  = 'No se pudo leer el email';
+        badge.textContent    = 'Error';
+        badge.className      = 'gsync-gmail-badge gsync-gmail-warn';
+        if (reauthRow) {
+          reauthRow.style.display = 'block';
+          $('gReauthBtn')?.addEventListener('click', () => GoogleSync.reauthorizeWithGmail());
+        }
       }
     });
   }
@@ -7668,7 +7713,20 @@ async function showDeadlineReminderModal(entityType, entity) {
       btn.disabled = false;
       btn.innerHTML = orig;
       if (err.message === 'gmail_scope_missing') {
-        showToast('Necesitas reconectar tu cuenta Google con permisos de Gmail. Ve a Settings.', 'error');
+        // Mostrar aviso en el propio modal sin cerrarlo
+        const footer = document.querySelector('.modal-footer');
+        if (footer && !$('mailScopeWarn')) {
+          const warn = document.createElement('div');
+          warn.id = 'mailScopeWarn';
+          warn.style.cssText = 'width:100%;padding:10px 0 0;font-size:.77rem;color:var(--amber);line-height:1.5;';
+          warn.innerHTML = `⚠ <strong>Permisos de Gmail insuficientes.</strong> Reconecta tu cuenta desde
+            <span style="color:var(--accent);cursor:pointer;text-decoration:underline"
+                  id="mailGoSettings">Settings → Google Drive Sync</span>
+            y acepta el permiso <code style="background:var(--bg-elevated);padding:1px 5px;
+            border-radius:3px;font-size:.7rem;">gmail.send</code>.`;
+          footer.insertAdjacentElement('beforebegin', warn);
+          $('mailGoSettings')?.addEventListener('click', () => { closeModal(); navigate('settings'); });
+        }
       } else {
         showToast('Error al enviar: ' + err.message, 'error');
       }
@@ -7900,12 +7958,12 @@ const GoogleSync = (() => {
     if (_userEmail) return _userEmail;
     if (!accessToken) return null;
     try {
-      const res = await driveRequest(
-        'https://www.googleapis.com/gmail/v1/users/me/profile'
-      );
+      const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
       if (!res.ok) return null;
       const data = await res.json();
-      _userEmail = data.emailAddress || null;
+      _userEmail = data.email || null;
       if (_userEmail) await saveSetting('google_user_email', _userEmail);
       return _userEmail;
     } catch { return null; }
@@ -8134,6 +8192,15 @@ const GoogleSync = (() => {
     _autoSaveTimer = setTimeout(() => push({ silent: true }), 60000);
   }
 
+  function reauthorizeWithGmail() {
+    if (!tokenClient) {
+      showToast('Google Identity Services no disponible', 'error');
+      return;
+    }
+    // prompt:'consent' fuerza la pantalla de permisos mostrando los scopes nuevos
+    tokenClient.requestAccessToken({ prompt: 'consent' });
+  }
+
   return {
     init,
     signIn,
@@ -8143,6 +8210,7 @@ const GoogleSync = (() => {
     scheduleAutoSave,
     sendEmail,
     getUserProfile,
+    reauthorizeWithGmail,
     isConnected: () => !!accessToken,
     getLastSync: ()  => loadSetting('google_sync_last'),
   };
