@@ -7955,8 +7955,18 @@ const GoogleSync = (() => {
 
   // ── Obtener perfil del usuario via Gmail API ──────────────
   async function getUserProfile() {
+    // 1. Email en memoria (ya cargado en esta sesión)
     if (_userEmail) return _userEmail;
+
+    // 2. Email cacheado en Dexie (token puede estar expirado — no necesita red)
+    const saved = await loadSetting('google_user_email');
+    if (saved) { _userEmail = saved; return _userEmail; }
+
+    // 3. Solo intentar red si el token sigue vigente
     if (!accessToken) return null;
+    const expiry = await loadSetting('google_token_expiry');
+    if (!expiry || Date.now() >= Number(expiry)) return null;
+
     try {
       const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
         headers: { Authorization: `Bearer ${accessToken}` }
@@ -8036,19 +8046,17 @@ const GoogleSync = (() => {
     const token  = await loadSetting('google_access_token');
     const expiry = await loadSetting('google_token_expiry');
 
+    // Restaurar email cacheado independientemente del estado del token
+    const savedEmail = await loadSetting('google_user_email');
+    if (savedEmail) _userEmail = savedEmail;
+
     if (token && expiry && Date.now() < Number(expiry)) {
       accessToken = token;
       setStatus('ok');
-      // Auto-sync al iniciar: push inmediato si está habilitado
       const autoSync = await loadSetting('google_auto_sync');
       if (autoSync === 'true') await push({ silent: true });
-      // No llamar scheduleAutoSave aquí: el timer solo debe activarse tras cambios del usuario
-
-      const savedEmail = await loadSetting('google_user_email');
-      if (savedEmail) _userEmail = savedEmail;
     }
 
-    // Preparar cliente OAuth2 (no lanza popup hasta que el usuario lo pida)
     if (typeof google !== 'undefined') {
       tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CLIENT_ID,
@@ -8060,11 +8068,12 @@ const GoogleSync = (() => {
             return;
           }
           accessToken = resp.access_token;
+          _userEmail  = null; // forzar re-fetch con token nuevo
           await saveSetting('google_access_token', accessToken);
           await saveSetting('google_token_expiry', String(Date.now() + (resp.expires_in - 60) * 1000));
           setStatus('ok');
           showToast('Cuenta de Google conectada ✓', 'success');
-          renderGoogleSyncSection(); // refrescar panel de settings si está abierto
+          renderGoogleSyncSection();
         }
       });
     }
