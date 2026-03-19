@@ -32,6 +32,7 @@ const App = {
   agendaViewMode:    'week',   // 'week' | 'month'
   agendaMonthOffset: 0,        // meses desde el actual (0 = este mes)
   filterArea:        'all',    // filtro de área en vista Proyectos
+  _tutorialTab:    'quickstart',
 };
 
 // ── DOM refs ─────────────────────────────────────────────────
@@ -259,6 +260,7 @@ async function renderView(view) {
     orphans:       [{label:'Dashboard', view:'dashboard'}, {label:'Huérfanos',    view:'orphans'}],
     triage:        [{label:'Dashboard', view:'dashboard'}, {label:'Ideas Inbox',  view:'ideas'}, {label:'Revisión rápida', view:'triage'}],
     areas:         [{label:'Dashboard', view:'dashboard'}, {label:'Áreas', view:'areas'}],
+    tutorial: [{label:'Dashboard', view:'dashboard'}, {label:'Tutorial', view:'tutorial'}],
   };
 
   // Render first, then inject BC at top so innerHTML overwrites don't destroy it
@@ -284,6 +286,7 @@ async function renderView(view) {
     case 'orphans':      await renderOrphans();         break;
     case 'triage':       await renderIdeaTriage();      break;
     case 'areas':        await renderAreas();           break;
+    case 'tutorial':     await renderTutorial();        break;
     default:             await renderDashboard();
   }
 
@@ -4852,6 +4855,402 @@ async function renderIdeaTriage() {
     else if (e.key === 'Escape') { document.removeEventListener('keydown', onKey); navigate('ideas'); }
   };
   document.addEventListener('keydown', onKey);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  VIEW: TUTORIAL & GUÍA DE USO
+// ══════════════════════════════════════════════════════════════
+async function renderTutorial() {
+  const tab = App._tutorialTab || 'quickstart';
+
+  const TABS = [
+    { id: 'quickstart', icon: '🚀', label: 'Inicio Rápido' },
+    { id: 'research',   icon: '🔬', label: 'Investigación'  },
+    { id: 'teaching',   icon: '🎓', label: 'Docencia'       },
+    { id: 'grants',     icon: '💰', label: 'Fondos'         },
+    { id: 'team',       icon: '👥', label: 'Equipo'         },
+    { id: 'shortcuts',  icon: '⌨', label: 'Atajos'         },
+  ];
+
+  // ── Helpers de bloques HTML ────────────────────────────────
+  const step = (n, icon, title, desc, btnLabel = null, btnAttrs = '') => `
+    <div class="tut-step-card">
+      <div class="tut-step-head">
+        <span class="tut-step-num">${n}</span>
+        <span style="font-size:1.4rem;line-height:1">${icon}</span>
+      </div>
+      <div class="tut-step-title">${title}</div>
+      <div class="tut-step-desc">${desc}</div>
+      ${btnLabel ? `<button class="btn btn-ghost btn-sm tut-action" ${btnAttrs}>→ ${btnLabel}</button>` : ''}
+    </div>`;
+
+  const modCard = (icon, title, desc, view) => `
+    <div class="tut-mod-card" data-tut-nav="${view}" title="Ir a ${title}">
+      <div class="tut-mod-icon">${icon}</div>
+      <div class="tut-mod-title">${title}</div>
+      <div class="tut-mod-desc">${desc}</div>
+    </div>`;
+
+  const wfStep = (icon, label, desc, color = 'var(--accent)') => `
+    <div class="tut-wf-step" style="--wfc:${color}">
+      <div class="tut-wf-icon">${icon}</div>
+      <div class="tut-wf-label">${label}</div>
+      <div class="tut-wf-desc">${desc}</div>
+    </div>`;
+
+  const sk = (keys, desc) => `
+    <div class="tut-sk-row">
+      <div class="tut-sk-keys">${keys.map(k => `<kbd class="tut-kbd">${esc(k)}</kbd>`).join(' / ')}</div>
+      <div class="tut-sk-desc">${desc}</div>
+    </div>`;
+
+  const tip = text => `
+    <div class="tut-tip-box">
+      <span class="tut-tip-icon">💡</span><div>${text}</div>
+    </div>`;
+
+  const ucBox = steps => `
+    <div class="tut-usecase-box">
+      ${steps.map((s, i) => `
+        <div class="tut-uc-step">
+          <span class="tut-uc-num">${i + 1}</span><span>${s}</span>
+        </div>`).join('')}
+    </div>`;
+
+  const featRow = cards => `<div class="tut-feat-row">${cards.join('')}</div>`;
+  const feat = (icon, title, body, btnLabel = null, btnAttrs = '') => `
+    <div class="tut-feat-card">
+      <div class="tut-feat-icon">${icon}</div>
+      <div class="tut-feat-title">${title}</div>
+      <div class="tut-feat-body">${body}</div>
+      ${btnLabel ? `<button class="btn btn-ghost btn-sm tut-action" ${btnAttrs}>${btnLabel} →</button>` : ''}
+    </div>`;
+
+  // ── Contenidos por pestaña ─────────────────────────────────
+  const CONTENT = {
+
+    // ─────────────────────────────────────────────── INICIO RÁPIDO
+    quickstart: `
+      <div class="tut-section">
+        <div class="tut-hero">
+          <div style="font-size:2.8rem;line-height:1;flex-shrink:0;color:var(--accent)">⬡</div>
+          <div>
+            <div class="tut-hero-title">Bienvenido a ResearchOS</div>
+            <div class="tut-hero-desc">Herramienta de productividad científica <em>local-first</em>. Sin backend, sin telemetría — tus datos nunca salen de tu navegador. Diseñada para investigadores que gestionan proyectos, docencia, fondos y colaboraciones en paralelo.</div>
+          </div>
+        </div>
+
+        <div class="section-title">Primeros pasos</div>
+        <div class="tut-step-grid">
+          ${step(1, '◉', 'Crea tu primer proyecto', 'Todo gira en torno a proyectos: papers, grants, análisis, datasets, clases, tesis. Elige un tipo y una plantilla — se pre-rellena la estructura.', 'Nuevo Proyecto', 'data-tut-demo="add-project"')}
+          ${step(2, '◎', 'Captura una idea', 'El Ideas Inbox es tu área de captura rápida. Anota cualquier cosa antes de que se te olvide — puedes vincularla a un proyecto después.', 'Ir a Ideas', 'data-tut-nav="ideas"')}
+          ${step(3, '⊞', 'Organiza con el Kanban', 'Arrastra tarjetas entre columnas para reflejar el estado. ResearchOS guarda el historial de cada movimiento con fecha y hora.', 'Ver Kanban', 'data-tut-nav="kanban"')}
+          ${step(4, '🎯', 'Usa el Focus Feed', '¿Qué hacer hoy? El Focus Feed calcula automáticamente qué proyectos necesitan atención según deadlines, acciones pendientes e ideas sin revisar.', 'Abrir Focus', 'data-tut-nav="focus"')}
+        </div>
+
+        <div class="section-title" style="margin-top:4px">Todos los módulos</div>
+        <div class="tut-mod-grid">
+          ${modCard('⊞', 'Kanban', 'Estado visual con drag & drop', 'kanban')}
+          ${modCard('⏱', 'Timeline', 'Gantt de deadlines', 'timeline')}
+          ${modCard('🎯', 'Focus Feed', 'Priorización automática', 'focus')}
+          ${modCard('◎', 'Ideas', 'Captura rápida de notas', 'ideas')}
+          ${modCard('📤', 'Submissions', 'Seguimiento de envíos', 'submissions')}
+          ${modCard('🗓', 'Reuniones', 'Log con action items', 'meetings')}
+          ${modCard('📚', 'Referencias', 'BibTeX vinculado', 'references')}
+          ${modCard('⟨/⟩', 'Snippets', 'Código por lenguaje', 'snippets')}
+          ${modCard('👥', 'Colaboradores', 'Directorio de contactos', 'collaborators')}
+          ${modCard('⬡', 'Project Hub', 'Vista unificada', 'projects')}
+          ${modCard('🔗', 'Huérfanos', 'Detecta elementos sueltos', 'orphans')}
+          ${modCard('⊡', 'Áreas', 'Agrupa por línea de investigación', 'areas')}
+          ${modCard('📅', 'Agenda', 'Calendario semanal/mensual', 'weekly')}
+          ${modCard('⬡', 'Anidados', 'Árbol de subproyectos', 'nested')}
+          ${modCard('⊟', 'FS Bridge', 'Estructura de directorios', 'filesystem')}
+          ${modCard('⚙', 'Settings', 'Exportar, importar, Drive', 'settings')}
+        </div>
+
+        ${tip(`<strong>Tip de productividad:</strong> Presiona <kbd class="tut-kbd">Ctrl+K</kbd> (o <kbd class="tut-kbd">⌘K</kbd> en Mac) en cualquier momento para buscar en todos tus proyectos, ideas, snippets, reuniones y referencias a la vez — sin salir de la vista actual.`)}
+      </div>`,
+
+    // ─────────────────────────────────────────────── INVESTIGACIÓN
+    research: `
+      <div class="tut-section">
+        <div class="section-title">Ciclo de vida de un paper</div>
+        <div class="tut-workflow">
+          ${wfStep('💡', 'Idea', 'Ideas Inbox', 'var(--accent)')}
+          <div class="tut-wf-arrow">→</div>
+          ${wfStep('◉', 'Proyecto', 'Tipo Paper + Hub', 'var(--purple)')}
+          <div class="tut-wf-arrow">→</div>
+          ${wfStep('📝', 'Escritura', 'Kanban: Escritura', 'var(--amber)')}
+          <div class="tut-wf-arrow">→</div>
+          ${wfStep('📤', 'Envío', 'Submission Tracker', 'var(--orange)')}
+          <div class="tut-wf-arrow">→</div>
+          ${wfStep('✓', 'Publicado', 'Columna Completado', 'var(--green)')}
+        </div>
+
+        <div class="tut-step-grid">
+          ${step(1, '◉', 'Crea el proyecto tipo Paper', 'Usa la plantilla "📄 Paper" — pre-rellena tipo, prioridad y estructura Markdown con las secciones del manuscrito. El historial de ediciones queda registrado.', 'Crear Paper', 'data-tut-demo="add-project"')}
+          ${step(2, '⬡', 'Abre el Project Hub', 'El Hub muestra en una sola página: descripción, ideas vinculadas, submissions, reuniones, referencias y snippets del proyecto. Accede desde el Inspector → "Abrir Hub".', 'Ver Proyectos', 'data-tut-nav="projects"')}
+          ${step(3, '📚', 'Añade bibliografía', 'Agrega referencias vinculadas al proyecto. Exporta el archivo .bib completo con un clic desde la vista Referencias o desde el Hub.', 'Referencias', 'data-tut-nav="references"')}
+          ${step(4, '📤', 'Registra el envío al journal', 'El Submission Tracker mantiene el historial completo: rounds de revisión, fechas y estados (preparación → enviado → en revisión → aceptado).', 'Submissions', 'data-tut-nav="submissions"')}
+        </div>
+
+        <div class="section-title" style="margin-top:4px">Herramientas para investigación</div>
+        ${featRow([
+          feat('◎', 'Ideas Inbox + Triage', 'Captura ideas durante la lectura. Usa la <strong>Revisión rápida</strong> para procesarlas con teclado: → revisar, A eliminar, P asignar proyecto.', 'Abrir', 'data-tut-nav="ideas"'),
+          feat('⟨/⟩', 'Snippets de código', 'Scripts R, Python, SQL organizados por colecciones y vinculados a proyectos. Resaltado de sintaxis, copia rápida y exportación incluidos.', 'Abrir', 'data-tut-nav="snippets"'),
+          feat('⊡', 'Áreas de investigación', 'Crea áreas (Ecología, Modelado, Teledetección) y vincúlalas a proyectos. Filtra la vista Proyectos por área para enfocar una línea a la vez.', 'Abrir', 'data-tut-nav="areas"'),
+        ])}
+
+        <div class="section-title" style="margin-top:4px">Ciclo de un análisis de datos</div>
+        <div class="tut-workflow">
+          ${wfStep('📥', 'Datos', 'Dataset como proyecto', 'var(--teal)')}
+          <div class="tut-wf-arrow">→</div>
+          ${wfStep('⟨/⟩', 'Scripts', 'Snippets R/Python vinculados', 'var(--accent)')}
+          <div class="tut-wf-arrow">→</div>
+          ${wfStep('◎', 'Ideas', 'Hallazgos e hipótesis', 'var(--purple)')}
+          <div class="tut-wf-arrow">→</div>
+          ${wfStep('📊', 'Figuras', 'Snippets de visualización', 'var(--amber)')}
+          <div class="tut-wf-arrow">→</div>
+          ${wfStep('📄', 'Paper', 'Proyecto Paper derivado', 'var(--green)')}
+        </div>
+
+        ${tip('<strong>Flujo recomendado:</strong> Para un análisis complejo, crea un proyecto tipo "Análisis" con área asignada, vincula los snippets R/Python relevantes, agrega ideas con los pasos metodológicos como subtareas, y registra las reuniones de revisión con fechas y acuerdos.')}
+      </div>`,
+
+    // ─────────────────────────────────────────────── DOCENCIA
+    teaching: `
+      <div class="tut-section">
+        <div class="tut-hero tut-hero-sm">
+          <div style="font-size:2.2rem;flex-shrink:0;line-height:1">🎓</div>
+          <div>
+            <div class="tut-hero-title">ResearchOS para Docencia</div>
+            <div class="tut-hero-desc">Gestiona cursos, supervisa tesistas y registra el avance de tus estudiantes con las mismas herramientas que usas para investigación — sin duplicar sistemas.</div>
+          </div>
+        </div>
+
+        <div class="section-title">Supervisión de tesistas — flujo paso a paso</div>
+        <div class="tut-step-grid">
+          ${step(1, '◉', 'Un proyecto por tesista', 'Tipo "Proyecto", responsable = nombre del alumno, deadline = fecha de defensa. La descripción Markdown guarda el título de tesis y el plan de trabajo.', 'Nuevo Proyecto', 'data-tut-demo="add-project"')}
+          ${step(2, '🗓', 'Registra cada reunión de avance', 'Documenta acuerdos y próximos pasos. Los action items aparecen en el Focus Feed hasta completarse — ningún compromiso se pierde.', 'Nueva Reunión', 'data-tut-demo="add-meeting"')}
+          ${step(3, '◎', 'Correcciones como ideas con subtareas', 'Cada vez que identifies algo que el tesista debe mejorar, créalo como Idea con subtareas desglosadas. El progreso queda visible y trazable.', 'Nueva Idea', 'data-tut-demo="add-idea"')}
+          ${step(4, '⬡', 'El Hub como bitácora completa', 'El Hub del proyecto muestra en una sola página el historial completo: reuniones, correcciones, referencias, deadlines y progreso de cada capítulo.', 'Ver Proyectos', 'data-tut-nav="projects"')}
+        </div>
+
+        <div class="section-title" style="margin-top:4px">Gestión de cursos y asignaturas</div>
+        ${featRow([
+          feat('📋', 'Curso como Proyecto', 'Crea cada asignatura como proyecto tipo "Proyecto". Usa la descripción Markdown para el programa, los contenidos y los criterios de evaluación con formato estructurado.'),
+          feat('📅', 'Agenda integrada', 'Las evaluaciones, reuniones de comité y entregas aparecen automáticamente en la Agenda Semanal y el Timeline junto con todos tus proyectos de investigación.', 'Ver Agenda', 'data-tut-nav="weekly"'),
+          feat('⬡', 'Proyectos anidados', 'Estructura un programa con sus asignaturas como subproyectos, o una tesis con sus capítulos. La vista Anidados muestra el árbol completo con estado de cada nodo.', 'Ver Anidados', 'data-tut-nav="nested"'),
+        ])}
+
+        <div class="section-title" style="margin-top:4px">Caso de uso: tesista de magíster</div>
+        ${ucBox([
+          'Crea proyecto <strong>"Tesis Mg. [Nombre]"</strong> — tipo "Proyecto", responsable = nombre del alumno, deadline = fecha de defensa, área = "Docencia".',
+          'Agrega ideas iniciales: "Cap. 1 — Introducción", "Cap. 2 — Metodología", "Cap. 3 — Resultados" con subtareas para cada sub-sección.',
+          'Después de cada reunión, registra acuerdos y asigna próximos pasos como action items. Quedan en el Focus Feed hasta completarse.',
+          'Usa el <strong>Focus Feed</strong> semanalmente para revisar todos los action items pendientes de tus tesistas de un vistazo.',
+          'En reuniones de comisión, registra los comentarios de cada evaluador como ideas vinculadas al proyecto con subtareas de corrección.',
+        ])}
+
+        ${tip('<strong>Tip:</strong> Crea un Área "Docencia" y vincúlala a todos los proyectos de supervisión y cursos. Así puedes filtrar solo la carga docente en la vista Proyectos y separarla del trabajo de investigación puro.')}
+      </div>`,
+
+    // ─────────────────────────────────────────────── FONDOS
+    grants: `
+      <div class="tut-section">
+        <div class="tut-hero tut-hero-sm">
+          <div style="font-size:2.2rem;flex-shrink:0;line-height:1">💰</div>
+          <div>
+            <div class="tut-hero-title">Gestión de Postulaciones</div>
+            <div class="tut-hero-desc">Desde la formulación de la propuesta hasta el seguimiento post-adjudicación, ResearchOS cubre todo el ciclo de vida de tus fondos de investigación.</div>
+          </div>
+        </div>
+
+        <div class="section-title">Ciclo de una postulación FONDECYT</div>
+        <div class="tut-workflow">
+          ${wfStep('📋', 'Formulación', 'Grant + Submission "Preparación"', 'var(--text-3)')}
+          <div class="tut-wf-arrow">→</div>
+          ${wfStep('✍', 'Escritura', 'Kanban → Escritura', 'var(--accent)')}
+          <div class="tut-wf-arrow">→</div>
+          ${wfStep('📤', 'Enviado', 'Submission → Enviado', 'var(--amber)')}
+          <div class="tut-wf-arrow">→</div>
+          ${wfStep('⏳', 'Revisión', 'Submission → En revisión', 'var(--purple)')}
+          <div class="tut-wf-arrow">→</div>
+          ${wfStep('✓', 'Adjudicado', 'Submission → Aceptado', 'var(--green)')}
+        </div>
+
+        <div class="tut-step-grid">
+          ${step(1, '💰', 'Crea el proyecto de postulación', 'Usa la plantilla "💰 Grant FONDECYT" — pre-rellena tipo, prioridad y estructura de secciones requeridas. Añade la convocatoria como deadline.', 'Crear Grant', 'data-tut-demo="add-project"')}
+          ${step(2, '📤', 'Registra la submission', 'Crea el registro en Submission Tracker vinculado al proyecto con el fondo objetivo (FONDECYT Regular, Iniciación, ANID-FONIS…) y el deadline oficial.', 'Nueva Submission', 'data-tut-demo="add-sub"')}
+          ${step(3, '📚', 'Vincula la bibliografía clave', 'Agrega las referencias del marco teórico y metodología. Exporta el .bib cuando necesites entregar el listado bibliográfico en la plataforma del fondo.', 'Nueva Referencia', 'data-tut-demo="add-ref"')}
+          ${step(4, '👥', 'Registra co-investigadores', 'Agrega a los co-PI y colaboradores en Colaboradores. El autocompletado los sugiere al escribir en los campos "Responsable" y "Coautores" del proyecto.', 'Colaboradores', 'data-tut-nav="collaborators"')}
+        </div>
+
+        <div class="section-title" style="margin-top:4px">Gestión de deadlines críticos</div>
+        ${featRow([
+          feat('⏱', 'Timeline para planificación estratégica', 'Vista Gantt con zoom semana/mes/<strong>año</strong>. Visualiza simultáneamente los deadlines de todas las convocatorias activas, reuniones de equipo y hitos del proyecto.', 'Ver Timeline', 'data-tut-nav="timeline"'),
+          feat('🎯', 'Alertas automáticas', 'El Dashboard muestra proyectos con deadline próximo. El Focus Feed prioriza grants con fechas inminentes. Activa notificaciones del navegador en Settings para recordatorios el día anterior.', 'Focus Feed', 'data-tut-nav="focus"'),
+          feat('☁', 'Respaldo en Google Drive', 'Conecta Drive para sincronizar entre dispositivos. El auto-guardado sube los cambios 60 segundos después de cada edición. Comparte el backup con tu equipo de co-PI.', 'Configurar', 'data-tut-nav="settings"'),
+        ])}
+
+        ${tip('<strong>Tip:</strong> Usa las Ideas vinculadas al proyecto del grant para anotar los puntos débiles que los revisores podrían señalar — con subtareas para cada corrección necesaria. Así nada queda pendiente antes del envío oficial.')}
+      </div>`,
+
+    // ─────────────────────────────────────────────── EQUIPO
+    team: `
+      <div class="tut-section">
+        <div class="tut-hero tut-hero-sm">
+          <div style="font-size:2.2rem;flex-shrink:0;line-height:1">👥</div>
+          <div>
+            <div class="tut-hero-title">Gestión de Equipo</div>
+            <div class="tut-hero-desc">Coordina investigadores, tesistas, colaboradores externos y co-autores manteniendo toda la información del equipo centralizada y conectada a los proyectos.</div>
+          </div>
+        </div>
+
+        <div class="tut-step-grid">
+          ${step(1, '👤', 'Registra a tu equipo', 'Agrega cada persona en Colaboradores: nombre, rol (tesista, co-investigador, colaborador externo), institución y email. El autocompletado los sugiere en todos los campos del sistema.', 'Colaboradores', 'data-tut-nav="collaborators"')}
+          ${step(2, '⬡', 'Vincula personas a proyectos', 'Al crear o editar un proyecto, escribe el nombre en "Responsable" o "Coautores". El autocompletado muestra las personas registradas en Colaboradores.', 'Ver Proyectos', 'data-tut-nav="projects"')}
+          ${step(3, '🗓', 'Registra reuniones del laboratorio', 'Documenta cada reunión con acuerdos y próximos pasos. Los action items quedan en el Focus Feed hasta que se marquen como completados.', 'Nueva Reunión', 'data-tut-demo="add-meeting"')}
+          ${step(4, '🔗', 'Revisa huérfanos regularmente', 'La vista Huérfanos muestra ideas, snippets y reuniones sin proyecto asignado. Pásate por ella semanalmente para mantener todo el equipo conectado.', 'Ver Huérfanos', 'data-tut-nav="orphans"')}
+        </div>
+
+        <div class="section-title" style="margin-top:4px">Coordinación y visibilidad del equipo</div>
+        ${featRow([
+          feat('⚑', 'Action Items por reunión', 'Los próximos pasos de cada reunión tienen checkboxes propios. El Focus Feed los muestra con la reunión de origen hasta completarse — ningún compromiso se pierde entre sesiones.'),
+          feat('⊞', 'Filtrar por responsable', 'En el Kanban y la vista Proyectos, filtra por "Responsable" para ver solo los proyectos asignados a una persona. Útil para las reuniones de seguimiento individuales.', 'Ver Kanban', 'data-tut-nav="kanban"'),
+          feat('📊', 'Heatmap de actividad', 'El Dashboard muestra la actividad diaria del año. Haz clic en cualquier fecha para ver exactamente qué se editó o creó ese día — ideal para reconstruir el historial del lab.', 'Dashboard', 'data-tut-nav="dashboard"'),
+        ])}
+
+        <div class="section-title" style="margin-top:4px">Caso de uso: laboratorio de investigación</div>
+        ${ucBox([
+          'Crea <strong>Áreas</strong> por cada línea del laboratorio (ej: Ecología del Paisaje, Teledetección, Estadística Ecológica). Vincula cada proyecto a su área.',
+          'Registra todos los miembros en <strong>Colaboradores</strong> con su rol. El autocompletado funciona en todos los modales del sistema sin configuración adicional.',
+          'Asigna proyectos usando el campo <strong>Responsable</strong>. En el Kanban, usa el filtro "Responsable" para el seguimiento individual de cada persona.',
+          'Cada semana: revisa el <strong>Focus Feed</strong> para ver deadlines próximos y action items pendientes de reuniones pasadas de todo el equipo.',
+          'Exporta los datos a JSON desde Settings y sube el archivo a Google Drive como respaldo compartido del laboratorio.',
+        ])}
+
+        ${tip('<strong>Tip:</strong> Usa la vista <strong>Proyectos Anidados</strong> para crear proyectos "paraguas" (ej: "Laboratorio Semestre 1/2026") con los proyectos de cada integrante del equipo como subproyectos anidados — la vista muestra el árbol completo con estados y deadlines.')}
+      </div>`,
+
+    // ─────────────────────────────────────────────── ATAJOS
+    shortcuts: `
+      <div class="tut-section">
+        <div class="section-title">Atajos de teclado globales</div>
+        <div class="tut-sk-table">
+          ${sk(['Ctrl+K', '⌘K'], 'Abrir Paleta de Comandos — búsqueda unificada en proyectos, ideas, snippets, reuniones, referencias y submissions')}
+          ${sk(['Ctrl+Shift+K', '⌘⇧K'], 'Ir directamente al Kanban Board')}
+          ${sk(['Ctrl+P', '⌘P'], 'Abrir / cerrar el temporizador Pomodoro y activar Modo Focus')}
+          ${sk(['Alt+←'], 'Retroceder en el historial de vistas navegadas')}
+          ${sk(['Alt+→'], 'Avanzar en el historial de vistas navegadas')}
+          ${sk(['F5'], 'Activar / desactivar modo presentación en la vista Kanban')}
+          ${sk(['Esc'], 'Cerrar modal, inspector, paleta de comandos o salir de presentación')}
+        </div>
+
+        <div class="section-title" style="margin-top:24px">Revisión rápida de ideas (Triage)</div>
+        <div class="tut-sk-table">
+          ${sk(['→', 'L'], 'Marcar idea como revisada y avanzar a la siguiente')}
+          ${sk(['A'], 'Eliminar la idea actual y avanzar')}
+          ${sk(['P'], 'Abrir modal para asignar la idea a un proyecto')}
+          ${sk(['E'], 'Expandir y editar la idea en el panel inspector')}
+          ${sk(['Esc'], 'Salir del modo Triage y volver al Ideas Inbox')}
+        </div>
+
+        <div class="section-title" style="margin-top:24px">Inspector — edición in-place</div>
+        <div class="tut-sk-table">
+          ${sk(['Doble clic en campo'], 'Editar responsable, deadline o prioridad directamente sin abrir el modal de edición completo')}
+          ${sk(['Enter'], 'Confirmar y guardar la edición in-place')}
+          ${sk(['Esc'], 'Cancelar la edición in-place sin guardar cambios')}
+        </div>
+
+        <div class="section-title" style="margin-top:24px">Kanban Board</div>
+        <div class="tut-sk-table">
+          ${sk(['Doble clic en título de tarjeta'], 'Renombrar la tarjeta directamente desde el tablero sin abrir el inspector')}
+          ${sk(['Arrastrar tarjeta'], 'Mover a otra columna — el cambio queda registrado en el historial con fecha y hora')}
+          ${sk(['F5'], 'Pantalla completa para presentaciones — oculta sidebar e inspector')}
+        </div>
+
+        <div class="section-title" style="margin-top:24px">Paleta de comandos</div>
+        <div class="tut-sk-table">
+          ${sk(['↑', '↓'], 'Navegar hacia arriba / abajo entre los resultados')}
+          ${sk(['Enter'], 'Abrir el resultado seleccionado e ir a esa vista')}
+          ${sk(['Esc'], 'Cerrar la paleta sin navegar')}
+        </div>
+
+        <div class="section-title" style="margin-top:24px">Acceso rápido a módulos — haz clic para navegar</div>
+        <div class="tut-mod-grid" style="margin-top:10px">
+          ${[
+            ['◈', 'Dashboard', 'dashboard'],
+            ['⊞', 'Kanban', 'kanban'],
+            ['◉', 'Proyectos', 'projects'],
+            ['◎', 'Ideas', 'ideas'],
+            ['📤', 'Submissions', 'submissions'],
+            ['🗓', 'Reuniones', 'meetings'],
+            ['📚', 'Referencias', 'references'],
+            ['👥', 'Colaboradores', 'collaborators'],
+            ['⟨/⟩', 'Snippets', 'snippets'],
+            ['🎯', 'Focus Feed', 'focus'],
+            ['⏱', 'Timeline', 'timeline'],
+            ['📅', 'Agenda', 'weekly'],
+            ['🔗', 'Huérfanos', 'orphans'],
+            ['⊡', 'Áreas', 'areas'],
+            ['⬡', 'Anidados', 'nested'],
+            ['⊟', 'FS Bridge', 'filesystem'],
+          ].map(([icon, label, view]) => `
+            <div class="tut-mod-card" data-tut-nav="${view}">
+              <div class="tut-mod-icon">${icon}</div>
+              <div class="tut-mod-title">${label}</div>
+            </div>`).join('')}
+        </div>
+      </div>`,
+  };
+
+  // ── Render ─────────────────────────────────────────────────
+  mainContent.innerHTML = `
+    <div class="view tutorial-view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">📖 Tutorial &amp; Guía de Uso</div>
+          <div class="view-subtitle">Aprende a usar ResearchOS para todos tus flujos de trabajo</div>
+        </div>
+      </div>
+
+      <div class="tutorial-tabs">
+        ${TABS.map(t => `
+          <button class="tutorial-tab ${t.id === tab ? 'active' : ''}" data-ttab="${t.id}">
+            ${t.icon} ${t.label}
+          </button>`).join('')}
+      </div>
+
+      <div class="tutorial-content">
+        ${CONTENT[tab] || CONTENT.quickstart}
+      </div>
+    </div>`;
+
+  // ── Event handlers ─────────────────────────────────────────
+  mainContent.querySelectorAll('[data-ttab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      App._tutorialTab = btn.dataset.ttab;
+      renderTutorial();
+    });
+  });
+
+  mainContent.querySelectorAll('[data-tut-nav]').forEach(btn => {
+    btn.addEventListener('click', () => navigate(btn.dataset.tutNav));
+  });
+
+  mainContent.querySelectorAll('[data-tut-demo]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      switch (btn.dataset.tutDemo) {
+        case 'add-project': showAddProjectModal(); break;
+        case 'add-idea':    showAddIdeaModal();    break;
+        case 'add-meeting': showAddMeetingModal(); break;
+        case 'add-snippet': showAddSnippetModal(); break;
+        case 'add-ref':     showAddReferenceModal(); break;
+        case 'add-sub':     showAddSubmissionModal(); break;
+      }
+    });
+  });
 }
 
 async function renderStarred() {

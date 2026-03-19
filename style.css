@@ -3119,3 +3119,192 @@ body.presentation-mode .kanban-col { width: 300px; }
 .proj-chip-option:last-child { border-bottom: none; }
 .proj-chip-option:hover { background: var(--bg-hover); }
 .proj-chip-option .badge { font-size: .58rem; flex-shrink: 0; }
+
+/* ══════════════════════════════════════════════════════════════
+   TUTORIAL & GUÍA DE USO
+══════════════════════════════════════════════════════════════ */
+.tutorial-view { max-width: 900px; }
+
+/* Tabs de navegación */
+.tutorial-tabs {
+  display: flex; flex-wrap: wrap; gap: 5px;
+  margin-bottom: 24px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.tutorial-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-2); font-size: .82rem;
+  cursor: pointer; font-family: var(--font-body);
+  transition: all 150ms var(--ease);
+}
+.tutorial-tab:hover { background: var(--bg-hover); color: var(--text-1); border-color: var(--border-str); }
+.tutorial-tab.active {
+  background: var(--accent-d); border-color: var(--accent);
+  color: var(--accent); font-weight: 500;
+}
+
+/* Sección de contenido */
+.tut-section { display: flex; flex-direction: column; gap: 0; }
+.tutorial-content { padding-bottom: 40px; }
+
+/* Hero banner */
+.tut-hero {
+  display: flex; align-items: center; gap: 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-lg);
+  padding: 22px 24px; margin-bottom: 24px;
+}
+.tut-hero-sm { padding: 14px 18px; margin-bottom: 20px; }
+.tut-hero-title {
+  font-family: var(--font-display);
+  font-size: 1.1rem; font-weight: 700; color: var(--text-1); margin-bottom: 5px;
+}
+.tut-hero-desc { font-size: .82rem; color: var(--text-2); line-height: 1.55; }
+
+/* Step cards */
+.tut-step-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px; margin-bottom: 24px;
+}
+.tut-step-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 16px;
+  display: flex; flex-direction: column; gap: 8px;
+  transition: border-color 150ms var(--ease), transform 150ms var(--ease);
+}
+.tut-step-card:hover { border-color: var(--border-str); transform: translateY(-2px); }
+.tut-step-head { display: flex; align-items: center; gap: 10px; }
+.tut-step-num {
+  width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+  background: var(--accent-d); border: 1px solid var(--accent);
+  color: var(--accent); font-size: .68rem; font-weight: 700;
+  font-family: var(--font-mono);
+  display: flex; align-items: center; justify-content: center;
+}
+.tut-step-title { font-size: .87rem; font-weight: 600; color: var(--text-1); }
+.tut-step-desc { font-size: .77rem; color: var(--text-2); line-height: 1.5; flex: 1; }
+.tut-action { align-self: flex-start; margin-top: auto; }
+
+/* Module grid */
+.tut-mod-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px; margin-bottom: 24px;
+}
+.tut-mod-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 12px 8px;
+  cursor: pointer; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  transition: border-color 150ms var(--ease), background 150ms var(--ease), transform 150ms var(--ease);
+}
+.tut-mod-card:hover {
+  border-color: var(--accent);
+  background: var(--accent-d);
+  transform: translateY(-2px);
+}
+.tut-mod-icon { font-size: 1.2rem; line-height: 1; }
+.tut-mod-title { font-size: .75rem; font-weight: 600; color: var(--text-1); }
+.tut-mod-desc  { font-size: .63rem; color: var(--text-3); text-align: center; line-height: 1.3; }
+
+/* Workflow horizontal */
+.tut-workflow {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 5px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 18px 20px;
+  margin-bottom: 24px; overflow-x: auto;
+}
+.tut-wf-step {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 10px 12px; min-width: 88px; flex: 1;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--wfc) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--wfc) 22%, transparent);
+}
+.tut-wf-icon  { font-size: 1.25rem; line-height: 1; }
+.tut-wf-label { font-size: .76rem; font-weight: 600; color: var(--wfc); }
+.tut-wf-desc  { font-size: .62rem; color: var(--text-3); text-align: center; line-height: 1.3; }
+.tut-wf-arrow { font-size: 1.1rem; color: var(--text-3); flex-shrink: 0; }
+
+/* Feature row */
+.tut-feat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(195px, 1fr));
+  gap: 10px; margin-bottom: 24px;
+}
+.tut-feat-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 16px;
+  display: flex; flex-direction: column; gap: 7px;
+  transition: border-color 150ms var(--ease);
+}
+.tut-feat-card:hover { border-color: var(--border-str); }
+.tut-feat-icon  { font-size: 1.35rem; line-height: 1; }
+.tut-feat-title { font-size: .85rem; font-weight: 600; color: var(--text-1); }
+.tut-feat-body  { font-size: .76rem; color: var(--text-2); line-height: 1.5; flex: 1; }
+
+/* Tip box */
+.tut-tip-box {
+  display: flex; align-items: flex-start; gap: 10px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: var(--radius-md); padding: 12px 16px;
+  margin-bottom: 24px;
+  font-size: .8rem; color: var(--text-2); line-height: 1.55;
+}
+.tut-tip-icon { font-size: 1rem; flex-shrink: 0; margin-top: 1px; }
+
+/* Shortcuts table */
+.tut-sk-table {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-md); overflow: hidden; margin-bottom: 8px;
+}
+.tut-sk-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 9px 14px; border-bottom: 1px solid var(--border);
+}
+.tut-sk-row:last-child { border-bottom: none; }
+.tut-sk-row:hover { background: var(--bg-hover); }
+.tut-sk-keys {
+  display: flex; align-items: center; gap: 4px;
+  min-width: 170px; flex-wrap: wrap; flex-shrink: 0;
+}
+.tut-kbd {
+  display: inline-block;
+  background: var(--bg-elevated); border: 1px solid var(--border-str);
+  border-radius: 4px; padding: 2px 7px;
+  font-family: var(--font-mono); font-size: .67rem; color: var(--text-1);
+  box-shadow: 0 1px 0 var(--border-str); white-space: nowrap;
+}
+.tut-sk-desc { font-size: .79rem; color: var(--text-2); }
+
+/* Use case box */
+.tut-usecase-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md); overflow: hidden; margin-bottom: 24px;
+}
+.tut-uc-step {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 9px 14px; border-bottom: 1px solid var(--border);
+  font-size: .8rem; color: var(--text-2); line-height: 1.5;
+  transition: background 120ms var(--ease);
+}
+.tut-uc-step:last-child { border-bottom: none; }
+.tut-uc-step:hover { background: var(--bg-elevated); }
+.tut-uc-num {
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+  background: var(--accent-d); color: var(--accent);
+  font-size: .64rem; font-weight: 700; font-family: var(--font-mono);
+  margin-top: 2px;
+}
