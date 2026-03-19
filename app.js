@@ -1629,12 +1629,17 @@ async function renderIdeas() {
         <div class="inbox-capture-title">⚡ Captura rápida</div>
         <input class="inbox-input" id="ideaTitleInput" placeholder="Título de la idea…" maxlength="200">
         <textarea class="inbox-input inbox-textarea" id="ideaContentInput" placeholder="Contenido, URL, nota… (opcional)"></textarea>
-        <div class="inbox-row">
-          <select class="inbox-select" id="ideaProjectSelect" multiple
-            style="height:auto;min-height:36px;max-height:80px" title="Ctrl+click para múltiples">
-            ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
-          </select>
-          <div style="font-size:.65rem;color:var(--text-3);margin-top:2px">Ctrl+click = múltiples proyectos</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;margin-top:4px">
+          <div style="flex:2;min-width:180px">
+            <label class="form-label" style="display:block;margin-bottom:5px">Proyectos</label>
+            ${_projectPickerHTML('quickCaptureProjs')}
+          </div>
+          <div style="flex:1;min-width:140px">
+            <label class="form-label" style="display:block;margin-bottom:5px">Deadline</label>
+            <input type="date" class="form-input" id="quickCaptureDeadline">
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;margin-top:10px">
           <button class="btn btn-primary" id="saveIdeaBtn">Guardar</button>
         </div>
       </div>
@@ -1684,6 +1689,9 @@ async function renderIdeas() {
   $('saveIdeaBtn').addEventListener('click', saveQuickIdea);
   $('startTriageBtn')?.addEventListener('click', () => { App.triageIdx = 0; navigate('triage'); });
   $('ideaTitleInput').addEventListener('keydown', e => { if (e.key === 'Enter') saveQuickIdea(); });
+
+  _attachProjectPicker('quickCaptureProjs', projects);
+
   // ── Listeners del panel LaTeX ──────────────────────
   if (!App._latexOpen) App._latexOpen = false;
 
@@ -1805,16 +1813,15 @@ function ideaItemHTML(idea, projMap) {
 }
 
 async function saveQuickIdea() {
-  const title   = $('ideaTitleInput').value.trim();
+  const title = $('ideaTitleInput').value.trim();
   if (!title) { showToast('Escribe un título', 'error'); return; }
-  const content   = $('ideaContentInput').value.trim();
-  const selEl = $('ideaProjectSelect');
-  const projectIds = selEl
-    ? [...selEl.selectedOptions].map(o => +o.value).filter(Boolean)
-    : [];
-  const projectId = projectIds[0] || null; // compatibilidad legacy
+  const content    = $('ideaContentInput').value.trim();
+  const projectIds = _getProjectPickerIds('quickCaptureProjs');
+  const projectId  = projectIds[0] || null;
+  const deadline   = $('quickCaptureDeadline')?.value || null;
   await dbWrite(() => db.ideas.add({
     title, content, status: 'unread', projectId, projectIds,
+    deadline,
     tags: [], subtasks: [],
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   }));
@@ -2269,9 +2276,15 @@ async function renderTimeline() {
   const allIdeasWithDL = await db.ideas.filter(i => !!i.deadline).toArray();
   const ideasByProject = {};
   allIdeasWithDL.forEach(i => {
-    const key = i.projectId || '_orphan';
-    if (!ideasByProject[key]) ideasByProject[key] = [];
-    ideasByProject[key].push(i);
+    // Respetar multi-proyecto: una idea aparece bajo cada proyecto vinculado
+    const keys = (i.projectIds && i.projectIds.length)
+      ? i.projectIds
+      : (i.projectId ? [i.projectId] : ['_orphan']);
+    keys.forEach(key => {
+      if (!ideasByProject[key]) ideasByProject[key] = [];
+      if (!ideasByProject[key].find(x => x.id === i.id))
+        ideasByProject[key].push(i);
+    });
   });
 
   // ── Submissions y Reuniones con fecha ──────────────────
@@ -5498,11 +5511,8 @@ async function showAddIdeaModal() {
         <textarea class="form-textarea" id="mi-content" placeholder="Detalles, link, ruta de archivo…"></textarea>
       </div>
       <div class="form-group">
-        <label class="form-label">Vincular a proyecto</label>
-        <select class="form-select" id="mi-project">
-          <option value="">Sin proyecto</option>
-          ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
-        </select>
+        <label class="form-label">Proyectos vinculados</label>
+        ${_projectPickerHTML('miProjectPicker')}
       </div>
       <div class="form-group">
         <label class="form-label">Deadline (opcional)</label>
@@ -5516,15 +5526,19 @@ async function showAddIdeaModal() {
 
   showModal('Nueva Idea', body);
   setTimeout(() => $('mi-title')?.focus(), 60);
+  setTimeout(() => _attachProjectPicker('miProjectPicker', projects), 80);
+
   $('miCancel').addEventListener('click', closeModal);
   $('miSave').addEventListener('click', async () => {
     const title = $('mi-title').value.trim();
     if (!title) { showToast('El título es requerido', 'error'); return; }
+    const _mIds = _getProjectPickerIds('miProjectPicker');
     await dbWrite(() => db.ideas.add({
       title, content: $('mi-content').value.trim(),
-      status: 'unread',
-      projectId: +$('mi-project').value || null,
-      deadline:  $('mi-deadline').value  || null,
+      status:     'unread',
+      projectId:  _mIds[0] || null,
+      projectIds: _mIds,
+      deadline:   $('mi-deadline').value || null,
       tags: [], subtasks: [],
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
     }));
@@ -5548,13 +5562,8 @@ async function showEditIdeaModal(idea) {
         <textarea class="form-textarea" id="ei-content" rows="4">${esc(idea.content || '')}</textarea>
       </div>
       <div class="form-group">
-        <label class="form-label">Vincular a proyecto</label>
-        <select class="form-select" id="ei-project">
-          <option value="">Sin proyecto</option>
-          ${projects.map(p =>
-            `<option value="${p.id}" ${p.id === idea.projectId ? 'selected' : ''}>${esc(p.title)}</option>`
-          ).join('')}
-        </select>
+        <label class="form-label">Proyectos vinculados</label>
+        ${_projectPickerHTML('eiProjectPicker')}
       </div>
       <div class="form-group">
         <label class="form-label">Etiquetas (separadas por coma)</label>
@@ -5577,18 +5586,25 @@ async function showEditIdeaModal(idea) {
       <button class="btn btn-primary" id="eiSave">Guardar Cambios</button>
     </div>`);
   setTimeout(() => $('ei-title')?.focus(), 60);
+
+  const _eiInitIds = (idea.projectIds?.length)
+    ? idea.projectIds : (idea.projectId ? [idea.projectId] : []);
+  setTimeout(() => _attachProjectPicker('eiProjectPicker', projects, _eiInitIds), 80);
+
   $('eiCancel').addEventListener('click', closeModal);
   $('eiSave').addEventListener('click', async () => {
     const title = $('ei-title').value.trim();
     if (!title) { showToast('El título es requerido', 'error'); return; }
+    const _eIds = _getProjectPickerIds('eiProjectPicker');
     await dbWrite(() => db.ideas.update(idea.id, {
       title,
-      content:   $('ei-content').value.trim(),
-      projectId: +$('ei-project').value || null,
-      deadline:  $('ei-deadline').value || null,
-      tags:      $('ei-tags').value.split(',').map(s => s.trim()).filter(Boolean),
-      status:    $('ei-status').value,
-      updatedAt: new Date().toISOString()
+      content:    $('ei-content').value.trim(),
+      projectId:  _eIds[0] || null,
+      projectIds: _eIds,
+      deadline:   $('ei-deadline').value || null,
+      tags:       $('ei-tags').value.split(',').map(s => s.trim()).filter(Boolean),
+      status:     $('ei-status').value,
+      updatedAt:  new Date().toISOString()
     }));
     closeModal();
     showToast('Idea actualizada ✓', 'success');
@@ -7262,6 +7278,93 @@ const GoogleSync = (() => {
     getLastSync: ()  => loadSetting('google_sync_last'),
   };
 })();
+
+// ══════════════════════════════════════════════════════════════
+//  PROJECT CHIP PICKER — selector multi-proyecto con chips
+// ══════════════════════════════════════════════════════════════
+function _attachProjectPicker(containerId, projects, initialIds = []) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  let selected = [...initialIds];
+
+  const renderChips = () => {
+    const chipsEl = container.querySelector('.proj-chip-selected');
+    if (!chipsEl) return;
+    chipsEl.innerHTML = selected.map(id => {
+      const p = projects.find(p => p.id === id);
+      if (!p) return '';
+      return `<span class="proj-chip" title="${esc(p.title)}">
+        ${esc(p.title.length > 24 ? p.title.slice(0,22)+'…' : p.title)}
+        <button class="proj-chip-remove" data-remove="${id}" tabindex="-1">×</button>
+      </span>`;
+    }).join('');
+    container.dataset.selectedIds = JSON.stringify(selected);
+    chipsEl.querySelectorAll('[data-remove]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        selected = selected.filter(id => id !== +btn.dataset.remove);
+        renderChips();
+      });
+    });
+  };
+
+  const input    = container.querySelector('.proj-chip-input');
+  const dropdown = container.querySelector('.proj-chip-dropdown');
+  if (!input || !dropdown) return;
+
+  const showDropdown = (q = '') => {
+    const lq = q.toLowerCase();
+    const matches = projects
+      .filter(p => p.title.toLowerCase().includes(lq) && !selected.includes(p.id))
+      .slice(0, 8);
+    if (!matches.length) { dropdown.classList.remove('open'); return; }
+    dropdown.innerHTML = matches.map(p => `
+      <div class="proj-chip-option" data-pid="${p.id}">
+        <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
+        ${esc(p.title)}
+      </div>`).join('');
+    dropdown.classList.add('open');
+    dropdown.querySelectorAll('[data-pid]').forEach(opt => {
+      opt.addEventListener('mousedown', e => {
+        e.preventDefault();
+        selected.push(+opt.dataset.pid);
+        renderChips();
+        input.value = '';
+        dropdown.classList.remove('open');
+        input.focus();
+      });
+    });
+  };
+
+  input.addEventListener('input',  () => showDropdown(input.value));
+  input.addEventListener('focus',  () => showDropdown(input.value));
+  input.addEventListener('blur',   () => setTimeout(() => dropdown.classList.remove('open'), 180));
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') dropdown.classList.remove('open');
+    if (e.key === 'Backspace' && !input.value && selected.length) {
+      selected.pop(); renderChips();
+    }
+  });
+
+  renderChips();
+}
+
+function _getProjectPickerIds(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return [];
+  try { return JSON.parse(container.dataset.selectedIds || '[]'); }
+  catch { return []; }
+}
+
+/** HTML template reutilizable para el picker */
+function _projectPickerHTML(id, placeholder = 'Buscar y añadir proyecto…') {
+  return `<div class="proj-chip-picker" id="${id}" data-selected-ids="[]">
+    <div class="proj-chip-selected"></div>
+    <input class="form-input proj-chip-input" placeholder="${placeholder}" autocomplete="off">
+    <div class="proj-chip-dropdown"></div>
+  </div>`;
+}
 
 // ══════════════════════════════════════════════════════════════
 //  AUTOCOMPLETE DE COLABORADORES — reutilizable en todos los modales

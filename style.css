@@ -3067,3 +3067,55 @@ body.presentation-mode .kanban-col { width: 300px; }
 ══════════════════════════════════════════════════════════════ */
 .tl-sub-meeting .timeline-idea-label  { color: var(--teal)   !important; }
 .tl-sub-sub     .timeline-idea-label  { color: var(--accent) !important; }
+
+/* ══════════════════════════════════════════════════════════════
+   PROJECT CHIP PICKER
+══════════════════════════════════════════════════════════════ */
+.proj-chip-picker { position: relative; }
+
+.proj-chip-selected {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px;
+}
+.proj-chip-selected:empty { margin-bottom: 0; }
+
+.proj-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--accent-d); border: 1px solid var(--accent);
+  color: var(--accent); border-radius: 99px;
+  font-size: .7rem; font-family: var(--font-mono);
+  padding: 2px 8px 2px 10px;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.proj-chip-remove {
+  background: none; border: none; cursor: pointer;
+  color: var(--accent); font-size: .9rem; line-height: 1;
+  padding: 0 1px; opacity: .65; flex-shrink: 0;
+  transition: opacity 120ms;
+}
+.proj-chip-remove:hover { opacity: 1; }
+
+.proj-chip-input { margin-bottom: 0 !important; }
+
+.proj-chip-dropdown {
+  display: none; position: absolute;
+  top: calc(100% + 2px); left: 0; right: 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-str);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  z-index: 500; max-height: 200px; overflow-y: auto;
+  animation: ddFadeIn 120ms var(--ease);
+}
+.proj-chip-dropdown.open { display: block; }
+
+.proj-chip-option {
+  display: flex; align-items: center; gap: 7px;
+  padding: 7px 12px; cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  font-size: .8rem; color: var(--text-1);
+  transition: background 100ms var(--ease);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.proj-chip-option:last-child { border-bottom: none; }
+.proj-chip-option:hover { background: var(--bg-hover); }
+.proj-chip-option .badge { font-size: .58rem; flex-shrink: 0; }
