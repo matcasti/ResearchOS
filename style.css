@@ -3308,3 +3308,91 @@ body.presentation-mode .kanban-col { width: 300px; }
   font-size: .64rem; font-weight: 700; font-family: var(--font-mono);
   margin-top: 2px;
 }
+
+/* ══════════════════════════════════════════════════════════════
+   EMAIL REMINDER COMPOSER
+══════════════════════════════════════════════════════════════ */
+
+/* Area de chips de destinatarios */
+.mail-to-area {
+  display: flex; flex-wrap: wrap; gap: 5px;
+  min-height: 36px; padding: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-str);
+  border-radius: var(--radius-md);
+  margin-bottom: 6px;
+}
+.mail-to-area:empty { display: none; }
+
+/* Chip de un destinatario */
+.mail-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-str);
+  border-radius: 99px;
+  padding: 3px 6px 3px 4px;
+  font-size: .73rem; max-width: 260px;
+}
+.mail-chip-avatar {
+  width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+  background: var(--accent-d); color: var(--accent);
+  font-size: .62rem; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.mail-chip-name  { font-weight: 500; color: var(--text-1); max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-chip-addr  { font-family: var(--font-mono); font-size: .65rem; color: var(--text-3); max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-chip-remove {
+  background: none; border: none; cursor: pointer; padding: 0 2px;
+  color: var(--text-3); font-size: .85rem; line-height: 1; flex-shrink: 0;
+  transition: color 120ms; border-radius: 50%;
+}
+.mail-chip-remove:hover { color: var(--red); background: rgba(248,113,113,.1); }
+
+/* Fila de input para añadir destinatario */
+.mail-add-row { display: flex; gap: 6px; align-items: center; }
+
+/* Aviso sin emails */
+.mail-no-emails {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 14px; background: var(--bg-elevated);
+  border: 1px dashed var(--border-str); border-radius: var(--radius-md);
+  margin-bottom: 4px;
+}
+
+/* Aviso de personas sin email registrado */
+.mail-warn-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 12px; background: rgba(251,191,36,.07);
+  border: 1px solid rgba(251,191,36,.2); border-radius: var(--radius-md);
+  font-size: .76rem; color: var(--amber); margin-bottom: 4px;
+}
+
+/* Pill de deadline en el modal */
+.mail-deadline-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 7px 14px; border-radius: 99px; border: 1px solid;
+  font-size: .78rem; font-weight: 600;
+  font-family: var(--font-mono); margin-bottom: 6px;
+}
+.mail-urgency-tag {
+  font-size: .65rem; font-weight: 700; padding: 2px 8px;
+  border-radius: 99px; white-space: nowrap;
+}
+
+/* Nota informativa al pie del modal */
+.mail-meta-note {
+  font-size: .68rem; font-family: var(--font-mono);
+  color: var(--text-3); padding-top: 4px;
+  line-height: 1.5;
+}
+
+/* Badge de estado Gmail en Settings */
+.gsync-gmail-badge {
+  font-size: .65rem; font-family: var(--font-mono);
+  padding: 3px 10px; border-radius: 99px; white-space: nowrap;
+  flex-shrink: 0; border: 1px solid transparent;
+  transition: all 200ms var(--ease);
+}
+.gsync-gmail-loading { color: var(--text-3); background: var(--bg-elevated); border-color: var(--border); }
+.gsync-gmail-ok      { color: var(--green);  background: rgba(52,211,153,.1); border-color: rgba(52,211,153,.25); }
+.gsync-gmail-warn    { color: var(--amber);  background: rgba(251,191,36,.1); border-color: rgba(251,191,36,.25); }

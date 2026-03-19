@@ -3253,6 +3253,7 @@ async function inspectSubmission(id) {
 
       <div class="inspector-actions" style="margin-top:14px">
         <button class="btn btn-ghost btn-sm" id="subEditBtn">✎ Editar</button>
+        ${GoogleSync.isConnected() ? `<button class="btn btn-ghost btn-sm" id="subMailBtn" title="Enviar recordatorio por email">📧 Correo</button>` : ''}
         <button class="btn btn-danger btn-sm" id="subDeleteBtn">✕ Eliminar</button>
       </div>
     </div>`;
@@ -3287,6 +3288,7 @@ async function inspectSubmission(id) {
   });
 
   $('subEditBtn').addEventListener('click', () => showEditSubmissionModal(s));
+  $('subMailBtn')?.addEventListener('click', () => showDeadlineReminderModal('submission', s));
   $('subDeleteBtn').addEventListener('click', async () => {
     if (!confirm(`¿Eliminar "${s.title}"?`)) return;
     await db.submissions.delete(id);
@@ -3522,6 +3524,7 @@ async function inspectMeeting(id) {
 
       <div class="inspector-actions" style="margin-top:14px">
         <button class="btn btn-ghost btn-sm" id="meetEditBtn">✎ Editar</button>
+        ${GoogleSync.isConnected() ? `<button class="btn btn-ghost btn-sm" id="meetMailBtn" title="Enviar recordatorio por email">📧 Correo</button>` : ''}
         <button class="btn btn-danger btn-sm" id="meetDeleteBtn">✕ Eliminar</button>
       </div>
     </div>`;
@@ -3590,6 +3593,8 @@ async function inspectMeeting(id) {
       if (App.view === 'meetings') renderMeetings();
     });
   });
+
+  $('meetMailBtn')?.addEventListener('click', () => showDeadlineReminderModal('meeting', m));
 
   $('meetDeleteBtn').addEventListener('click', async () => {
     if (!confirm(`¿Eliminar esta reunión?`)) return;
@@ -5632,6 +5637,16 @@ async function renderGoogleSyncSection() {
 
     <div class="settings-row" style="margin-top:6px">
       <div>
+        <div class="settings-row-label">📧 Email y Gmail</div>
+        <div class="settings-row-desc" id="gEmailDisplay" style="font-family:var(--font-mono)">
+          Verificando permisos…
+        </div>
+      </div>
+      <span id="gGmailBadge" class="gsync-gmail-badge gsync-gmail-loading">…</span>
+    </div>
+
+    <div class="settings-row" style="margin-top:6px">
+      <div>
         <div class="settings-row-label">Auto-sync al iniciar</div>
         <div class="settings-row-desc">Sube los datos automáticamente al abrir la app</div>
       </div>
@@ -5692,6 +5707,25 @@ async function renderGoogleSyncSection() {
     await db.settings.put({ key: 'google_auto_save_on_change', value: String(e.target.checked) });
     showToast(e.target.checked ? 'Auto-guardado en Drive activado ✓' : 'Auto-guardado en Drive desactivado', 'success');
   });
+
+  if (connected) {
+    GoogleSync.getUserProfile().then(email => {
+      const display = $('gEmailDisplay');
+      const badge   = $('gGmailBadge');
+      if (!display || !badge) return;
+      if (email) {
+        display.textContent = email;
+        badge.textContent   = 'Gmail ✓';
+        badge.className     = 'gsync-gmail-badge gsync-gmail-ok';
+      } else {
+        display.textContent = 'Sin permisos — reconecta tu cuenta para activar Gmail';
+        badge.textContent   = 'Reconectar →';
+        badge.className     = 'gsync-gmail-badge gsync-gmail-warn';
+        badge.style.cursor  = 'pointer';
+        badge.addEventListener('click', () => GoogleSync.signIn());
+      }
+    });
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -6368,6 +6402,7 @@ async function inspectProject(id) {
         <button class="btn btn-primary btn-sm" id="inspHubBtn">⬡ Abrir Hub</button>
         <button class="btn btn-ghost btn-sm" id="inspEditBtn">✎ Editar</button>
         <button class="btn btn-ghost btn-sm" id="inspFSBtn" title="Crear estructura FS">📁 FS</button>
+        ${GoogleSync.isConnected() ? `<button class="btn btn-ghost btn-sm" id="inspMailBtn" title="Enviar recordatorio por email">📧</button>` : ''}
         <button class="btn btn-ghost btn-sm" id="inspStarBtn">${p.starred ? '★ Quitar fav.' : '☆ Favorito'}</button>
         <button class="btn btn-ghost btn-sm" id="inspArchiveBtn">${p.archived ? '↩ Restaurar' : '⊟ Archivar'}</button>
         <button class="btn btn-danger btn-sm" id="inspDeleteBtn">✕ Eliminar</button>
@@ -6430,6 +6465,8 @@ async function inspectProject(id) {
       sel?.dispatchEvent(new Event('change'));
     }, 300);
   });
+
+  $('inspMailBtn')?.addEventListener('click', () => showDeadlineReminderModal('project', p));
 
   // ── Listeners del editor Markdown ───────────────────
   if (!App._mdEditing) App._mdEditing = false;
@@ -7377,6 +7414,370 @@ async function exportProjectAsMarkdown(projectId) {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  RECORDATORIO POR EMAIL — Modal de composición y envío Gmail
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * @param {'project'|'meeting'|'submission'|'idea'} entityType
+ * @param {object} entity  El objeto completo (proyecto, reunión, etc.)
+ */
+async function showDeadlineReminderModal(entityType, entity) {
+  if (!GoogleSync.isConnected()) {
+    showToast('Conecta tu cuenta Google primero (Settings → Google Drive Sync)', 'error');
+    return;
+  }
+
+  // ── 1. Resolver destinatarios desde Colaboradores ──────────
+  const allCollabs = await db.collaborators.toArray();
+  const nameToCollab = {};
+  allCollabs.forEach(c => {
+    if (c.email) nameToCollab[c.name.toLowerCase().trim()] = c;
+  });
+
+  const resolveNames = (names = []) => {
+    const seen = new Set();
+    return names
+      .map(n => n?.trim()).filter(Boolean)
+      .map(n => {
+        if (seen.has(n)) return null;
+        seen.add(n);
+        const c = nameToCollab[n.toLowerCase()];
+        return { name: n, email: c?.email || null };
+      }).filter(Boolean);
+  };
+
+  let candidates = [];
+  let deadlineStr = null;
+  let contextTitle = entity.title || 'Sin título';
+
+  if (entityType === 'project') {
+    candidates  = resolveNames([entity.responsible, ...(entity.coauthors || [])]);
+    deadlineStr = entity.deadline;
+  } else if (entityType === 'meeting') {
+    const names = (entity.participants || '').split(',').map(s => s.trim()).filter(Boolean);
+    candidates  = resolveNames(names);
+    deadlineStr = entity.date;
+    contextTitle = entity.title || entity.agreements?.slice(0, 60) || 'Reunión';
+  } else if (entityType === 'submission') {
+    deadlineStr = entity.deadlineAt;
+    if (entity.projectId) {
+      const proj = await db.projects.get(entity.projectId);
+      if (proj) candidates = resolveNames([proj.responsible, ...(proj.coauthors || [])]);
+    }
+  } else if (entityType === 'idea') {
+    deadlineStr = entity.deadline;
+    if (entity.projectId) {
+      const proj = await db.projects.get(entity.projectId);
+      if (proj) candidates = resolveNames([proj.responsible, ...(proj.coauthors || [])]);
+    }
+  }
+
+  const withEmail    = candidates.filter(c =>  c.email);
+  const withoutEmail = candidates.filter(c => !c.email);
+
+  // ── 2. Calcular urgencia ───────────────────────────────────
+  const today0   = new Date(); today0.setHours(0, 0, 0, 0);
+  const daysLeft = deadlineStr
+    ? Math.ceil((new Date(deadlineStr + (deadlineStr.length === 10 ? 'T00:00:00' : '')) - today0) / 86400000)
+    : null;
+  const deadlineLabel = deadlineStr ? formatDate(deadlineStr) : null;
+
+  const urgencyText = daysLeft === null ? null
+    : daysLeft < 0   ? `VENCIDO hace ${Math.abs(daysLeft)} día(s)`
+    : daysLeft === 0 ? 'Deadline: HOY'
+    : daysLeft <= 7  ? `Quedan ${daysLeft} día(s) — urgente`
+    : `${daysLeft} día(s) restantes`;
+
+  const urgencyColor = daysLeft === null ? 'var(--accent)'
+    : daysLeft < 0   ? 'var(--red)'
+    : daysLeft === 0 ? 'var(--red)'
+    : daysLeft <= 7  ? 'var(--amber)'
+    : 'var(--green)';
+
+  // ── 3. Plantilla de asunto y cuerpo ───────────────────────
+  const TYPE_LABELS = { project:'Proyecto', meeting:'Reunión', submission:'Submission', idea:'Idea' };
+  const defaultSubject = deadlineLabel
+    ? `Recordatorio [${TYPE_LABELS[entityType]}]: "${contextTitle}" — ${deadlineLabel}`
+    : `Recordatorio [${TYPE_LABELS[entityType]}]: "${contextTitle}"`;
+
+  const defaultBody = [
+    urgencyText ? `${urgencyText}\n` : '',
+    `Hola,\n`,
+    `Este es un recordatorio automático sobre el siguiente elemento en ResearchOS:\n`,
+    `  Tipo:    ${TYPE_LABELS[entityType]}`,
+    `  Título:  ${contextTitle}`,
+    deadlineLabel ? `  Fecha:   ${deadlineLabel}` : '',
+    `\nPor favor revisa el estado de avance y actualiza lo que corresponda.`,
+    `\nSaludos cordiales`,
+  ].filter(Boolean).join('\n');
+
+  // ── 4. Modal de composición ────────────────────────────────
+  showModal('📧 Enviar Recordatorio por Email', `
+    <div class="modal-body">
+
+      ${!candidates.length ? `
+        <div class="mail-no-emails">
+          <span style="font-size:1.5rem">📭</span>
+          <div>
+            <strong style="color:var(--text-1);font-size:.85rem">Sin personas vinculadas</strong>
+            <p style="font-size:.77rem;color:var(--text-2);margin:4px 0 8px">
+              Este elemento no tiene responsable ni participantes asociados.
+              Puedes añadir un destinatario manualmente abajo.
+            </p>
+          </div>
+        </div>` : ''}
+
+      ${withoutEmail.length && withEmail.length ? `
+        <div class="mail-warn-row">
+          <span>⚠</span>
+          <span>Sin email registrado: <strong>${withoutEmail.map(c => esc(c.name)).join(', ')}</strong>.
+            <a id="mailGoCollabs" style="color:var(--accent);cursor:pointer;text-decoration:underline">
+              Ir a Colaboradores →
+            </a>
+          </span>
+        </div>` : ''}
+
+      ${withoutEmail.length && !withEmail.length ? `
+        <div class="mail-no-emails">
+          <span style="font-size:1.5rem">📭</span>
+          <div>
+            <strong style="color:var(--text-1);font-size:.85rem">Sin emails registrados</strong>
+            <p style="font-size:.77rem;color:var(--text-2);margin:4px 0 8px">
+              Las personas vinculadas (${withoutEmail.map(c => esc(c.name)).join(', ')})
+              no tienen email en Colaboradores. Añade uno manualmente abajo o
+              <a id="mailGoCollabs2" style="color:var(--accent);cursor:pointer;text-decoration:underline">
+                ve a Colaboradores para registrarlo.
+              </a>
+            </p>
+          </div>
+        </div>` : ''}
+
+      <div class="form-group">
+        <label class="form-label">Para</label>
+        <div class="mail-to-area" id="mailToChips">
+          ${withEmail.map(r => `
+            <span class="mail-chip" data-email="${esc(r.email)}">
+              <span class="mail-chip-avatar">${esc((r.name[0] || '?').toUpperCase())}</span>
+              <span class="mail-chip-name">${esc(r.name)}</span>
+              <span class="mail-chip-addr">${esc(r.email)}</span>
+              <button class="mail-chip-remove" data-rem="${esc(r.email)}" title="Quitar">×</button>
+            </span>`).join('')}
+        </div>
+        <div class="mail-add-row">
+          <input class="form-input" id="mailToExtra" type="email"
+                 placeholder="Añadir destinatario adicional…"
+                 style="flex:1;font-size:.8rem">
+          <button class="btn btn-ghost btn-sm" id="mailAddTo">+ Añadir</button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Asunto</label>
+        <input class="form-input" id="mailSubject" value="${esc(defaultSubject)}">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Mensaje</label>
+        <textarea class="form-textarea" id="mailBody" rows="8"
+                  style="font-family:var(--font-mono);font-size:.78rem;line-height:1.6">${esc(defaultBody)}</textarea>
+      </div>
+
+      ${deadlineLabel ? `
+        <div class="mail-deadline-pill" style="border-color:${urgencyColor};color:${urgencyColor}">
+          <span>⏱</span>
+          <span>${deadlineLabel}</span>
+          ${urgencyText ? `<span class="mail-urgency-tag" style="background:color-mix(in srgb,${urgencyColor} 15%,transparent)">${urgencyText}</span>` : ''}
+        </div>` : ''}
+
+      <div class="mail-meta-note">
+        El email se enviará desde tu cuenta Google conectada como remitente.
+        Los destinatarios pueden responder directamente a ese correo.
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="mailCancel">Cancelar</button>
+      <button class="btn btn-primary" id="mailSend" ${!withEmail.length && !candidates.length ? '' : ''}>
+        📧 Enviar recordatorio
+      </button>
+    </div>`);
+
+  // ── 5. Gestión de destinatarios activos ───────────────────
+  let activeRecipients = [...withEmail];
+
+  const updateSendBtn = () => {
+    const btn = $('mailSend');
+    if (btn) btn.disabled = activeRecipients.length === 0;
+  };
+  updateSendBtn();
+
+  // Quitar chip
+  $('mailToChips')?.addEventListener('click', e => {
+    const btn = e.target.closest('[data-rem]');
+    if (!btn) return;
+    activeRecipients = activeRecipients.filter(r => r.email !== btn.dataset.rem);
+    btn.closest('.mail-chip')?.remove();
+    updateSendBtn();
+  });
+
+  // Añadir destinatario extra
+  const addExtra = () => {
+    const inp   = $('mailToExtra');
+    const email = inp?.value.trim().toLowerCase();
+    if (!email || !email.includes('@')) { showToast('Email inválido', 'error'); return; }
+    if (activeRecipients.find(r => r.email === email)) { showToast('Ya está en la lista', 'error'); return; }
+    activeRecipients.push({ name: email, email });
+    const chip = document.createElement('span');
+    chip.className = 'mail-chip';
+    chip.dataset.email = email;
+    chip.innerHTML = `
+      <span class="mail-chip-avatar">@</span>
+      <span class="mail-chip-name">${esc(email)}</span>
+      <button class="mail-chip-remove" data-rem="${esc(email)}" title="Quitar">×</button>`;
+    $('mailToChips')?.appendChild(chip);
+    if (inp) inp.value = '';
+    updateSendBtn();
+  };
+  $('mailAddTo')?.addEventListener('click', addExtra);
+  $('mailToExtra')?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addExtra(); } });
+
+  // Links a colaboradores
+  $('mailGoCollabs')?.addEventListener('click',  () => { closeModal(); navigate('collaborators'); });
+  $('mailGoCollabs2')?.addEventListener('click', () => { closeModal(); navigate('collaborators'); });
+  $('mailCancel')?.addEventListener('click', closeModal);
+
+  // ── 6. Enviar ──────────────────────────────────────────────
+  $('mailSend')?.addEventListener('click', async () => {
+    const subject  = $('mailSubject')?.value.trim();
+    const bodyText = $('mailBody')?.value.trim();
+    if (!subject)                 { showToast('El asunto es requerido', 'error'); return; }
+    if (!activeRecipients.length) { showToast('Añade al menos un destinatario', 'error'); return; }
+
+    const btn = $('mailSend');
+    const orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Enviando…';
+
+    try {
+      const htmlBody = _buildReminderHtml(contextTitle, entityType, deadlineLabel, daysLeft, bodyText);
+      const toLine   = activeRecipients.map(r => r.email).join(', ');
+      await GoogleSync.sendEmail(toLine, subject, htmlBody);
+      closeModal();
+      showToast(`Email enviado a ${activeRecipients.length} destinatario(s) ✓`, 'success');
+    } catch (err) {
+      btn.disabled = false;
+      btn.innerHTML = orig;
+      if (err.message === 'gmail_scope_missing') {
+        showToast('Necesitas reconectar tu cuenta Google con permisos de Gmail. Ve a Settings.', 'error');
+      } else {
+        showToast('Error al enviar: ' + err.message, 'error');
+      }
+    }
+  });
+}
+
+/** Construye el cuerpo HTML del email de recordatorio */
+function _buildReminderHtml(title, entityType, deadlineLabel, daysLeft, bodyText) {
+  const TYPE_META = {
+    project:    { icon: '◉', label: 'Proyecto',   color: '#38bdf8' },
+    meeting:    { icon: '🗓', label: 'Reunión',    color: '#2dd4bf' },
+    submission: { icon: '📤', label: 'Submission', color: '#a78bfa' },
+    idea:       { icon: '◎', label: 'Idea',        color: '#fbbf24' },
+  };
+  const meta = TYPE_META[entityType] || TYPE_META.project;
+
+  const urgencyColor = daysLeft === null ? '#38bdf8'
+    : daysLeft < 0   ? '#f87171'
+    : daysLeft === 0 ? '#f87171'
+    : daysLeft <= 7  ? '#fbbf24' : '#34d399';
+
+  const urgencyLabel = daysLeft === null ? null
+    : daysLeft < 0   ? `VENCIDO hace ${Math.abs(daysLeft)} día(s)`
+    : daysLeft === 0 ? 'Deadline: HOY'
+    : `${daysLeft} día(s) restante(s)`;
+
+  const bodyHtmlLines = esc(bodyText)
+    .replace(/\n/g, '<br>')
+    .replace(/  /g, '&nbsp;&nbsp;');
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body style="margin:0;padding:24px 0;background:#edf2fa;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
+  <div style="max-width:580px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.10);">
+
+    <!-- Header -->
+    <div style="background:#06090f;padding:18px 28px;display:flex;align-items:center;gap:14px;">
+      <span style="color:#38bdf8;font-size:1.35rem;font-weight:800;letter-spacing:-.01em;">⬡ ResearchOS</span>
+      <span style="margin-left:auto;background:rgba(56,189,248,.18);color:#38bdf8;
+                   font-size:.65rem;padding:3px 11px;border-radius:99px;
+                   font-family:monospace;letter-spacing:.1em;text-transform:uppercase;">
+        Recordatorio
+      </span>
+    </div>
+
+    <!-- Type banner -->
+    <div style="background:#0c111e;padding:8px 28px;display:flex;align-items:center;gap:8px;">
+      <span style="font-size:.95rem;line-height:1;">${meta.icon}</span>
+      <span style="color:${meta.color};font-size:.7rem;font-family:monospace;
+                   text-transform:uppercase;letter-spacing:.1em;font-weight:600;">
+        ${meta.label}
+      </span>
+    </div>
+
+    <!-- Body -->
+    <div style="padding:28px 30px;">
+
+      <!-- Title -->
+      <h1 style="margin:0 0 20px;font-size:1.15rem;font-weight:700;color:#0c1825;line-height:1.35;">
+        ${esc(title)}
+      </h1>
+
+      ${deadlineLabel ? `
+      <!-- Deadline badge -->
+      <div style="display:flex;align-items:center;gap:14px;
+                  background:#f8fafd;border:1px solid #e2e8f0;
+                  border-left:4px solid ${urgencyColor};border-radius:0 8px 8px 0;
+                  padding:13px 18px;margin-bottom:22px;">
+        <span style="font-size:1.4rem;line-height:1;">⏱</span>
+        <div>
+          <div style="font-size:.62rem;color:#7a93b8;font-family:monospace;
+                      text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px;">Fecha límite</div>
+          <div style="font-size:.98rem;font-weight:700;color:#0c1825;">${deadlineLabel}</div>
+          ${urgencyLabel ? `
+          <div style="display:inline-block;margin-top:5px;padding:2px 10px;border-radius:99px;
+                      background:${urgencyColor}22;border:1px solid ${urgencyColor}55;
+                      color:${urgencyColor};font-size:.7rem;font-weight:700;font-family:monospace;">
+            ${urgencyLabel}
+          </div>` : ''}
+        </div>
+      </div>` : ''}
+
+      <!-- Message -->
+      <div style="font-size:.875rem;color:#3d5a7a;line-height:1.75;
+                  padding:18px 20px;background:#f8fafd;
+                  border-radius:8px;border:1px solid #e2e8f0;">
+        ${bodyHtmlLines}
+      </div>
+
+    </div>
+
+    <!-- Footer -->
+    <div style="background:#f8fafd;border-top:1px solid #e2e8f0;padding:14px 28px;text-align:center;">
+      <span style="font-size:.65rem;color:#a0b4cc;font-family:monospace;letter-spacing:.03em;">
+        Enviado automáticamente desde ResearchOS &nbsp;·&nbsp; local-first scientific workflow
+      </span>
+    </div>
+
+  </div>
+</body>
+</html>`;
+}
+
+// ══════════════════════════════════════════════════════════════
 //  WELCOME MODAL — se muestra sólo la primera vez
 // ══════════════════════════════════════════════════════════════
 function _showWelcomeModal() {
@@ -7479,8 +7880,8 @@ function _showWelcomeModal() {
 //  GOOGLE DRIVE SYNC
 // ══════════════════════════════════════════════════════════════
 const GoogleSync = (() => {
-  const CLIENT_ID  = '257501914353-5m71aadp4u4qr8qfq9g6d2nc6upm5hod.apps.googleusercontent.com'; // ← reemplazar
-  const SCOPE      = 'https://www.googleapis.com/auth/drive.appdata';
+  const CLIENT_ID  = '257501914353-5m71aadp4u4qr8qfq9g6d2nc6upm5hod.apps.googleusercontent.com';
+  const SCOPE = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/gmail.send';
   const DEFAULT_FILE_NAME = 'researchos-backup.json';
   const getFileName = async () => {
     const stored = await loadSetting('google_drive_file_name');
@@ -7489,6 +7890,68 @@ const GoogleSync = (() => {
 
   let tokenClient  = null;
   let accessToken  = null;
+
+  // INSERTAR después de: let accessToken = null;
+
+  let _userEmail = null;
+
+  // ── Obtener perfil del usuario via Gmail API ──────────────
+  async function getUserProfile() {
+    if (_userEmail) return _userEmail;
+    if (!accessToken) return null;
+    try {
+      const res = await driveRequest(
+        'https://www.googleapis.com/gmail/v1/users/me/profile'
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      _userEmail = data.emailAddress || null;
+      if (_userEmail) await saveSetting('google_user_email', _userEmail);
+      return _userEmail;
+    } catch { return null; }
+  }
+
+  // ── Enviar email via Gmail API ────────────────────────────
+  async function sendEmail(toLine, subject, htmlBody) {
+    if (!accessToken) throw new Error('No hay sesión Google activa');
+
+    // Subject como RFC 2047 encoded-word (soporta Unicode/español)
+    const subjectB64 = btoa(unescape(encodeURIComponent(subject)));
+
+    // Body como base64 (Content-Transfer-Encoding: base64 — seguro para HTML/Unicode)
+    const bodyB64 = btoa(unescape(encodeURIComponent(htmlBody)));
+
+    // Mensaje MIME completo — 100% ASCII a este punto
+    const mime = [
+      'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      `To: ${toLine}`,
+      `Subject: =?UTF-8?B?${subjectB64}?=`,
+      '',
+      bodyB64,
+    ].join('\r\n');
+
+    // Codificar el mensaje completo como base64url para la Gmail API
+    const raw = btoa(mime).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+    const res = await fetch('https://www.googleapis.com/gmail/v1/users/me/messages/send', {
+      method:  'POST',
+      headers: {
+        Authorization:  `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ raw }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (res.status === 401 || res.status === 403)
+        throw new Error('gmail_scope_missing');
+      throw new Error(err.error?.message || `Gmail API error ${res.status}`);
+    }
+    return res.json();
+  }
 
   // ── Helpers: reutilizan la tabla `settings` de Dexie ──────
   const saveSetting = (k, v) => db.settings.put({ key: k, value: v });
@@ -7522,6 +7985,9 @@ const GoogleSync = (() => {
       const autoSync = await loadSetting('google_auto_sync');
       if (autoSync === 'true') await push({ silent: true });
       // No llamar scheduleAutoSave aquí: el timer solo debe activarse tras cambios del usuario
+
+      const savedEmail = await loadSetting('google_user_email');
+      if (savedEmail) _userEmail = savedEmail;
     }
 
     // Preparar cliente OAuth2 (no lanza popup hasta que el usuario lo pida)
@@ -7554,10 +8020,12 @@ const GoogleSync = (() => {
   async function signOut() {
     if (accessToken) google.accounts.oauth2.revoke(accessToken);
     accessToken = null;
+    _userEmail  = null;
     await Promise.all([
       saveSetting('google_access_token', null),
       saveSetting('google_token_expiry',  null),
       saveSetting('google_drive_file_id', null),
+      saveSetting('google_user_email',    null),
     ]);
     setStatus('disconnected');
     showToast('Sesión de Google cerrada', 'success');
@@ -7672,7 +8140,9 @@ const GoogleSync = (() => {
     signOut,
     push,
     pull,
-    scheduleAutoSave,                    // ← nuevo
+    scheduleAutoSave,
+    sendEmail,
+    getUserProfile,
     isConnected: () => !!accessToken,
     getLastSync: ()  => loadSetting('google_sync_last'),
   };
