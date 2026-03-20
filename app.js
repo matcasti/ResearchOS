@@ -7999,26 +7999,33 @@ const GoogleSync = (() => {
   async function sendEmail(toLine, subject, htmlBody) {
     if (!accessToken) throw new Error('No hay sesión Google activa');
 
-    // Subject como RFC 2047 encoded-word (soporta Unicode/español)
-    const subjectB64 = btoa(unescape(encodeURIComponent(subject)));
+    // ── Subject: RFC 2047 encoded-word (UTF-8, base64) ───────
+    const subjectB64     = btoa(unescape(encodeURIComponent(subject)));
+    const subjectEncoded = `=?UTF-8?B?${subjectB64}?=`;
 
-    // Body como base64 (Content-Transfer-Encoding: base64 — seguro para HTML/Unicode)
-    const bodyB64 = btoa(unescape(encodeURIComponent(htmlBody)));
+    // ── Body: UTF-8 → bytes → base64 (TextEncoder, seguro para Unicode) ──
+    const bodyBytes = new TextEncoder().encode(htmlBody);
+    const bodyB64   = btoa(Array.from(bodyBytes, b => String.fromCharCode(b)).join(''));
 
-    // Mensaje MIME completo — 100% ASCII a este punto
+    // ── Mensaje MIME completo (100 % ASCII en este punto) ─────
     const mime = [
       'MIME-Version: 1.0',
       'Content-Type: text/html; charset=UTF-8',
       'Content-Transfer-Encoding: base64',
       `To: ${toLine}`,
-      `Subject: =?UTF-8?B?${subjectB64}?=`,
+      `Subject: ${subjectEncoded}`,
       '',
       bodyB64,
     ].join('\r\n');
 
-    // Codificar el mensaje completo como base64url para la Gmail API
-    const raw = btoa(mime).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    // ── Codificar el mensaje completo como base64url ───────────
+    const mimeBytes = new TextEncoder().encode(mime);
+    const raw = btoa(Array.from(mimeBytes, b => String.fromCharCode(b)).join(''))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
 
+    // ── Enviar ────────────────────────────────────────────────
     const res = await fetch('https://www.googleapis.com/gmail/v1/users/me/messages/send', {
       method:  'POST',
       headers: {
@@ -8028,20 +8035,35 @@ const GoogleSync = (() => {
       body: JSON.stringify({ raw }),
     });
 
+    // Leer el cuerpo UNA sola vez
+    let errData = {};
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      if (res.status === 401) throw new Error('gmail_scope_missing');
-      if (res.status === 403) {
-        const errBody = await res.json().catch(() => ({}));
-        const reason  = errBody?.error?.errors?.[0]?.reason || '';
-        // "insufficientPermissions" = falta scope; "disabled" = API no habilitada
-        if (reason === 'insufficientPermissions' || !reason)
-          throw new Error('gmail_scope_missing');
-        throw new Error(`Gmail API no habilitada (${reason}). Habilítala en Google Cloud Console.`);
+      try { errData = await res.json(); } catch {}
+      console.error('[Gmail send] status:', res.status, errData);
+
+      if (res.status === 401) {
+        throw new Error('gmail_scope_missing');
       }
-      const errBody2 = await res.json().catch(() => ({}));
-      throw new Error(errBody2?.error?.message || `Gmail API error ${res.status}`);
+      if (res.status === 403) {
+        const reason  = errData?.error?.errors?.[0]?.reason || '';
+        const message = errData?.error?.message || '';
+        console.warn('[Gmail send] 403 reason:', reason, '| message:', message);
+        if (
+          reason === 'insufficientPermissions' ||
+          reason === '' ||
+          message.toLowerCase().includes('scope') ||
+          message.toLowerCase().includes('permission')
+        ) {
+          throw new Error('gmail_scope_missing');
+        }
+        throw new Error(
+          `Gmail API bloqueado (${reason || res.status}): ${message || 'Forbidden'}. ` +
+          `Verifica que la Gmail API esté habilitada en Google Cloud Console.`
+        );
+      }
+      throw new Error(errData?.error?.message || `Gmail API error ${res.status}`);
     }
+
     return res.json();
   }
 
