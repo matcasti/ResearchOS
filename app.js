@@ -7805,14 +7805,14 @@ function _buildReminderHtml(title, entityType, deadlineLabel, daysLeft, bodyText
     <div style="background:#06090f;padding:18px 28px;display:flex;align-items:center;gap:14px;">
       <span style="color:#38bdf8;font-size:1.35rem;font-weight:800;letter-spacing:-.01em;">⬡ ResearchOS</span>
       <span style="margin-left:auto;background:rgba(56,189,248,.18);color:#38bdf8;
-                   font-size:.65rem;padding:3px 11px;border-radius:99px;
+                   font-size:.65rem;padding:10px 11px;border-radius:99px;
                    font-family:monospace;letter-spacing:.1em;text-transform:uppercase;">
         Recordatorio
       </span>
     </div>
 
     <!-- Type banner -->
-    <div style="background:#0c111e;padding:8px 28px;display:flex;align-items:center;gap:8px;">
+    <div style="background:#0c111e;padding:0px 28px;padding-bottom: 15px;display:flex;align-items:center;gap:8px;">
       <span style="font-size:.95rem;line-height:1;">${meta.icon}</span>
       <span style="color:${meta.color};font-size:.7rem;font-family:monospace;
                    text-transform:uppercase;letter-spacing:.1em;font-weight:600;">
