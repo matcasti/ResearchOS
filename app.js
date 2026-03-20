@@ -5738,45 +5738,29 @@ async function renderGoogleSyncSection() {
 
   // Verificar acceso Gmail y mostrar email conectado
   if (connected) {
-    GoogleSync.getUserProfile().then(email => {
-      const display    = $('gEmailDisplay');
-      const badge      = $('gGmailBadge');
-      const reauthRow  = $('gGmailReauthRow');
+    GoogleSync.getUserProfile().then(async email => {
+      const display   = $('gEmailDisplay');
+      const badge     = $('gGmailBadge');
+      const reauthRow = $('gGmailReauthRow');
       if (!display || !badge) return;
 
-      if (email) {
-        display.textContent = email;
-      } else {
-        display.textContent = 'Email no disponible — reconecta para registrarlo';
-      }
+      display.textContent = email || 'Reconecta para registrar el email';
 
-      // Verificar scope leyendo el token guardado sin llamada de red extra
-      db.settings.get('google_token_expiry').then(row => {
-        const expired   = !row?.value || Date.now() >= Number(row.value);
-        const hasGmail  = !expired; // si el token es fresco asumimos scope correcto
-        // Verificación definitiva: intentar tokeninfo solo si el token parece vigente
-        if (!expired) {
-          db.settings.get('google_access_token').then(trow => {
-            if (!trow?.value) return;
-            fetch(`https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=${encodeURIComponent(trow.value)}`)
-              .then(r => r.json())
-              .then(info => {
-                const scopes   = info?.scope || '';
-                const hasScope = scopes.includes('gmail.send');
-                badge.textContent = hasScope ? 'Gmail ✓' : 'Gmail ✗';
-                badge.className   = `gsync-gmail-badge ${hasScope ? 'gsync-gmail-ok' : 'gsync-gmail-warn'}`;
-                if (!hasScope && reauthRow) {
-                  reauthRow.style.display = 'block';
-                  $('gReauthBtn')?.addEventListener('click',
-                    () => GoogleSync.reauthorizeWithGmail());
-                }
-              })
-              .catch(() => _showGmailWarn(badge, reauthRow));
-          });
-        } else {
-          _showGmailWarn(badge, reauthRow);
-        }
-      });
+      // Leer scope cacheado (guardado en el callback sin llamadas extra)
+      const scopeRow = await db.settings.get('google_gmail_scope');
+      const expired  = await db.settings.get('google_token_expiry')
+        .then(r => !r?.value || Date.now() >= Number(r.value));
+
+      const hasGmail = !expired && scopeRow?.value === 'true';
+
+      badge.textContent = hasGmail ? 'Gmail ✓' : 'Gmail ✗';
+      badge.className   = `gsync-gmail-badge ${hasGmail ? 'gsync-gmail-ok' : 'gsync-gmail-warn'}`;
+
+      if (!hasGmail && reauthRow) {
+        reauthRow.style.display = 'block';
+        $('gReauthBtn')?.addEventListener('click',
+          () => GoogleSync.reauthorizeWithGmail());
+      }
     });
   }
 }
@@ -7947,7 +7931,7 @@ function _showWelcomeModal() {
 // ══════════════════════════════════════════════════════════════
 const GoogleSync = (() => {
   const CLIENT_ID  = '257501914353-5m71aadp4u4qr8qfq9g6d2nc6upm5hod.apps.googleusercontent.com';
-  const SCOPE = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/gmail.send';
+  const SCOPE = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/gmail.send openid email';
   const DEFAULT_FILE_NAME = 'researchos-backup.json';
   const getFileName = async () => {
     const stored = await loadSetting('google_drive_file_name');
@@ -8063,17 +8047,17 @@ const GoogleSync = (() => {
           await saveSetting('google_token_expiry',
             String(Date.now() + (resp.expires_in - 60) * 1000));
 
-          // Obtener email con el token recién emitido — único momento seguro
+          // tokeninfo devuelve email + scope en una sola llamada segura
           try {
-            const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-              headers: { Authorization: `Bearer ${accessToken}` }
-            });
-            if (res.ok) {
-              const data = await res.json();
-              _userEmail = data.email || null;
-              if (_userEmail) await saveSetting('google_user_email', _userEmail);
+            const r    = await fetch(`https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=${encodeURIComponent(accessToken)}`);
+            const info = await r.json();
+            if (info?.email) {
+              _userEmail = info.email;
+              await saveSetting('google_user_email', _userEmail);
             }
-          } catch { /* email queda null, se mostrará en próxima reconexión */ }
+            const hasGmail = (info?.scope || '').includes('gmail.send');
+            await saveSetting('google_gmail_scope', hasGmail ? 'true' : 'false');
+          } catch { /* no crítico — el scope se verificará en Settings */ }
 
           setStatus('ok');
           showToast('Cuenta de Google conectada ✓', 'success');
@@ -8097,6 +8081,7 @@ const GoogleSync = (() => {
       saveSetting('google_token_expiry',  null),
       saveSetting('google_drive_file_id', null),
       saveSetting('google_user_email',    null),
+      saveSetting('google_gmail_scope',   null),
     ]);
     setStatus('disconnected');
     showToast('Sesión de Google cerrada', 'success');
