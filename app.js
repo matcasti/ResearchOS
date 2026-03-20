@@ -4874,7 +4874,8 @@ async function renderTutorial() {
     { id: 'teaching',   icon: '🎓', label: 'Docencia'       },
     { id: 'grants',     icon: '💰', label: 'Fondos'         },
     { id: 'team',       icon: '👥', label: 'Equipo'         },
-    { id: 'shortcuts',  icon: '⌨', label: 'Atajos'         },
+    { id: 'google',     icon: '☁',  label: 'Google & Datos' },
+    { id: 'shortcuts',  icon: '⌨',  label: 'Atajos'        },
   ];
 
   // ── Helpers de bloques HTML ────────────────────────────────
@@ -5138,6 +5139,59 @@ async function renderTutorial() {
         ${tip('<strong>Tip:</strong> Usa la vista <strong>Proyectos Anidados</strong> para crear proyectos "paraguas" (ej: "Laboratorio Semestre 1/2026") con los proyectos de cada integrante del equipo como subproyectos anidados — la vista muestra el árbol completo con estados y deadlines.')}
       </div>`,
 
+    // ─────────────────────────────────────────── GOOGLE & DATOS
+    google: `
+      <div class="tut-section">
+        <div class="tut-hero">
+          <div style="font-size:2.8rem;line-height:1;flex-shrink:0">☁</div>
+          <div>
+            <div class="tut-hero-title">Google Drive y recordatorios por email</div>
+            <div class="tut-hero-desc">ResearchOS es <em>local-first</em> — tus datos viven en tu navegador. La integración con Google añade respaldo en la nube, sincronización entre dispositivos y envío de recordatorios por email directamente desde tu cuenta de Google.</div>
+          </div>
+        </div>
+
+        <div class="section-title">Configurar la conexión con Google</div>
+        <div class="tut-step-grid">
+          ${step(1, '⚙', 'Abre Settings', 'Ve a Settings &amp; Export desde el menú lateral. La sección "Sincronización con Google Drive" está en la parte inferior de la página.', 'Ir a Settings', 'data-tut-nav="settings"')}
+          ${step(2, 'G', 'Conecta tu cuenta', 'Haz clic en "Conectar Google". Se abrirá la pantalla de autorización de Google — acepta los permisos de Drive y Gmail. Es necesario aceptar <strong>ambos</strong> para que los recordatorios funcionen.', 'Ir a Settings', 'data-tut-nav="settings"')}
+          ${step(3, '✓', 'Verifica el badge Gmail', 'Después de conectar verás el badge <span style="color:var(--green);font-family:var(--font-mono);font-size:.75rem">Gmail ✓</span> en verde. Si aparece en amarillo <span style="color:var(--amber);font-family:var(--font-mono);font-size:.75rem">Gmail ✗</span> usa el botón "Reconectar con permisos Gmail".', 'Ir a Settings', 'data-tut-nav="settings"')}
+          ${step(4, '📧', 'Abre un inspector y prueba', 'Abre cualquier proyecto, reunión o submission con deadline. Verás el botón 📧 en el inspector. Haz clic para abrir el modal de composición y enviar un recordatorio de prueba.', 'Ver Proyectos', 'data-tut-nav="projects"')}
+        </div>
+
+        <div class="section-title" style="margin-top:4px">Respaldo en Google Drive</div>
+        ${featRow([
+          feat('☁', 'Subir a Drive manualmente', 'El botón <strong>"☁ Subir a Drive"</strong> en Settings exporta todos tus datos (proyectos, ideas, snippets, reuniones, referencias, colaboradores) como un archivo JSON en <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-size:.75rem">appDataFolder</code> — visible solo para ResearchOS, no en tu Drive normal.', 'Ir a Settings', 'data-tut-nav="settings"'),
+          feat('⬇', 'Restaurar desde Drive', '<strong>"Descargar (merge)"</strong> añade solo los registros nuevos del backup sin borrar lo local — ideal para sincronizar entre dispositivos.<br><strong>"Descargar (reemplazar)"</strong> sustituye todos los datos locales — úsalo para restaurar un backup completo.'),
+          feat('⏱', 'Auto-guardado tras cambios', 'Activa <strong>"Auto-guardar tras cambios"</strong> en Settings. ResearchOS subirá automáticamente a Drive 60 segundos después de cada modificación. El indicador <span style="font-family:var(--font-mono);font-size:.72rem;color:var(--green)">Drive ✓</span> confirma la sincronización en la barra lateral.'),
+        ])}
+
+        <div class="section-title" style="margin-top:4px">Recordatorios por email</div>
+        <div class="tut-step-grid">
+          ${step(1, '◉', 'Desde un Proyecto', 'Abre el inspector de cualquier proyecto con deadline asignado. El botón 📧 aparece en la barra de acciones. ResearchOS pre-carga como destinatarios al responsable y coautores del proyecto si tienen email registrado en Colaboradores.')}
+          ${step(2, '🗓', 'Desde una Reunión', 'En el inspector de una reunión aparece el botón "📧 Correo". Los participantes de la reunión se cruzan automáticamente con Colaboradores para obtener sus emails.')}
+          ${step(3, '📤', 'Desde una Submission', 'En el inspector de una submission verás el botón 📧. ResearchOS busca los responsables del proyecto vinculado y los pre-carga como destinatarios.')}
+          ${step(4, '✎', 'Editar antes de enviar', 'El modal siempre permite añadir o quitar destinatarios manualmente, editar el asunto y personalizar el cuerpo del mensaje antes de enviar. El email se envía desde tu cuenta de Google conectada.')}
+        </div>
+
+        ${featRow([
+          feat('👥', 'Registro de emails en Colaboradores', 'Para que los destinatarios se pre-carguen automáticamente, asegúrate de tener el email registrado en cada colaborador. El campo "Email" en el módulo Colaboradores es el que usa el sistema de recordatorios.', 'Colaboradores', 'data-tut-nav="collaborators"'),
+          feat('🎨', 'Email con diseño profesional', 'Cada recordatorio incluye el nombre del elemento, fecha límite con indicador de urgencia (verde / amarillo / rojo según los días restantes) y el cuerpo personalizado. El email lleva el branding de ResearchOS y muestra claramente si el deadline está vencido.'),
+          feat('🔑', 'Permisos necesarios en Google Cloud', 'Si eres el administrador del proyecto OAuth, necesitas tener habilitados en Google Cloud Console: <strong>Drive API</strong>, <strong>Gmail API</strong> y los scopes <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-size:.72rem">drive.appdata</code>, <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-size:.72rem">gmail.send</code> y <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-size:.72rem">openid email</code>.'),
+        ])}
+
+        <div class="section-title" style="margin-top:4px">Caso de uso: flujo completo de respaldo y recordatorio</div>
+        ${ucBox([
+          'Conecta tu cuenta en <strong>Settings → Sincronización con Google Drive</strong>. Verifica que el badge <span style="color:var(--green);font-family:var(--font-mono);font-size:.75rem">Gmail ✓</span> esté en verde.',
+          'Activa <strong>"Auto-sync al iniciar"</strong> y <strong>"Auto-guardar tras cambios"</strong> para que el respaldo sea completamente automático.',
+          'Abre el inspector de un proyecto o submission con deadline próximo y haz clic en 📧.',
+          'Revisa los destinatarios pre-cargados — si falta alguno, añádelo manualmente o ve a <strong>Colaboradores</strong> para registrar su email.',
+          'Edita el cuerpo si es necesario y haz clic en <strong>"📧 Enviar recordatorio"</strong>. El email llega desde tu cuenta de Google con el diseño de ResearchOS.',
+          'Para restaurar datos en otro dispositivo: conecta la misma cuenta Google y usa <strong>"⬇ Descargar (merge)"</strong> para sincronizar sin perder trabajo local.',
+        ])}
+
+        ${tip('<strong>Tip:</strong> El backup en Drive usa <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-family:var(--font-mono);font-size:.75rem">appDataFolder</code> — una carpeta especial de Google Drive que <strong>no es visible</strong> en la interfaz normal de Drive ni accesible para otras apps. Tus datos de investigación están protegidos.')}
+      </div>`,
+
     // ─────────────────────────────────────────────── ATAJOS
     shortcuts: `
       <div class="tut-section">
@@ -5145,7 +5199,6 @@ async function renderTutorial() {
         <div class="tut-sk-table">
           ${sk(['Ctrl+K', '⌘K'], 'Abrir Paleta de Comandos — búsqueda unificada en proyectos, ideas, snippets, reuniones, referencias y submissions')}
           ${sk(['Ctrl+Shift+K', '⌘⇧K'], 'Ir directamente al Kanban Board')}
-          ${sk(['Ctrl+P', '⌘P'], 'Abrir / cerrar el temporizador Pomodoro y activar Modo Focus')}
           ${sk(['Alt+←'], 'Retroceder en el historial de vistas navegadas')}
           ${sk(['Alt+→'], 'Avanzar en el historial de vistas navegadas')}
           ${sk(['F5'], 'Activar / desactivar modo presentación en la vista Kanban')}
@@ -7812,8 +7865,8 @@ function _buildReminderHtml(title, entityType, deadlineLabel, daysLeft, bodyText
     </div>
 
     <!-- Type banner -->
-    <div style="background:#0c111e;padding:0px 28px;padding-bottom: 15px;display:flex;align-items:center;gap:8px;">
-      <span style="font-size:.95rem;line-height:1;">${meta.icon}</span>
+    <div style="background:#0c111e;padding:0px 28px;padding-bottom: 15px;display:flex;align-items:center;">
+      <span style="font-size:.95rem;line-height:1;padding-right:10px;">${meta.icon}</span>
       <span style="color:${meta.color};font-size:.7rem;font-family:monospace;
                    text-transform:uppercase;letter-spacing:.1em;font-weight:600;">
         ${meta.label}
@@ -7918,7 +7971,6 @@ function _showWelcomeModal() {
       <div class="welcome-shortcuts">
         <div class="ws-row"><kbd>⌘K</kbd><span>Abrir Command Palette (búsqueda global)</span></div>
         <div class="ws-row"><kbd>⌘⇧K</kbd><span>Ir al Kanban</span></div>
-        <div class="ws-row"><kbd>⌘P</kbd><span>Abrir / cerrar Pomodoro</span></div>
         <div class="ws-row"><kbd>Alt ←/→</kbd><span>Navegar historial de vistas</span></div>
         <div class="ws-row"><kbd>F5</kbd><span>Presentación Kanban (pantalla completa)</span></div>
         <div class="ws-row"><kbd>→ / L</kbd><span>Siguiente idea en Revisión rápida</span></div>
@@ -8540,16 +8592,9 @@ async function init() {
     }
     if (e.altKey && e.key === 'ArrowLeft')  navBack();
     if (e.altKey && e.key === 'ArrowRight') navForward();
-    if ((e.metaKey || e.ctrlKey) && e.key === 'p') {
-      e.preventDefault();
-      $('pomodoroWidget').classList.toggle('visible');
-      $('pomFAB').classList.toggle('active', $('pomodoroWidget').classList.contains('visible'));
-      Pomodoro.render();
-    }
   });
 
   _initPalette();
-  _initPomodoro();
 
   // ── Bienvenida en primer uso ────────────────────────────
   if (!localStorage.getItem('ros-welcomed')) {
@@ -9116,114 +9161,6 @@ function subtaskListHTML(idea) {
       <input class="subtask-add-input" id="stInput-${idea.id}" placeholder="Nueva subtarea…" maxlength="200">
       <button class="btn btn-ghost btn-sm" id="stAddBtn-${idea.id}">+</button>
     </div>`;
-}
-
-// ══════════════════════════════════════════════════════════════
-//  POMODORO / FOCUS MODE
-// ══════════════════════════════════════════════════════════════
-const Pomodoro = {
-  FOCUS_SECS : 25 * 60,
-  BREAK_SECS : 5  * 60,
-  remaining  : 25 * 60,
-  isRunning  : false,
-  isFocus    : true,
-  sessions   : 0,
-  _interval  : null,
-
-  get totalSecs() { return this.isFocus ? this.FOCUS_SECS : this.BREAK_SECS; },
-
-  formatTime(s) {
-    const m = Math.floor(s / 60).toString().padStart(2,'0');
-    const sc = (s % 60).toString().padStart(2,'0');
-    return `${m}:${sc}`;
-  },
-
-  render() {
-    const disp  = $('pomDisplay');
-    const bar   = $('pomProgressBar');
-    const btn   = $('pomStartStop');
-    const lbl   = $('pomModeLabel');
-    const sess  = $('pomSessions');
-    if (!disp) return;
-
-    disp.textContent = this.formatTime(this.remaining);
-    disp.className   = 'pom-display' + (this.isRunning ? (this.isFocus ? ' focus-running' : ' break-running') : '');
-
-    const pct = ((this.totalSecs - this.remaining) / this.totalSecs * 100).toFixed(1) + '%';
-    bar.style.width = pct;
-    bar.className   = 'pom-progress-bar' + (this.isFocus ? '' : ' break');
-
-    btn.textContent = this.isRunning ? '⏸ Pausar' : '▶ Iniciar';
-    btn.className   = 'pom-btn' + (this.isRunning ? ' running' : '');
-
-    lbl.textContent = this.isFocus ? 'Enfoque 🔴' : 'Descanso 🟢';
-
-    const dots = Array.from({length:4},(_,i) => i < this.sessions % 4 ? '●' : '○').join(' ');
-    sess.textContent = dots;
-  },
-
-  startStop() {
-    if (this.isRunning) {
-      clearInterval(this._interval);
-      this.isRunning = false;
-      document.body.classList.remove('focus-mode');
-    } else {
-      this.isRunning = true;
-      if (this.isFocus) document.body.classList.add('focus-mode');
-      this._interval = setInterval(() => {
-        this.remaining--;
-        if (this.remaining <= 0) {
-          clearInterval(this._interval);
-          this.isRunning = false;
-          if (this.isFocus) {
-            this.sessions++;
-            this.isFocus = false;
-            this.remaining = this.BREAK_SECS;
-            document.body.classList.remove('focus-mode');
-            showToast('¡Bloque de enfoque completado! Descansa 5 min 🟢', 'success');
-          } else {
-            this.isFocus = true;
-            this.remaining = this.FOCUS_SECS;
-            showToast('Descanso terminado. ¡A trabajar! 🔴', 'info');
-          }
-          this.render();
-          return;
-        }
-        this.render();
-      }, 1000);
-    }
-    document.body.classList.toggle('focus-mode', this.isRunning && this.isFocus);
-    this.render();
-  },
-
-  reset() {
-    clearInterval(this._interval);
-    this.isRunning = false;
-    this.remaining = this.isFocus ? this.FOCUS_SECS : this.BREAK_SECS;
-    document.body.classList.remove('focus-mode');
-    this.render();
-  }
-};
-
-function _initPomodoro() {
-  const widget = $('pomodoroWidget');
-  const fab    = $('pomFAB');
-
-  fab.addEventListener('click', () => {
-    widget.classList.toggle('visible');
-    fab.classList.toggle('active', widget.classList.contains('visible'));
-    if (widget.classList.contains('visible')) Pomodoro.render();
-  });
-
-  $('pomClose').addEventListener('click', () => {
-    widget.classList.remove('visible');
-    fab.classList.remove('active');
-  });
-
-  $('pomStartStop').addEventListener('click', () => Pomodoro.startStop());
-  $('pomReset').addEventListener('click', () => Pomodoro.reset());
-
-  Pomodoro.render();
 }
 
 window.addEventListener('DOMContentLoaded', init);

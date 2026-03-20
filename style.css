@@ -1399,86 +1399,6 @@ hr { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
 .tl-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 
 
-/* ── Pomodoro / Focus Mode ────────────────────────────────── */
-.pom-fab {
-  position: fixed; bottom: 24px; right: 24px; z-index: 900;
-  width: 44px; height: 44px;
-  border-radius: 50%;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-str);
-  color: var(--text-2);
-  font-size: 1.1rem;
-  cursor: pointer;
-  box-shadow: var(--shadow-md);
-  transition: all 160ms var(--ease);
-  display: grid; place-items: center;
-}
-.pom-fab:hover { background: var(--bg-active); color: var(--accent); border-color: var(--accent); }
-.pom-fab.active { background: var(--accent); color: #001a2e; border-color: var(--accent); }
-
-.pomodoro-widget {
-  position: fixed; bottom: 80px; right: 24px; z-index: 901;
-  width: 210px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-str);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-  padding: 14px 16px;
-  opacity: 0; transform: translateY(10px) scale(.96);
-  pointer-events: none;
-  transition: all 200ms var(--ease);
-}
-.pomodoro-widget.visible {
-  opacity: 1; transform: none; pointer-events: all;
-}
-.pom-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 10px;
-}
-.pom-mode-label {
-  font-family: var(--font-mono);
-  font-size: .68rem; letter-spacing: .1em;
-  text-transform: uppercase; color: var(--text-3);
-}
-.pom-close {
-  background: none; border: none; color: var(--text-3);
-  cursor: pointer; font-size: .75rem;
-  transition: color 140ms; padding: 2px;
-}
-.pom-close:hover { color: var(--text-1); }
-.pom-display {
-  font-family: var(--font-display);
-  font-size: 2.2rem; font-weight: 800;
-  text-align: center; color: var(--text-1);
-  letter-spacing: .02em;
-  margin-bottom: 10px;
-}
-.pom-display.focus-running { color: var(--accent); }
-.pom-display.break-running { color: var(--green); }
-.pom-progress-track {
-  height: 3px; background: var(--border-str);
-  border-radius: 99px; margin-bottom: 12px; overflow: hidden;
-}
-.pom-progress-bar {
-  height: 100%; border-radius: 99px;
-  background: var(--accent);
-  transition: width 1s linear, background 300ms;
-}
-.pom-progress-bar.break { background: var(--green); }
-.pom-controls { display: flex; gap: 6px; margin-bottom: 10px; }
-.pom-btn {
-  flex: 1; padding: 6px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-str);
-  border-radius: var(--radius-md);
-  color: var(--text-1); font-size: .8rem;
-  cursor: pointer; font-family: var(--font-body);
-  transition: all 140ms var(--ease);
-}
-.pom-btn:hover { background: var(--bg-active); border-color: var(--accent); }
-.pom-btn.running { background: var(--accent-d); border-color: var(--accent); color: var(--accent); }
-.pom-btn-sm { flex: 0 0 36px; font-size: .9rem; }
-.pom-sessions { text-align: center; font-size: .8rem; color: var(--text-3); letter-spacing: 4px; }
 
 /* Focus mode — dims everything except selected cards */
 body.focus-mode .sidebar { opacity: .25; transition: opacity 400ms var(--ease); }
@@ -1487,8 +1407,6 @@ body.focus-mode .main-content { filter: brightness(.55); transition: filter 400m
 body.focus-mode .main-content:hover { filter: brightness(1); }
 body.focus-mode .inspector-panel { opacity: .3; transition: opacity 400ms var(--ease); }
 body.focus-mode .inspector-panel:hover { opacity: 1; }
-body.focus-mode .pom-fab { opacity: 1 !important; }
-body.focus-mode .pomodoro-widget { opacity: 1 !important; pointer-events: all !important; }
 
 /* ── Activity Heatmap ─────────────────────────────────────── */
 .heatmap-section { margin-top: 24px; }
