@@ -7834,7 +7834,7 @@ function _buildReminderHtml(title, entityType, deadlineLabel, daysLeft, bodyText
                   background:#f8fafd;border:1px solid #e2e8f0;
                   border-left:4px solid ${urgencyColor};border-radius:0 8px 8px 0;
                   padding:13px 18px;margin-bottom:22px;">
-        <span style="font-size:1.4rem;line-height:1;">⏱</span>
+        <span style="font-size: 2.5rem;line-height:1">⏱</span>
         <div>
           <div style="font-size:.62rem;color:#7a93b8;font-family:monospace;
                       text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px;">Fecha límite</div>
