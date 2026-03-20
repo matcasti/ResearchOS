@@ -7464,6 +7464,48 @@ async function showDeadlineReminderModal(entityType, entity) {
     return;
   }
 
+  // Verificar scope gmail.send antes de abrir el modal
+  const gmailScopeRow = await db.settings.get('google_gmail_scope');
+  const tokenExpiryRow = await db.settings.get('google_token_expiry');
+  const tokenExpired = !tokenExpiryRow?.value || Date.now() >= Number(tokenExpiryRow.value);
+
+  if (tokenExpired || gmailScopeRow?.value !== 'true') {
+    showModal('🔑 Reconexión necesaria', `
+      <div class="modal-body">
+        <div style="text-align:center;padding:16px 0 8px">
+          <div style="font-size:2.5rem;margin-bottom:12px">📧</div>
+          <div style="font-size:.9rem;font-weight:600;color:var(--text-1);margin-bottom:8px">
+            Se requieren permisos de Gmail
+          </div>
+          <div style="font-size:.8rem;color:var(--text-2);line-height:1.6;margin-bottom:16px">
+            Para enviar recordatorios necesitas reconectar tu cuenta Google
+            aceptando el permiso <code style="background:var(--bg-elevated);
+            padding:1px 6px;border-radius:3px;font-family:var(--font-mono);
+            font-size:.75rem">gmail.send</code>.
+          </div>
+          <div style="font-size:.75rem;color:var(--text-3);line-height:1.5;
+                      background:var(--bg-elevated);border-radius:var(--radius-md);
+                      padding:10px 14px;margin-bottom:16px;text-align:left">
+            Antes de reconectar, asegúrate de que en tu
+            <strong style="color:var(--text-2)">Google Cloud Console</strong> tienes:<br>
+            • Gmail API habilitada en <em>APIs &amp; Services → Enabled APIs</em><br>
+            • Scope <code style="font-family:var(--font-mono)">gmail.send</code> añadido
+              en <em>OAuth consent screen → Scopes</em>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="gmailReauthCancel">Cancelar</button>
+        <button class="btn btn-primary" id="gmailReauthConfirm">🔑 Reconectar ahora</button>
+      </div>`);
+    $('gmailReauthCancel').addEventListener('click', closeModal);
+    $('gmailReauthConfirm').addEventListener('click', () => {
+      closeModal();
+      GoogleSync.reauthorizeWithGmail();
+    });
+    return;
+  }
+
   // ── 1. Resolver destinatarios desde Colaboradores ──────────
   const allCollabs = await db.collaborators.toArray();
   const nameToCollab = {};
@@ -7988,9 +8030,17 @@ const GoogleSync = (() => {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      if (res.status === 401 || res.status === 403)
-        throw new Error('gmail_scope_missing');
-      throw new Error(err.error?.message || `Gmail API error ${res.status}`);
+      if (res.status === 401) throw new Error('gmail_scope_missing');
+      if (res.status === 403) {
+        const errBody = await res.json().catch(() => ({}));
+        const reason  = errBody?.error?.errors?.[0]?.reason || '';
+        // "insufficientPermissions" = falta scope; "disabled" = API no habilitada
+        if (reason === 'insufficientPermissions' || !reason)
+          throw new Error('gmail_scope_missing');
+        throw new Error(`Gmail API no habilitada (${reason}). Habilítala en Google Cloud Console.`);
+      }
+      const errBody2 = await res.json().catch(() => ({}));
+      throw new Error(errBody2?.error?.message || `Gmail API error ${res.status}`);
     }
     return res.json();
   }
@@ -8195,8 +8245,18 @@ const GoogleSync = (() => {
       showToast('Google Identity Services no disponible', 'error');
       return;
     }
-    // prompt:'consent' fuerza la pantalla de permisos mostrando los scopes nuevos
-    tokenClient.requestAccessToken({ prompt: 'consent' });
+    // Limpiar caché de scope y email para forzar re-evaluación tras el nuevo token
+    Promise.all([
+      saveSetting('google_gmail_scope', null),
+      saveSetting('google_user_email',  null),
+      saveSetting('google_access_token', null),
+      saveSetting('google_token_expiry',  null),
+    ]).then(() => {
+      accessToken = null;
+      _userEmail  = null;
+      // prompt:'consent' fuerza la pantalla de permisos mostrando gmail.send
+      tokenClient.requestAccessToken({ prompt: 'consent' });
+    });
   }
 
   return {
