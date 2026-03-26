@@ -6221,8 +6221,6 @@ async function renderTutorial() {
         <div class="tut-sk-table">
           ${sk(['Ctrl+K', '⌘K'], 'Abrir Paleta de Comandos — búsqueda unificada en proyectos, ideas, snippets, reuniones, referencias y submissions')}
           ${sk(['Ctrl+Shift+K', '⌘⇧K'], 'Ir directamente al Kanban Board')}
-          ${sk(['Alt+←'], 'Retroceder en el historial de vistas navegadas')}
-          ${sk(['Alt+→'], 'Avanzar en el historial de vistas navegadas')}
           ${sk(['F5'], 'Activar / desactivar modo presentación en la vista Kanban')}
           ${sk(['Esc'], 'Cerrar modal, inspector, paleta de comandos o salir de presentación')}
         </div>
@@ -9570,8 +9568,8 @@ async function init() {
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'K') {
       e.preventDefault(); navigate('kanban');   // ⌘⇧K → Kanban
     }
-    if (e.altKey && e.key === 'ArrowLeft')  navBack();
-    if (e.altKey && e.key === 'ArrowRight') navForward();
+    // if (e.altKey && e.key === 'ArrowLeft')  navBack();
+    // if (e.altKey && e.key === 'ArrowRight') navForward();
   });
 
   _initPalette();
