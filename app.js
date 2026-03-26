@@ -8952,7 +8952,6 @@ function _showWelcomeModal() {
       <div class="welcome-shortcuts">
         <div class="ws-row"><kbd>⌘K</kbd><span>Abrir Command Palette (búsqueda global)</span></div>
         <div class="ws-row"><kbd>⌘⇧K</kbd><span>Ir al Kanban</span></div>
-        <div class="ws-row"><kbd>Alt ←/→</kbd><span>Navegar historial de vistas</span></div>
         <div class="ws-row"><kbd>F5</kbd><span>Presentación Kanban (pantalla completa)</span></div>
         <div class="ws-row"><kbd>→ / L</kbd><span>Siguiente idea en Revisión rápida</span></div>
         <div class="ws-row"><kbd>Esc</kbd><span>Cerrar modal / inspector / paleta</span></div>
