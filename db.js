@@ -23,7 +23,12 @@ db.version(1).stores({
 
 // Version 2: agrega índice deadline a ideas
 db.version(2).stores({
-  ideas: '++id, title, content, status, projectId, starred, createdAt, updatedAt, deadline'
+  ideas:              '++id, title, content, status, projectId, starred, createdAt, updatedAt, deadline'
+});
+
+// Version 3: índice responsibleId para búsqueda por colaborador canónico
+db.version(3).stores({
+  projects:           '++id, title, type, status, columnId, responsible, responsibleId, deadline, priority, createdAt, updatedAt, archived, starred, parentId'
 });
 
 // ── Seed defaults on first run ───────────────────────────────

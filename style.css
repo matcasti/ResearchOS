@@ -1631,7 +1631,7 @@ body.presentation-mode .kanban-col { width: 300px; }
 }
 .toggle-switch input:checked + .toggle-slider { background: var(--accent-d); border-color: var(--accent); }
 .toggle-switch input:checked + .toggle-slider::before {
-  transform: translateX(20px); background: var(--accent);
+  transform: translateX(7px); background: var(--accent);
 }
 
 /* ── Nested Projects Tree ─────────────────────────────────── */
@@ -3225,4 +3225,75 @@ body.presentation-mode .kanban-col { width: 300px; }
   background: var(--accent-d); color: var(--accent);
   font-size: .64rem; font-weight: 700; font-family: var(--font-mono);
   margin-top: 2px;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   KANBAN SWIMLANES
+══════════════════════════════════════════════════════════════ */
+.kanban-swim-board {
+  overflow-x: auto;
+  padding: 4px 32px 32px;
+  min-height: calc(100vh - 170px);
+}
+.kanban-swim-grid {
+  display: grid;
+  gap: 8px;
+  align-items: start;
+  min-width: max-content;
+}
+.kanban-swim-col-header {
+  background: color-mix(in srgb, var(--bg-surface) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  backdrop-filter: blur(10px);
+}
+.kanban-swim-row-label {
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 5px;
+  text-align: center;
+  min-height: 110px;
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  backdrop-filter: blur(10px);
+}
+.kanban-swim-cell {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 8px;
+  min-height: 110px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  transition: border-color 160ms var(--ease), background 160ms var(--ease);
+}
+.kanban-swim-cell.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-d);
+}
+.kanban-swim-cell-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 70px;
+  font-size: .6rem;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  opacity: .5;
 }

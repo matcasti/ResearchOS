@@ -33,6 +33,12 @@ const App = {
   agendaMonthOffset: 0,        // meses desde el actual (0 = este mes)
   filterArea:        'all',    // filtro de área en vista Proyectos
   _tutorialTab:    'quickstart',
+  activeColPreset:   'all',   // id del preset activo en Kanban
+  kanbanGroupBy:     'none',  // 'none' | 'type' | 'area'
+  collaboratorHubId: null,    //
+  ideaBulkMode:      false,    // Feature 11
+  ideaBulkSelected:  new Set(), // Feature 11
+  orphanBulkSelected: new Map(), // Feature 11: Map<`${type}-${id}` → {type,id,title}>
 };
 
 // ── DOM refs ─────────────────────────────────────────────────
@@ -261,6 +267,7 @@ async function renderView(view) {
     triage:        [{label:'Dashboard', view:'dashboard'}, {label:'Ideas Inbox',  view:'ideas'}, {label:'Revisión rápida', view:'triage'}],
     areas:         [{label:'Dashboard', view:'dashboard'}, {label:'Áreas', view:'areas'}],
     tutorial: [{label:'Dashboard', view:'dashboard'}, {label:'Tutorial', view:'tutorial'}],
+    'collaborator-hub': [{label:'Dashboard', view:'dashboard'}, {label:'Colaboradores', view:'collaborators'}, {label:'Perfil', view:'collaborator-hub'}],
   };
 
   // Render first, then inject BC at top so innerHTML overwrites don't destroy it
@@ -287,6 +294,7 @@ async function renderView(view) {
     case 'triage':       await renderIdeaTriage();      break;
     case 'areas':        await renderAreas();           break;
     case 'tutorial':     await renderTutorial();        break;
+    case 'collaborator-hub': await renderCollaboratorHub(); break;
     default:             await renderDashboard();
   }
 
@@ -752,25 +760,10 @@ const HoverCard = {
   }
 };
 
-// ══════════════════════════════════════════════════════════════
-//  VIEW: KANBAN
-// ══════════════════════════════════════════════════════════════
-async function renderKanban() {
-  const kanbanData = await getKanbanData();
-
-  // Pre-cargar ideas no leídas por proyecto para los badges
-  const unreadIdeas = await db.ideas.where('status').equals('unread').toArray();
-  const unreadByProject = {};
-  unreadIdeas.forEach(i => {
-    if (i.projectId) unreadByProject[i.projectId] = (unreadByProject[i.projectId] || 0) + 1;
-  });
-
-  const kanbanResps = [...new Set(
-    kanbanData.flatMap(c => c.cards).map(p => p.responsible).filter(Boolean)
-  )].sort();
-
-  const boardHTML = kanbanData.map(col => {
-    const visibleCards = col.cards.filter(p =>
+// ── Helper: board estándar — extrae la lógica de columnas ──
+function _kanbanBoardHTML(kanbanData, filterFn, unreadByProject, activeSubByProject, pendingAIByProject) {
+  return kanbanData.map(col => {
+    const visibleCards = filterFn(col.cards).filter(p =>
       App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible
     );
     return `
@@ -787,30 +780,202 @@ async function renderKanban() {
            ondragover="kanbanDragOver(event)"
            ondragleave="kanbanDragLeave(event)"
            ondrop="kanbanDrop(event)">
-        ${visibleCards.map(p => kanbanCardHTML(p, unreadByProject[p.id] || 0)).join('')}
+        ${visibleCards.map(p => kanbanCardHTML(
+          p,
+          unreadByProject[p.id]    || 0,
+          activeSubByProject[p.id] || null,
+          pendingAIByProject[p.id] || 0
+        )).join('')}
       </div>
       <button class="kanban-add-btn" data-add-col="${col.id}">+ Add card</button>
     </div>`;
   }).join('');
+}
+
+// ── Helper: board en modo swimlane 2D ──────────
+function _kanbanSwimlaneHTML(kanbanData, filterFn, unreadByProject, activeSubByProject, pendingAIByProject, groupBy, areaMap) {
+  const TYPE_ICONS = {
+    Paper:'📄', Grant:'💰', Análisis:'📊', Dataset:'🗄',
+    Proyecto:'◉', Presentación:'🎤'
+  };
+
+  const allCards = kanbanData.flatMap(col =>
+    filterFn(col.cards)
+      .filter(p => App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible)
+      .map(p => ({ ...p, _colId: col.id }))
+  );
+
+  const getKey = p => groupBy === 'type'
+    ? (p.type || 'Sin tipo')
+    : (areaMap[p.areaId]?.name || 'Sin área');
+
+  const groupKeys = [...new Set(allCards.map(getKey))].sort();
+  if (!groupKeys.length) return `
+    <div class="timeline-empty" style="padding:60px 32px">
+      Sin proyectos para el preset y agrupación activos.
+    </div>`;
+
+  const N    = kanbanData.length;
+  const colW = 240;
+  const lblW = 116;
+
+  return `
+    <div class="kanban-swim-board">
+      <div class="kanban-swim-grid"
+           style="grid-template-columns:${lblW}px ${Array(N).fill(`${colW}px`).join(' ')}">
+
+        <!-- Fila 0: cabeceras de columna -->
+        <div></div>
+        ${kanbanData.map(col => `
+          <div class="kanban-swim-col-header">
+            <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;
+                         display:inline-block;background:${col.color}"></span>
+            <span style="font-family:var(--font-display);font-size:.8rem;
+                         font-weight:600;color:var(--text-1)">${esc(col.title)}</span>
+            <span style="font-family:var(--font-mono);font-size:.65rem;color:var(--text-3);margin-left:auto">
+              ${allCards.filter(p => p._colId === col.id).length}
+            </span>
+          </div>`).join('')}
+
+        <!-- Filas de swimlane -->
+        ${groupKeys.map(key => {
+          const icon        = groupBy === 'type' ? (TYPE_ICONS[key] || '◉') : '⊡';
+          const groupTotal  = allCards.filter(p => getKey(p) === key).length;
+          return `
+            <div class="kanban-swim-row-label">
+              <span style="font-size:1.2rem;line-height:1">${icon}</span>
+              <span style="font-size:.72rem;font-weight:600;color:var(--text-1);
+                           word-break:break-word;text-align:center">${esc(key)}</span>
+              <span style="font-family:var(--font-mono);font-size:.6rem;color:var(--text-3)">${groupTotal}</span>
+            </div>
+            ${kanbanData.map(col => {
+              const cellCards = allCards.filter(p => getKey(p) === key && p._colId === col.id);
+              return `
+                <div class="kanban-swim-cell"
+                     data-swim-col="${col.id}" data-swim-group="${esc(key)}"
+                     ondragover="kanbanDragOver(event)"
+                     ondragleave="kanbanDragLeave(event)"
+                     ondrop="kanbanDrop(event)">
+                  ${cellCards.length
+                    ? cellCards.map(p => kanbanCardHTML(
+                        p,
+                        unreadByProject[p.id]    || 0,
+                        activeSubByProject[p.id] || null,
+                        pendingAIByProject[p.id] || 0
+                      )).join('')
+                    : `<div class="kanban-swim-cell-empty">—</div>`}
+                </div>`;
+            }).join('')}`;
+        }).join('')}
+      </div>
+    </div>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  VIEW: KANBAN
+// ══════════════════════════════════════════════════════════════
+async function renderKanban() {
+  const [kanbanData, colPresets, areas] = await Promise.all([
+    getKanbanData(),
+    _getColPresets(),
+    _getAreas(),
+  ]);
+  const areaMap = Object.fromEntries(areas.map(a => [a.id, a]));
+
+  // Pre-cargar ideas no leídas, submissions activas y action items pendientes
+  const [unreadIdeas, allKanbanSubs, allKanbanMeets] = await Promise.all([
+    db.ideas.where('status').equals('unread').toArray(),
+    db.submissions.toArray(),
+    db.meetings.toArray(),
+  ]);
+  const unreadByProject = {};
+  unreadIdeas.forEach(i => {
+    if (i.projectId) unreadByProject[i.projectId] = (unreadByProject[i.projectId] || 0) + 1;
+  });
+
+  // Submission activa más reciente por proyecto (Feature 2)
+  const activeSubByProject = {};
+  allKanbanSubs.forEach(s => {
+    if (!s.projectId) return;
+    const ex = activeSubByProject[s.projectId];
+    if (!ex || (s.updatedAt || '') > (ex.updatedAt || ''))
+      activeSubByProject[s.projectId] = s;
+  });
+
+  // Action items pendientes por proyecto (Feature 5)
+  const pendingAIByProject = {};
+  allKanbanMeets.forEach(m => {
+    if (!m.projectId) return;
+    const n = (m.actionItems || []).filter(a => !a.done).length;
+    if (n > 0) pendingAIByProject[m.projectId] = (pendingAIByProject[m.projectId] || 0) + n;
+  });
+
+  const kanbanResps = [...new Set(
+    kanbanData.flatMap(c => c.cards).map(p => p.responsible).filter(Boolean)
+  )].sort();
+
+  // ── Filtro por preset activo ──────────────────────────────
+  const activePreset  = colPresets.find(pr => pr.id === App.activeColPreset);
+  const filterByPreset = cards =>
+    (App.activeColPreset === 'all' || !activePreset)
+      ? cards
+      : cards.filter(p => activePreset.types.includes(p.type));
+
+  // ── Contar visibles para el subtitle ─────────────────────
+  const totalVisible = kanbanData.reduce((s, c) =>
+    s + filterByPreset(c.cards).filter(p =>
+      App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible
+    ).length, 0);
+
+  // ── Generar board (estándar o swimlane) ───────────────────
+  const boardHTML = App.kanbanGroupBy === 'none'
+    ? _kanbanBoardHTML(kanbanData, filterByPreset, unreadByProject, activeSubByProject, pendingAIByProject)
+    : _kanbanSwimlaneHTML(kanbanData, filterByPreset, unreadByProject, activeSubByProject, pendingAIByProject, App.kanbanGroupBy, areaMap);
 
   mainContent.innerHTML = `
     <div class="kanban-view-header">
       <div>
         <div class="view-title">Kanban Board</div>
-        <div class="view-subtitle">${kanbanData.reduce((s,c) => s + c.cards.length, 0)} proyectos activos</div>
+        <div class="view-subtitle">${totalVisible} proyecto(s) visibles</div>
       </div>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-ghost" id="kanbanPresBtn" title="Modo presentación (F5)">⛶ Presentación</button>
-        <button class="btn btn-ghost" id="kanbanManageCols">⚙ Columnas</button>
-        <button class="btn btn-primary" id="kanbanAddProject">+ Nuevo Proyecto</button>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-ghost btn-sm" id="kanbanPresBtn" title="Modo presentación (F5)">⛶</button>
+        <button class="btn btn-ghost btn-sm" id="kanbanManageCols">⚙ Columnas</button>
+        <!-- Swimlane toggle (Feature 14) -->
+        <div class="tl-btn-group">
+          <button class="btn btn-ghost btn-sm ${App.kanbanGroupBy==='none'?'active':''}"
+                  data-swim="none" title="Vista board estándar">⊞</button>
+          <button class="btn btn-ghost btn-sm ${App.kanbanGroupBy==='type'?'active':''}"
+                  data-swim="type" title="Swimlanes por tipo">⊟ Tipo</button>
+          <button class="btn btn-ghost btn-sm ${App.kanbanGroupBy==='area'?'active':''}"
+                  data-swim="area" title="Swimlanes por área">⊡ Área</button>
+        </div>
+        <button class="btn btn-primary btn-sm" id="kanbanAddProject">+ Proyecto</button>
       </div>
     </div>
+
+    <!-- Preset tabs (Feature 8) -->
+    <div style="display:flex;align-items:center;gap:5px;padding:8px 32px 0;flex-wrap:wrap">
+      <span style="font-family:var(--font-mono);font-size:.6rem;color:var(--text-3);
+                   text-transform:uppercase;letter-spacing:.08em;margin-right:2px">Vista:</span>
+      <button class="filter-chip ${App.activeColPreset==='all'?'active':''}"
+              data-kpreset="all" style="font-size:.72rem">Todos</button>
+      ${colPresets.map(pr => `
+        <button class="filter-chip ${App.activeColPreset===pr.id?'active':''}"
+                data-kpreset="${pr.id}" style="font-size:.72rem">${pr.icon} ${esc(pr.name)}</button>`).join('')}
+      <button class="btn btn-ghost btn-sm" id="managePresetsBtn"
+              style="font-size:.62rem;padding:2px 8px;color:var(--text-3)">⚙ Editar</button>
+    </div>
+
     ${kanbanResps.length ? `
-    <div class="kanban-resp-bar">
+    <div class="kanban-resp-bar" style="padding-top:6px">
       <button class="resp-chip ${App.filterResponsible==='all'?'active':''}" data-kfilt-resp="all">Todos</button>
       ${kanbanResps.map(r => `<button class="resp-chip ${App.filterResponsible===r?'active':''}" data-kfilt-resp="${esc(r)}">${esc(r)}</button>`).join('')}
     </div>` : ''}
-    <div class="kanban-board">${boardHTML}</div>`;
+
+    ${App.kanbanGroupBy === 'none'
+      ? `<div class="kanban-board">${boardHTML}</div>`
+      : boardHTML}`;
 
   $('kanbanAddProject').addEventListener('click', showAddProjectModal);
   mainContent.querySelectorAll('[data-kfilt-resp]').forEach(btn => {
@@ -820,6 +985,23 @@ async function renderKanban() {
     });
   });
   $('kanbanManageCols')?.addEventListener('click', showManageColumnsModal);
+
+  // Swimlane toggle (Feature 14)
+  mainContent.querySelectorAll('[data-swim]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      App.kanbanGroupBy = btn.dataset.swim;
+      renderKanban();
+    });
+  });
+
+  // Preset tabs (Feature 8)
+  mainContent.querySelectorAll('[data-kpreset]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      App.activeColPreset = btn.dataset.kpreset;
+      renderKanban();
+    });
+  });
+  $('managePresetsBtn')?.addEventListener('click', showManagePresetsModal);
 
   $('kanbanPresBtn').addEventListener('click', () => {
     document.body.classList.add('presentation-mode');
@@ -974,7 +1156,90 @@ async function showManageColumnsModal() {
   });
 }
 
-function kanbanCardHTML(p, unreadCount = 0) {
+// ── Gestionar presets de Kanban ─────────────────
+async function showManagePresetsModal() {
+  const presets  = await _getColPresets();
+  const ALL_TYPES = ['Proyecto','Grant','Paper','Análisis','Dataset','Presentación'];
+
+  const renderRows = () => presets.map((pr, i) => `
+    <div style="display:flex;align-items:flex-start;gap:8px;padding:10px 0;
+                border-bottom:1px solid var(--border)">
+      <input class="form-input preset-icon" value="${esc(pr.icon || '⭐')}"
+             data-pi="${i}"
+             style="width:44px;font-size:1.1rem;text-align:center;padding:5px 4px;flex-shrink:0">
+      <input class="form-input preset-name" value="${esc(pr.name)}"
+             data-pi="${i}"
+             style="width:120px;padding:5px 8px;font-size:.82rem;flex-shrink:0">
+      <div style="display:flex;flex-wrap:wrap;gap:5px;flex:1;align-items:center">
+        ${ALL_TYPES.map(t => `
+          <label style="display:inline-flex;align-items:center;gap:3px;cursor:pointer;
+                        font-size:.72rem;color:var(--text-2)">
+            <input type="checkbox" data-pi="${i}" data-type="${t}"
+                   ${(pr.types || []).includes(t) ? 'checked' : ''}
+                   style="accent-color:var(--accent)">
+            ${t}
+          </label>`).join('')}
+      </div>
+      <button class="btn btn-ghost btn-sm preset-del" data-pi="${i}"
+              style="color:var(--red);flex-shrink:0" ${presets.length <= 1 ? 'disabled' : ''}>✕</button>
+    </div>`).join('');
+
+  showModal('⚙ Presets del Kanban', `
+    <div class="modal-body">
+      <p style="font-size:.75rem;color:var(--text-3);margin-bottom:12px">
+        Los presets filtran qué tipos de proyecto se muestran en el Kanban. Icono · Nombre · Tipos incluidos.
+      </p>
+      <div id="presetsRows">${renderRows()}</div>
+      <button class="btn btn-ghost btn-sm" id="presetAddNew"
+              style="margin-top:10px;width:100%">+ Nuevo preset</button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="presetCancel">Cancelar</button>
+      <button class="btn btn-primary" id="presetSave">Guardar presets</button>
+    </div>`);
+
+  const attachHandlers = () => {
+    document.querySelectorAll('.preset-del').forEach(btn => {
+      btn.addEventListener('click', () => {
+        presets.splice(+btn.dataset.pi, 1);
+        $('presetsRows').innerHTML = renderRows();
+        attachHandlers();
+      });
+    });
+  };
+  attachHandlers();
+
+  $('presetAddNew').addEventListener('click', () => {
+    presets.push({ id: `preset_${Date.now()}`, name: 'Nuevo', icon: '⭐', types: [] });
+    $('presetsRows').innerHTML = renderRows();
+    attachHandlers();
+  });
+
+  $('presetCancel').addEventListener('click', closeModal);
+
+  $('presetSave').addEventListener('click', async () => {
+    document.querySelectorAll('.preset-name').forEach(inp => {
+      const i = +inp.dataset.pi;
+      if (presets[i]) presets[i].name = inp.value.trim() || presets[i].name;
+    });
+    document.querySelectorAll('.preset-icon').forEach(inp => {
+      const i = +inp.dataset.pi;
+      if (presets[i]) presets[i].icon = inp.value.trim() || presets[i].icon;
+    });
+    presets.forEach((pr, i) => {
+      pr.types = [];
+      document.querySelectorAll(`input[data-pi="${i}"][data-type]`).forEach(cb => {
+        if (cb.checked) pr.types.push(cb.dataset.type);
+      });
+    });
+    await _saveColPresets(presets);
+    closeModal();
+    showToast('Presets guardados ✓', 'success');
+    renderKanban();
+  });
+}
+
+function kanbanCardHTML(p, unreadCount = 0, activeSub = null, pendingAIs = 0) {
   const deadline = p.deadline
     ? `<span class="kanban-card-date">⏱ ${formatDate(p.deadline)}</span>` : '';
   const tags = (p.tags || []).slice(0,3).map(t => `<span class="tag">${esc(t)}</span>`).join('');
@@ -984,19 +1249,49 @@ function kanbanCardHTML(p, unreadCount = 0) {
     ? Math.floor((Date.now() - new Date(p.updatedAt)) / 86400000) : 0;
   const staleClass = daysSince > 14 ? ' kanban-card-stale' : '';
   const staleTip   = daysSince > 14 ? ` title="Sin actividad hace ${daysSince} días"` : '';
+
+  // Health badges (Feature 2 + 5)
+  const healthBadges = [];
+  if (pendingAIs > 0)
+    healthBadges.push(`<span style="font-size:.58rem;font-family:var(--font-mono);
+      color:var(--red);background:rgba(248,113,113,.12);
+      padding:1px 5px;border-radius:99px;border:1px solid rgba(248,113,113,.2)">⚑ ${pendingAIs}</span>`);
+  if (activeSub) {
+    const SUB_COLORS = {
+      preparacion:'var(--text-3)', enviado:'var(--accent)', en_revision:'var(--amber)',
+      revision_solicitada:'var(--purple)', aceptado:'var(--green)', rechazado:'var(--red)'
+    };
+    const SUB_LABELS = {
+      preparacion:'En prep.', enviado:'Enviado', en_revision:'En revisión',
+      revision_solicitada:'Rev. solicit.', aceptado:'Aceptado ✓', rechazado:'Rechazado'
+    };
+    const sc = SUB_COLORS[activeSub.status] || 'var(--text-3)';
+    const sl = SUB_LABELS[activeSub.status] || activeSub.status;
+    healthBadges.push(`<span style="font-size:.58rem;font-family:var(--font-mono);
+      color:${sc};background:color-mix(in srgb,${sc} 12%,transparent);
+      padding:1px 5px;border-radius:99px;border:1px solid color-mix(in srgb,${sc} 28%,transparent)">
+      📤 ${sl}</span>`);
+  }
+
+  const badgesRow = [ideaBadge, ...healthBadges].filter(Boolean).join('');
+
   return `
     <div class="kanban-card${staleClass}" draggable="true" data-project-id="${p.id}"${staleTip}>
       <div class="kanban-card-title-text" data-inline-rename="${p.id}"
            data-inline-rename-value="${esc(p.title)}"
            title="Doble clic para renombrar">${esc(p.title)}</div>
-      ${ideaBadge ? `<div class="kanban-card-badges">${ideaBadge}</div>` : ''}
+      ${badgesRow ? `<div class="kanban-card-badges" style="display:flex;gap:3px;flex-wrap:wrap;align-items:center;margin-bottom:4px">${badgesRow}</div>` : ''}
       <div class="kanban-card-meta">
         <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
         <span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority)}</span>
       </div>
       ${tags ? `<div class="project-card-tags" style="margin-bottom:6px">${tags}</div>` : ''}
       <div class="kanban-card-footer">
-        <span class="kanban-card-person">👤 ${esc(p.responsible || '—')}</span>
+        <span class="kanban-card-person">
+          ${p.responsible
+            ? _personChipHTML(p.responsible, p.responsibleId || null, { small: true })
+            : '<span style="color:var(--text-3);font-size:.65rem;font-family:var(--font-mono)">—</span>'}
+        </span>
         ${deadline}
       </div>
     </div>`;
@@ -1014,18 +1309,22 @@ function kanbanDragEnd(e) {
 function kanbanDragOver(e) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
-  e.currentTarget.closest('.kanban-col')?.classList.add('drag-over');
+  const t = e.currentTarget.closest('[data-swim-col]') || e.currentTarget.closest('.kanban-col');
+  t?.classList.add('drag-over');
 }
 function kanbanDragLeave(e) {
   if (!e.currentTarget.contains(e.relatedTarget)) {
-    e.currentTarget.closest('.kanban-col')?.classList.remove('drag-over');
+    const t = e.currentTarget.closest('[data-swim-col]') || e.currentTarget.closest('.kanban-col');
+    t?.classList.remove('drag-over');
   }
 }
 async function kanbanDrop(e) {
   e.preventDefault();
-  const col       = e.currentTarget.closest('.kanban-col');
-  col?.classList.remove('drag-over');
-  const newColId  = +col?.dataset.colId;
+  const swimCell  = e.currentTarget.closest('[data-swim-col]');
+  const kanbanCol = e.currentTarget.closest('.kanban-col');
+  const target    = swimCell || kanbanCol;
+  target?.classList.remove('drag-over');
+  const newColId  = swimCell ? +swimCell.dataset.swimCol : +kanbanCol?.dataset.colId;
   const draggedId = App.draggedId;
   App.draggedId   = null;
   if (!draggedId || !newColId) return;
@@ -1270,10 +1569,19 @@ async function renderProjects() {
     }
 
     // ── Datos auxiliares: unread, áreas, hijos (rollup) ───
-    const [unreadIdeas, areas] = await Promise.all([
+    const [unreadIdeas, areas, allSubsForTable] = await Promise.all([
       db.ideas.where('status').equals('unread').toArray(),
-      _getAreas()
+      _getAreas(),
+      db.submissions.toArray()
     ]);
+    // Submission más reciente por proyecto (para columna "Etapa" en Papers)
+    const activeSubForTable = {};
+    allSubsForTable.forEach(s => {
+      if (!s.projectId) return;
+      const ex = activeSubForTable[s.projectId];
+      if (!ex || (s.updatedAt || '') > (ex.updatedAt || ''))
+        activeSubForTable[s.projectId] = s;
+    });
     const areaMap   = Object.fromEntries(areas.map(a => [a.id, a]));
     const unreadMap = {};
     unreadIdeas.forEach(i => { if (i.projectId) unreadMap[i.projectId] = (unreadMap[i.projectId]||0)+1; });
@@ -1341,7 +1649,27 @@ async function renderProjects() {
             </td>
             <td class="ptd"><span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span></td>
             <td class="ptd"><span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority||'—')}</span></td>
-            <td class="ptd" style="color:var(--text-2);font-size:.74rem">${esc(col?.title||'—')}</td>
+            <td class="ptd" style="color:var(--text-2);font-size:.74rem">
+              ${(() => {
+                if (p.type === 'Paper' && activeSubForTable[p.id]) {
+                  const s = activeSubForTable[p.id];
+                  const SC = { preparacion:'var(--text-3)', enviado:'var(--accent)',
+                    en_revision:'var(--amber)', revision_solicitada:'var(--purple)',
+                    aceptado:'var(--green)', rechazado:'var(--red)' };
+                  const SL = { preparacion:'En prep.', enviado:'Enviado',
+                    en_revision:'En revisión', revision_solicitada:'Rev. solicit.',
+                    aceptado:'Aceptado ✓', rechazado:'Rechazado' };
+                  const sc = SC[s.status] || 'var(--text-3)';
+                  return `<span style="font-family:var(--font-mono);font-size:.62rem;
+                    color:${sc};background:color-mix(in srgb,${sc} 12%,transparent);
+                    border:1px solid color-mix(in srgb,${sc} 28%,transparent);
+                    padding:1px 6px;border-radius:99px">
+                    📤 ${SL[s.status] || s.status}
+                  </span>`;
+                }
+                return esc(col?.title || '—');
+              })()}
+            </td>
             <td class="ptd" style="color:var(--text-2);font-size:.74rem">${esc(p.responsible||'—')}</td>
             ${area
               ? `<td class="ptd"><span class="area-chip" style="border-color:${area.color};color:${area.color}">⊡ ${esc(area.name)}</span></td>`
@@ -1622,9 +1950,15 @@ async function renderIdeas() {
           <div class="view-title">Ideas Inbox</div>
           <div class="view-subtitle">${ideas.filter(i=>i.status==='unread').length} sin revisar</div>
         </div>
-        ${ideas.filter(i=>i.status==='unread').length > 2
-          ? `<button class="btn btn-primary" id="startTriageBtn">◎ Revisión rápida (${ideas.filter(i=>i.status==='unread').length})</button>`
-          : ''}
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          ${ideas.filter(i=>i.status==='unread').length > 2
+            ? `<button class="btn btn-primary btn-sm" id="startTriageBtn">◎ Revisión rápida (${ideas.filter(i=>i.status==='unread').length})</button>`
+            : ''}
+          <button class="btn btn-ghost btn-sm" id="ideaBulkToggle"
+                  style="color:${App.ideaBulkMode?'var(--accent)':'var(--text-2)'}">
+            ${App.ideaBulkMode ? '✕ Cancelar' : '⊞ Seleccionar'}
+          </button>
+        </div>
       </div>
 
       <!-- Quick capture -->
@@ -1681,16 +2015,182 @@ async function renderIdeas() {
         ` : ''}
       </div>
 
+      <!-- Bulk bar para ideas (visible solo en bulk mode) -->
+      ${App.ideaBulkMode ? `
+      <div id="ideaBulkBar" style="background:var(--bg-card);border:1px solid var(--accent);
+           border-radius:var(--radius-lg);padding:10px 16px;margin-bottom:14px;
+           display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span id="ideaBulkCount" style="font-family:var(--font-mono);font-size:.78rem;
+              color:var(--text-2);min-width:80px">0 seleccionadas</span>
+        <button class="btn btn-ghost btn-sm" id="ibSelectAll">Selec. todas</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-ghost btn-sm" id="ibLink">⬡ Vincular proyecto</button>
+        <button class="btn btn-ghost btn-sm" id="ibMarkReviewed">✓ Marcar revisadas</button>
+        <button class="btn btn-danger btn-sm" id="ibDelete">✕ Eliminar</button>
+      </div>` : ''}
+
       <!-- Ideas list -->
       <div class="ideas-list" id="ideasList">
-        ${ideas.length ? ideas.map(i => ideaItemHTML(i, projMap)).join('')
-          : `<div class="empty-state"><span class="empty-state-icon">◎</span>
-              <h3>Inbox vacío</h3><p>Captura tu primera idea arriba</p></div>`}
+        ${ideas.length ? ideas.map(i => {
+          const proj = i.projectId ? projMap[i.projectId] : null;
+          const stCount = (i.subtasks||[]).length;
+          const stDone  = (i.subtasks||[]).filter(t => t.done).length;
+          return `
+            <div class="idea-item ${i.status==='unread'?'idea-unread':''}"
+                 data-idea-id="${i.id}"
+                 style="position:relative${App.ideaBulkMode?';cursor:pointer':''}"
+                 ${App.ideaBulkMode?`data-bulk-idea="${i.id}"`:''}
+            >
+              ${App.ideaBulkMode ? `
+                <input type="checkbox" class="idea-bulk-cb" data-idea-id="${i.id}"
+                       ${App.ideaBulkSelected.has(i.id)?'checked':''}
+                       style="position:absolute;top:12px;left:10px;
+                              accent-color:var(--accent);width:16px;height:16px;
+                              cursor:pointer;z-index:5"
+                       onclick="event.stopPropagation()">
+                <div style="margin-left:24px;flex:1;display:contents">
+              ` : ''}
+              <button class="idea-status-btn ${i.status==='reviewed'?'reviewed':''}"
+                      data-idea-id="${i.id}" title="Marcar como revisada"></button>
+              <div class="idea-body">
+                <div class="idea-title">${esc(i.title)}</div>
+                ${i.content?`<div class="idea-content">${esc(i.content)}</div>`:''}
+                <div class="idea-footer">
+                  ${(i.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
+                  ${(i.projectIds||[i.projectId]).filter(Boolean).map(pid=>{
+                    const p=projMap[pid];
+                    return p?`<span class="idea-linked" data-inspect-project="${pid}"
+                      style="cursor:pointer" title="Ver proyecto">⬡ ${esc(p.title)}</span>`:'';
+                  }).join('')}
+                  ${stCount?`<span class="subtask-count-badge">${stDone}/${stCount} ✓</span>`:''}
+                  <span style="font-size:.65rem;color:var(--text-3);font-family:var(--font-mono);
+                               margin-left:auto">${relativeDate(i.createdAt)}</span>
+                </div>
+              </div>
+              <button class="btn btn-ghost btn-sm idea-star-btn" data-idea-id="${i.id}"
+                      title="${i.starred?'Quitar favorito':'Marcar favorito'}"
+                      style="color:${i.starred?'var(--amber)':'var(--text-3)'}">${i.starred?'★':'☆'}</button>
+              <button class="btn btn-ghost btn-sm idea-delete-btn" data-idea-id="${i.id}" title="Eliminar">✕</button>
+              ${App.ideaBulkMode ? `</div>` : ''}
+            </div>`;
+        }).join('')
+        : `<div class="empty-state"><span class="empty-state-icon">◎</span>
+             <h3>Inbox vacío</h3><p>Captura tu primera idea arriba</p></div>`}
       </div>
     </div>`;
 
   $('saveIdeaBtn').addEventListener('click', saveQuickIdea);
   $('startTriageBtn')?.addEventListener('click', () => { App.triageIdx = 0; navigate('triage'); });
+  $('ideaBulkToggle')?.addEventListener('click', () => {
+    App.ideaBulkMode = !App.ideaBulkMode;
+    App.ideaBulkSelected.clear();
+    renderIdeas();
+  });
+
+  if (App.ideaBulkMode) {
+    const updateIdeaBulkCount = () => {
+      const el = $('ideaBulkCount');
+      if (el) el.textContent = `${App.ideaBulkSelected.size} seleccionada${App.ideaBulkSelected.size!==1?'s':''}`;
+    };
+
+    mainContent.querySelectorAll('.idea-bulk-cb').forEach(cb => {
+      cb.addEventListener('change', e => {
+        e.stopPropagation();
+        if (cb.checked) App.ideaBulkSelected.add(+cb.dataset.ideaId);
+        else            App.ideaBulkSelected.delete(+cb.dataset.ideaId);
+        updateIdeaBulkCount();
+      });
+    });
+
+    // Click en fila en modo bulk = toggle checkbox
+    mainContent.querySelectorAll('[data-bulk-idea]').forEach(row => {
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('button') || e.target.closest('input')) return;
+        const cb = row.querySelector('.idea-bulk-cb');
+        if (!cb) return;
+        cb.checked = !cb.checked;
+        cb.dispatchEvent(new Event('change'));
+      });
+    });
+
+    $('ibSelectAll')?.addEventListener('click', () => {
+      ideas.forEach(i => App.ideaBulkSelected.add(i.id));
+      mainContent.querySelectorAll('.idea-bulk-cb').forEach(cb => cb.checked = true);
+      updateIdeaBulkCount();
+    });
+
+    $('ibMarkReviewed')?.addEventListener('click', async () => {
+      if (!App.ideaBulkSelected.size) return showToast('Selecciona ideas primero', 'error');
+      const now = new Date().toISOString();
+      await dbWrite(() =>
+        db.ideas.where('id').anyOf([...App.ideaBulkSelected])
+          .modify({ status: 'reviewed', updatedAt: now })
+      );
+      showToast(`${App.ideaBulkSelected.size} marcadas como revisadas ✓`, 'success');
+      App.ideaBulkSelected.clear();
+      App.ideaBulkMode = false;
+      renderIdeas();
+    });
+
+    $('ibDelete')?.addEventListener('click', async () => {
+      if (!App.ideaBulkSelected.size) return showToast('Selecciona ideas primero', 'error');
+      if (!confirm(`¿Eliminar ${App.ideaBulkSelected.size} idea(s)?`)) return;
+      await dbWrite(() =>
+        db.ideas.where('id').anyOf([...App.ideaBulkSelected]).delete()
+      );
+      showToast(`${App.ideaBulkSelected.size} ideas eliminadas`, 'info');
+      App.ideaBulkSelected.clear();
+      App.ideaBulkMode = false;
+      renderIdeas();
+    });
+
+    $('ibLink')?.addEventListener('click', async () => {
+      if (!App.ideaBulkSelected.size) return showToast('Selecciona ideas primero', 'error');
+      const _projs = await db.projects.toArray();
+      showModal('Vincular a proyecto', `
+        <div class="modal-body">
+          <p style="font-size:.8rem;color:var(--text-2);margin-bottom:10px">
+            Vincular <strong>${App.ideaBulkSelected.size}</strong> idea(s) al mismo proyecto:
+          </p>
+          <div class="form-group">
+            <label class="form-label">Proyecto</label>
+            <select class="form-select" id="ibProjSel">
+              <option value="">— Elige un proyecto —</option>
+              ${_projs.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" id="ibLinkCancel">Cancelar</button>
+          <button class="btn btn-primary" id="ibLinkConfirm">Vincular</button>
+        </div>`);
+      $('ibLinkCancel').addEventListener('click', closeModal);
+      $('ibLinkConfirm').addEventListener('click', async () => {
+        const pid = +$('ibProjSel').value;
+        if (!pid) { showToast('Elige un proyecto', 'error'); return; }
+        const now = new Date().toISOString();
+        await dbWrite(async () => {
+          for (const ideaId of App.ideaBulkSelected) {
+            const idea = await db.ideas.get(ideaId);
+            const existingIds = idea.projectIds || (idea.projectId ? [idea.projectId] : []);
+            if (!existingIds.includes(pid)) existingIds.push(pid);
+            await db.ideas.update(ideaId, {
+              projectId:  existingIds[0],
+              projectIds: existingIds,
+              updatedAt:  now
+            });
+          }
+        });
+        const n = App.ideaBulkSelected.size;
+        closeModal();
+        showToast(`${n} idea(s) vinculadas ✓`, 'success');
+        App.ideaBulkSelected.clear();
+        App.ideaBulkMode = false;
+        renderIdeas();
+      });
+    });
+  }
+
   $('ideaTitleInput').addEventListener('keydown', e => { if (e.key === 'Enter') saveQuickIdea(); });
 
   _attachProjectPicker('quickCaptureProjs', projects);
@@ -2457,6 +2957,26 @@ async function renderTimeline() {
       (subsByProject[projId] || []).filter(s => inWindow(s.deadlineAt)).forEach(s => {
         const sc = new Date(s.deadlineAt+'T12:00:00') < today ? 'var(--red)'
           : (new Date(s.deadlineAt+'T12:00:00') - today) < 7*86400000 ? 'var(--amber)' : 'var(--accent)';
+
+        // Rondas de revisión (Feature 12) — dots adicionales en la misma pista
+        const ROUND_COLORS = {
+          preparacion:'var(--text-3)', enviado:'var(--accent)',
+          en_revision:'var(--amber)', revision_solicitada:'var(--purple)',
+          aceptado:'var(--green)', rechazado:'var(--red)'
+        };
+        const roundDots = (s.rounds || [])
+          .filter(r => r.date && inWindow(r.date))
+          .map(r => {
+            const rc = ROUND_COLORS[r.status] || 'var(--text-2)';
+            return `
+              <div class="timeline-deadline-dot"
+                   style="left:${toX(r.date)};background:${rc};
+                          width:6px;height:6px;border:1.5px solid var(--bg-base)"
+                   title="Ronda: ${esc(r.status)}${r.notes ? ' — ' + r.notes.slice(0,40) : ''} · ${formatDate(r.date)}"></div>
+              <span class="timeline-deadline-label"
+                    style="left:${toX(r.date)};font-size:.55rem;opacity:.7">${formatDate(r.date)}</span>`;
+          }).join('');
+
         rows.push(`
           <div class="timeline-row timeline-idea-subrow tl-sub-sub">
             <div class="timeline-row-label timeline-idea-label"
@@ -2464,9 +2984,10 @@ async function renderTimeline() {
                  title="${esc(s.title)}">📤 ${esc(s.title)}</div>
             <div class="timeline-track">
               <div class="timeline-today-line" style="left:${todayX}"></div>
+              ${roundDots}
               <div class="timeline-deadline-dot"
                    data-inspect-submission="${s.id}"
-                   style="left:${toX(s.deadlineAt)};background:${sc};width:8px;height:8px"
+                   style="left:${toX(s.deadlineAt)};background:${sc};width:9px;height:9px"
                    title="${esc(s.title)} — ${formatDate(s.deadlineAt)}"></div>
               <span class="timeline-deadline-label" style="left:${toX(s.deadlineAt)}">${formatDate(s.deadlineAt)}</span>
             </div>
@@ -2992,11 +3513,13 @@ function subStatusBadge(status) {
 }
 
 async function renderSubmissions() {
-  const [subs, projects] = await Promise.all([
+  const [subs, projects, cols] = await Promise.all([
     db.submissions.orderBy('createdAt').reverse().toArray(),
-    db.projects.toArray()
+    db.projects.toArray(),
+    db.kanbanColumns.toArray()
   ]);
-  const projMap = Object.fromEntries(projects.map(p => [p.id, p]));
+  const projMap   = Object.fromEntries(projects.map(p => [p.id, p]));
+  const colMapSub = Object.fromEntries(cols.map(c => [c.id, c]));
 
   // Pipeline counts
   const counts = {};
@@ -3041,6 +3564,13 @@ async function renderSubmissions() {
                 ${s.targetVenue ? `<span style="color:var(--text-2);font-size:.75rem">→ ${esc(s.targetVenue)}</span>` : ''}
                 ${proj ? `<span style="color:var(--accent);font-size:.72rem;cursor:pointer"
                   data-inspect-project="${proj.id}">⬡ ${esc(proj.title)}</span>` : ''}
+                ${proj && colMapSub[proj.columnId] ? (() => {
+                  const c = colMapSub[proj.columnId];
+                  return `<span style="font-family:var(--font-mono);font-size:.6rem;
+                    background:color-mix(in srgb,${c.color} 14%,transparent);
+                    color:${c.color};border:1px solid color-mix(in srgb,${c.color} 28%,transparent);
+                    padding:1px 6px;border-radius:99px">⊞ ${esc(c.title)}</span>`;
+                })() : ''}
               </div>
               <div class="sub-card-dates">
                 ${s.deadlineAt ? `<span style="font-size:.72rem;font-family:var(--font-mono);
@@ -3137,6 +3667,11 @@ async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
       <div class="form-group">
         <label class="form-label">Deadline de envío</label>
         <input class="form-input" type="date" id="asub-deadline" value="${prefillDate || ''}">
+        <label style="display:flex;align-items:center;gap:7px;margin-top:5px;
+                      font-size:.74rem;color:var(--text-2);cursor:pointer">
+          <input type="checkbox" id="asub-sync-dl" ${preProjectId ? 'checked' : ''}>
+          Sincronizar este deadline con el proyecto vinculado
+        </label>
       </div>
       <div class="form-group">
         <label class="form-label">Fecha de envío efectivo</label>
@@ -3163,19 +3698,26 @@ async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
   $('asubSave').addEventListener('click', async () => {
     const title = $('asub-title').value.trim();
     if (!title) { showToast('El título es requerido', 'error'); return; }
-    const now = new Date().toISOString();
-    await dbWrite(() => db.submissions.add({
-      title,
-      type:        $('asub-type').value,
-      targetVenue: $('asub-venue').value.trim(),
-      status:      $('asub-status').value,
-      deadlineAt:  $('asub-deadline').value || null,
-      submittedAt: $('asub-submitted').value || null,
-      projectId:   +$('asub-project').value || null,
-      notes:       $('asub-notes').value.trim(),
-      rounds:      [],
-      createdAt:   now, updatedAt: now
-    }));
+    const now          = new Date().toISOString();
+    const subProjId    = +$('asub-project').value || null;
+    const subDeadline  = $('asub-deadline').value || null;
+    const syncDl       = $('asub-sync-dl')?.checked && subProjId && subDeadline;
+    await dbWrite(async () => {
+      await db.submissions.add({
+        title,
+        type:        $('asub-type').value,
+        targetVenue: $('asub-venue').value.trim(),
+        status:      $('asub-status').value,
+        deadlineAt:  subDeadline,
+        submittedAt: $('asub-submitted').value || null,
+        projectId:   subProjId,
+        notes:       $('asub-notes').value.trim(),
+        rounds:      [],
+        createdAt:   now, updatedAt: now
+      });
+      if (syncDl)
+        await db.projects.update(subProjId, { deadline: subDeadline, updatedAt: now });
+    });
     closeModal();
     showToast('Envío registrado ✓', 'success');
     if (App.view === 'submissions')  renderSubmissions();
@@ -3203,8 +3745,11 @@ async function inspectSubmission(id) {
         </div>` : ''}
         ${proj ? `<div class="inspector-meta-row">
           <span class="inspector-meta-key">Proyecto</span>
-          <span class="inspector-meta-val" style="cursor:pointer;color:var(--accent)"
-                id="subNavProj">${esc(proj.title)}</span>
+          <span class="inspector-meta-val" style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
+            <span style="cursor:pointer;color:var(--accent)" id="subNavProj">${esc(proj.title)}</span>
+            <button class="btn btn-ghost btn-sm" id="subNavHub"
+                    style="font-size:.6rem;padding:2px 7px;line-height:1.4">⬡ Hub →</button>
+          </span>
         </div>` : ''}
         <div class="inspector-meta-row">
           <span class="inspector-meta-key">Deadline</span>
@@ -3262,12 +3807,18 @@ async function inspectSubmission(id) {
   $('subNavProj')?.addEventListener('click', () => {
     navigate('projects'); setTimeout(() => inspectProject(proj.id), 120);
   });
+  $('subNavHub')?.addEventListener('click', () => {
+    App.projectHubId = proj.id;
+    navigate('project-hub');
+  });
 
   inspectorBody.querySelectorAll('.sub-status-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
+      const newStatus = btn.dataset.status;
       await dbWrite(() => db.submissions.update(id, {
-        status: btn.dataset.status, updatedAt: new Date().toISOString()
+        status: newStatus, updatedAt: new Date().toISOString()
       }));
+      await _syncPaperColumn(id, newStatus); // Feature 15
       showToast('Estado actualizado ✓', 'success');
       inspectSubmission(id);
       if (App.view === 'submissions') renderSubmissions();
@@ -3324,6 +3875,11 @@ async function showEditSubmissionModal(s) {
       <div class="form-group">
         <label class="form-label">Deadline</label>
         <input class="form-input" type="date" id="esub-deadline" value="${s.deadlineAt||''}">
+        <label style="display:flex;align-items:center;gap:7px;margin-top:5px;
+                      font-size:.74rem;color:var(--text-2);cursor:pointer">
+          <input type="checkbox" id="esub-sync-dl" ${s.projectId ? 'checked' : ''}>
+          Sincronizar deadline con el proyecto vinculado
+        </label>
       </div>
       <div class="form-group">
         <label class="form-label">Fecha de envío</label>
@@ -3349,16 +3905,26 @@ async function showEditSubmissionModal(s) {
   $('esubSave').addEventListener('click', async () => {
     const title = $('esub-title').value.trim();
     if (!title) { showToast('Título requerido', 'error'); return; }
-    await dbWrite(() => db.submissions.update(s.id, {
-      title, type: $('esub-type').value,
-      targetVenue: $('esub-venue').value.trim(),
-      status:      $('esub-status').value,
-      deadlineAt:  $('esub-deadline').value || null,
-      submittedAt: $('esub-submitted').value || null,
-      projectId:   +$('esub-project').value || null,
-      notes:       $('esub-notes').value.trim(),
-      updatedAt:   new Date().toISOString()
-    }));
+    const eSubProjId   = +$('esub-project').value || null;
+    const eSubDeadline = $('esub-deadline').value || null;
+    const eSyncDl      = $('esub-sync-dl')?.checked && eSubProjId && eSubDeadline;
+    const eNow         = new Date().toISOString();
+    const _editStatus = $('esub-status').value;
+    await dbWrite(async () => {
+      await db.submissions.update(s.id, {
+        title, type: $('esub-type').value,
+        targetVenue: $('esub-venue').value.trim(),
+        status:      $('esub-status').value,
+        deadlineAt:  eSubDeadline,
+        submittedAt: $('esub-submitted').value || null,
+        projectId:   eSubProjId,
+        notes:       $('esub-notes').value.trim(),
+        updatedAt:   eNow
+      });
+      if (eSyncDl)
+        await db.projects.update(eSubProjId, { deadline: eSubDeadline, updatedAt: eNow });
+    });
+    await _syncPaperColumn(s.id, _editStatus); // Feature 15
     closeModal();
     showToast('Envío actualizado ✓', 'success');
     inspectSubmission(s.id);
@@ -3453,7 +4019,10 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
     </div>`);
   setTimeout(() => $('am-title')?.focus(), 60);
 
-  setTimeout(() => _attachCollaboratorAutocomplete($('am-participants'), { multi: true }), 80);
+  setTimeout(() => {
+    const partInput = $('am-participants');
+    _attachCollaboratorAutocomplete(partInput, { multi: true });
+  }, 80);
 
   $('amCancel').addEventListener('click', closeModal);
   $('amSave').addEventListener('click', async () => {
@@ -3483,6 +4052,18 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
 async function inspectMeeting(id) {
   const m    = await db.meetings.get(id);
   if (!m) return;
+  // Feature 16: resolver colaboradores para chips de participantes
+  const _meetCollabs = await db.collaborators.orderBy('name').toArray();
+  const _meetCollabByName = Object.fromEntries(
+    _meetCollabs.map(c => [c.name.toLowerCase().trim(), c])
+  );
+  const _participantChips = m.participants
+    ? m.participants.split(',').map(n => {
+        const name = n.trim();
+        const c    = _meetCollabByName[name.toLowerCase()];
+        return _personChipHTML(name, c?.id || null, { small: true });
+      }).join(' ')
+    : null;
   const proj = m.projectId ? await db.projects.get(m.projectId) : null;
   const ais  = m.actionItems || [];
 
@@ -3494,9 +4075,11 @@ async function inspectMeeting(id) {
           <span class="inspector-meta-key">Fecha</span>
           <span class="inspector-meta-val">${formatDate(m.date)}</span>
         </div>
-        ${m.participants ? `<div class="inspector-meta-row">
+        ${_participantChips ? `<div class="inspector-meta-row">
           <span class="inspector-meta-key">Participantes</span>
-          <span class="inspector-meta-val">${esc(m.participants)}</span>
+          <span class="inspector-meta-val" style="display:flex;flex-wrap:wrap;gap:3px">
+            ${_participantChips}
+          </span>
         </div>` : ''}
         ${proj ? `<div class="inspector-meta-row">
           <span class="inspector-meta-key">Proyecto</span>
@@ -3902,6 +4485,198 @@ async function inspectReference(id) {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  COLLABORATOR HUB
+// ══════════════════════════════════════════════════════════════
+async function renderCollaboratorHub() {
+  const id = App.collaboratorHubId;
+  if (!id) { navigate('collaborators'); return; }
+
+  const [c, projects, meetings, submissions, cols] = await Promise.all([
+    db.collaborators.get(id),
+    db.projects.filter(p => !p.archived).toArray(),
+    db.meetings.toArray(),
+    db.submissions.toArray(),
+    db.kanbanColumns.toArray(),
+  ]);
+  if (!c) { navigate('collaborators'); return; }
+
+  const colMap = Object.fromEntries(cols.map(col => [col.id, col]));
+
+  const asResponsible = projects.filter(p => p.responsible === c.name);
+  const asCoauthor    = projects.filter(p =>
+    (p.coauthors || []).includes(c.name) && p.responsible !== c.name
+  );
+  const allLinked    = [...asResponsible, ...asCoauthor];
+  const linkedIds    = new Set(allLinked.map(p => p.id));
+
+  const linkedMeets  = meetings.filter(m =>
+    (m.participants || '').split(',').map(s => s.trim())
+      .some(n => n.toLowerCase() === c.name.toLowerCase()) ||
+    (m.projectId && linkedIds.has(m.projectId))
+  );
+  const linkedSubs   = submissions.filter(s => s.projectId && linkedIds.has(s.projectId));
+  const pendingAIs   = linkedMeets.flatMap(m => (m.actionItems || []).filter(a => !a.done));
+
+  // Estadísticas rápidas de actividad
+  const now     = Date.now();
+  const recent  = allLinked.filter(p => p.updatedAt &&
+    now - new Date(p.updatedAt) < 30 * 86400000).length;
+  const deadlines = allLinked.filter(p => p.deadline).map(p => {
+    const d = new Date(p.deadline + 'T00:00:00');
+    return Math.ceil((d - new Date(new Date().setHours(0,0,0,0))) / 86400000);
+  }).filter(d => d >= 0 && d <= 30).sort();
+
+  const hubSection = (sid, label, count, content) => `
+    <div class="hub-section">
+      <div class="hub-section-header" data-hub-toggle="${sid}">
+        <span class="hub-section-title">${label}</span>
+        ${count > 0 ? `<span class="hub-section-count">${count}</span>` : ''}
+        <span class="hub-chevron" id="chev-${sid}">▾</span>
+      </div>
+      <div class="hub-section-body" id="hubBody-${sid}">${content}</div>
+    </div>`;
+
+  mainContent.innerHTML = `
+    <div class="view hub-view">
+      <!-- Header -->
+      <div class="hub-header">
+        <div class="hub-header-flags">
+          <span class="hub-flag" style="background:var(--accent-d);color:var(--accent);
+                border-color:var(--accent)">👤 Colaborador</span>
+          ${c.role ? `<span class="hub-flag hub-flag-arch">${esc(c.role)}</span>` : ''}
+        </div>
+        <h1 class="hub-title">${esc(c.name)}</h1>
+        <div class="hub-meta-row">
+          ${c.affiliation ? `<span class="hub-meta-chip">
+            <span class="hub-meta-icon">🏛</span>${esc(c.affiliation)}</span>` : ''}
+          ${c.email ? `<a href="mailto:${esc(c.email)}" class="hub-meta-chip"
+              onclick="event.stopPropagation()"
+              style="text-decoration:none;color:inherit">
+              <span class="hub-meta-icon">✉</span>${esc(c.email)}</a>` : ''}
+          <span class="hub-meta-chip">
+            <span class="hub-meta-icon">◉</span>${allLinked.length} proyecto(s)</span>
+          ${recent ? `<span class="hub-meta-chip" style="color:var(--green)">
+            <span class="hub-meta-icon">⚡</span>${recent} activo(s) este mes</span>` : ''}
+          ${pendingAIs.length ? `<span class="hub-meta-chip" style="color:var(--amber)">
+            <span class="hub-meta-icon">⚑</span>${pendingAIs.length} acción(es) pendiente(s)</span>` : ''}
+          ${deadlines.length ? `<span class="hub-meta-chip" style="color:var(--red)">
+            <span class="hub-meta-icon">⏱</span>deadline en ${deadlines[0]}d</span>` : ''}
+        </div>
+        <div class="hub-action-bar">
+          <div class="hub-action-primary">
+            <button class="btn btn-ghost btn-sm" id="chubEditBtn">✎ Editar perfil</button>
+            <button class="btn btn-ghost btn-sm" id="chubBackBtn">← Colaboradores</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Proyectos como responsable -->
+      ${hubSection('ch-resp',
+        `◉ Responsable de (${asResponsible.length})`,
+        asResponsible.length,
+        asResponsible.length ? asResponsible.map(p => {
+          const col  = colMap[p.columnId];
+          const today0 = new Date(); today0.setHours(0,0,0,0);
+          const dl   = p.deadline
+            ? Math.ceil((new Date(p.deadline + 'T00:00:00') - today0) / 86400000) : null;
+          const dlC  = dl === null ? '' : dl < 0 ? 'color:var(--red)' : dl <= 7 ? 'color:var(--amber)' : '';
+          return `
+            <div class="hub-list-item" data-inspect-project="${p.id}">
+              <span class="hub-item-dot" style="background:${col?.color||'var(--accent)'}"></span>
+              <span class="hub-item-text">${esc(p.title)}</span>
+              <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
+              ${col ? `<span style="font-family:var(--font-mono);font-size:.62rem;
+                               color:var(--text-3)">${esc(col.title)}</span>` : ''}
+              ${p.deadline ? `<span class="hub-item-date" style="${dlC}">
+                ⏱ ${formatDate(p.deadline)}</span>` : ''}
+            </div>`;
+        }).join('')
+        : `<div class="hub-empty-hint">Sin proyectos como responsable principal.</div>`
+      )}
+
+      <!-- Proyectos como coautor -->
+      ${asCoauthor.length ? hubSection('ch-co',
+        `👥 Coautor en (${asCoauthor.length})`, asCoauthor.length,
+        asCoauthor.map(p => {
+          const col = colMap[p.columnId];
+          return `
+            <div class="hub-list-item" data-inspect-project="${p.id}">
+              <span class="hub-item-dot" style="background:${col?.color||'var(--text-3)'}"></span>
+              <span class="hub-item-text">${esc(p.title)}</span>
+              <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
+            </div>`;
+        }).join('')
+      ) : ''}
+
+      <!-- Reuniones -->
+      ${hubSection('ch-meets',
+        `🗓 Reuniones (${linkedMeets.length})${pendingAIs.length
+          ? ` · <span style="color:var(--amber)">${pendingAIs.length} acc. pendientes</span>` : ''}`,
+        linkedMeets.length,
+        linkedMeets.length ? linkedMeets.slice(0, 12).map(m => {
+          const pending = (m.actionItems || []).filter(a => !a.done).length;
+          return `
+            <div class="hub-list-item" data-inspect-meeting="${m.id}">
+              <span class="hub-item-date" style="min-width:76px">${formatDate(m.date)}</span>
+              <span class="hub-item-text">${esc(m.title)}</span>
+              ${pending ? `<span class="hub-item-badge-warn">⚑ ${pending}</span>` : ''}
+            </div>`;
+        }).join('')
+        : `<div class="hub-empty-hint">Sin reuniones registradas con este colaborador.</div>`
+      )}
+
+      <!-- Submissions -->
+      ${linkedSubs.length ? hubSection('ch-subs',
+        `📤 Submissions vinculadas (${linkedSubs.length})`, linkedSubs.length,
+        linkedSubs.map(s => `
+          <div class="hub-list-item" data-inspect-submission="${s.id}">
+            <span class="hub-item-dot"></span>
+            <span class="hub-item-text">${esc(s.title)}</span>
+            ${subStatusBadge(s.status)}
+            ${s.targetVenue ? `<span style="font-size:.7rem;color:var(--text-3)">${esc(s.targetVenue)}</span>` : ''}
+          </div>`).join('')
+      ) : ''}
+
+      <!-- Notas -->
+      ${c.notes ? `
+        <div class="hub-section">
+          <div class="hub-section-header">
+            <span class="hub-section-title">📋 Notas de relación</span>
+          </div>
+          <div class="hub-section-body">
+            <div class="hub-desc">${esc(c.notes)}</div>
+          </div>
+        </div>` : ''}
+    </div>`;
+
+  // Section toggle
+  mainContent.querySelectorAll('[data-hub-toggle]').forEach(header => {
+    header.addEventListener('click', () => {
+      const bid  = header.dataset.hubToggle;
+      const body = $(`hubBody-${bid}`);
+      const chev = $(`chev-${bid}`);
+      if (!body) return;
+      const hidden = body.style.display === 'none';
+      body.style.display = hidden ? '' : 'none';
+      if (chev) chev.textContent = hidden ? '▾' : '▸';
+    });
+  });
+
+  mainContent.querySelectorAll('[data-inspect-project]').forEach(el =>
+    el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+  mainContent.querySelectorAll('[data-inspect-meeting]').forEach(el =>
+    el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
+  mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
+    el.addEventListener('click', () => inspectSubmission(+el.dataset.inspectSubmission)));
+
+  $('chubBackBtn').addEventListener('click', () => navigate('collaborators'));
+  $('chubEditBtn').addEventListener('click', () => {
+    inspectCollaborator(id);
+    openInspector();
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
 //  VIEW: COLABORADORES
 // ══════════════════════════════════════════════════════════════
 async function renderCollaborators() {
@@ -4059,12 +4834,17 @@ async function inspectCollaborator(id) {
             ⬡ ${esc(p.title)}
           </div>`).join('')}` : ''}
       <div class="inspector-actions" style="margin-top:14px">
+        <button class="btn btn-primary btn-sm" id="collabHubBtn">⬡ Abrir Hub</button>
         <button class="btn btn-ghost btn-sm" id="collabEditBtn">✎ Editar</button>
         <button class="btn btn-danger btn-sm" id="collabDeleteBtn">✕ Eliminar</button>
       </div>
     </div>`;
 
   openInspector();
+  $('collabHubBtn')?.addEventListener('click', () => {
+    App.collaboratorHubId = id;
+    navigate('collaborator-hub');
+  });
   inspectorBody.querySelectorAll('[data-inspect-project]').forEach(el =>
     el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
 
@@ -4107,6 +4887,79 @@ async function inspectCollaborator(id) {
     closeInspector(); showToast('Colaborador eliminado', 'info');
     if (App.view === 'collaborators') renderCollaborators();
   });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  PAPER PIPELINE — barra de etapas unificada (Feature 10)
+// ══════════════════════════════════════════════════════════════
+function _paperPipelineHTML(p, submissions, cols) {
+  const colMap = Object.fromEntries(cols.map(c => [c.id, c]));
+  const curCol  = colMap[p.columnId];
+
+  // Etapa activa derivada: submission gana sobre columna Kanban
+  const activeSub = submissions
+    .filter(s => s.projectId === p.id)
+    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0] || null;
+
+  const STAGES = [
+    { key: 'draft',     label: 'Escritura',     icon: '✍',  match: s => !s, colKeywords: ['ideac','escritur','análisis','limpieza'] },
+    { key: 'internal',  label: 'Rev. interna',  icon: '🔍', match: s => s?.status === 'preparacion', colKeywords: ['peer','review','revisión'] },
+    { key: 'submitted', label: 'Enviado',        icon: '📤', match: s => s?.status === 'enviado',     colKeywords: [] },
+    { key: 'review',    label: 'En revisión',   icon: '⏳', match: s => s?.status === 'en_revision', colKeywords: [] },
+    { key: 'revision',  label: 'Rev. solicit.', icon: '✏',  match: s => s?.status === 'revision_solicitada', colKeywords: [] },
+    { key: 'accepted',  label: 'Aceptado ✓',   icon: '✅', match: s => s?.status === 'aceptado',    colKeywords: ['completado','publicado'] },
+    { key: 'rejected',  label: 'Rechazado',     icon: '❌', match: s => s?.status === 'rechazado',   colKeywords: [] },
+  ];
+
+  // Determinar índice activo
+  let activeIdx = 0;
+  if (activeSub) {
+    const idx = STAGES.findIndex(st => st.key !== 'draft' && st.key !== 'internal' && st.match(activeSub));
+    if (idx >= 0) activeIdx = idx;
+    else if (activeSub.status === 'preparacion') activeIdx = 1;
+  } else if (curCol) {
+    const colTitle = (curCol.title || '').toLowerCase();
+    const idx = STAGES.findIndex(st => st.colKeywords.some(kw => colTitle.includes(kw)));
+    if (idx >= 0) activeIdx = idx;
+  }
+
+  const deadlineLabel = activeSub?.deadlineAt
+    ? `<span style="font-family:var(--font-mono);font-size:.62rem;color:var(--amber)">⏱ ${formatDate(activeSub.deadlineAt)}</span>`
+    : (p.deadline ? `<span style="font-family:var(--font-mono);font-size:.62rem;color:var(--text-3)">⏱ ${formatDate(p.deadline)}</span>` : '');
+
+  return `
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);
+                padding:14px 16px;margin-bottom:14px;overflow-x:auto">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <span style="font-family:var(--font-mono);font-size:.62rem;text-transform:uppercase;
+                     letter-spacing:.08em;color:var(--text-3)">Paper Pipeline</span>
+        ${deadlineLabel}
+      </div>
+      <div style="display:flex;align-items:center;gap:2px;min-width:max-content">
+        ${STAGES.map((st, i) => {
+          const isPast   = i < activeIdx;
+          const isActive = i === activeIdx;
+          const isFuture = i > activeIdx;
+          const color = isActive ? 'var(--accent)'
+            : st.key === 'accepted' && isPast ? 'var(--green)'
+            : st.key === 'rejected' && isPast ? 'var(--red)'
+            : isPast ? 'var(--text-2)' : 'var(--text-3)';
+          return `
+            <div style="display:flex;align-items:center;gap:2px">
+              <div style="display:flex;flex-direction:column;align-items:center;gap:3px;
+                          padding:6px 10px;border-radius:var(--radius-sm);
+                          background:${isActive ? 'var(--accent-d)' : 'transparent'};
+                          border:1px solid ${isActive ? 'var(--accent)' : 'transparent'};
+                          min-width:72px">
+                <span style="font-size:.9rem;line-height:1;opacity:${isFuture ? '.35' : '1'}">${st.icon}</span>
+                <span style="font-size:.62rem;font-family:var(--font-mono);color:${color};
+                             white-space:nowrap;font-weight:${isActive ? '600' : '400'}">${st.label}</span>
+              </div>
+              ${i < STAGES.length - 1 ? `<span style="color:var(--text-3);font-size:.7rem;flex-shrink:0;opacity:${i < activeIdx ? '1' : '.3'}">→</span>` : ''}
+            </div>`;
+        }).join('')}
+      </div>
+    </div>`;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -4199,6 +5052,30 @@ async function renderProjectHub() {
         <div class="hub-tags-row">
           ${(p.tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
         </div>` : ''}
+        <!-- Fila 3c: custom fields como chips (Feature 17) -->
+        ${await (async () => {
+          const schemas = await _getTypeSchemas();
+          const fields  = schemas?.[p.type] || [];
+          const vals    = p.customFields || {};
+          const chips   = fields
+            .filter(f => vals[f.key] !== undefined && vals[f.key] !== '')
+            .map(f => `
+              <span class="hub-meta-chip"
+                    title="${esc(f.label)}">
+                <span class="hub-meta-icon" style="font-size:.65rem">
+                  ${f.type === 'number' ? '#' : '·'}
+                </span>
+                <span style="color:var(--text-3);margin-right:2px">${esc(f.label)}:</span>
+                ${f.key.includes('Url') || f.key.includes('url')
+                  ? `<a href="${esc(String(vals[f.key]))}" target="_blank"
+                        onclick="event.stopPropagation()"
+                        style="color:var(--accent);text-decoration:none">↗</a>`
+                  : esc(String(vals[f.key]))}
+              </span>`);
+          return chips.length
+            ? `<div class="hub-tags-row">${chips.join('')}</div>`
+            : '';
+        })()}
 
         <!-- Fila 4: barra de acciones -->
         <div class="hub-action-bar">
@@ -4224,6 +5101,9 @@ async function renderProjectHub() {
         </div>
 
       </div>
+
+      <!-- Paper Pipeline unificado (Feature 10, solo para tipo Paper) -->
+      ${p.type === 'Paper' ? _paperPipelineHTML(p, submissions, cols) : ''}
 
       <!-- Completeness bar -->
       <div id="hubCompleteness" style="margin-bottom:16px"></div>
@@ -4479,6 +5359,33 @@ async function renderFocusFeed() {
 
   const items = [];
 
+  // 0. Papers en pipeline activo — revisiones que necesitan acción
+  const allFocusSubs = typeof db.submissions !== 'undefined'
+    ? await db.submissions.toArray() : [];
+  const paperIds = new Set(projects.filter(p => p.type === 'Paper').map(p => p.id));
+  allFocusSubs
+    .filter(s => s.projectId && paperIds.has(s.projectId) &&
+      ['enviado','en_revision','revision_solicitada'].includes(s.status))
+    .forEach(s => {
+      const proj = projects.find(p => p.id === s.projectId);
+      if (!proj) return;
+      const SCORE = { enviado: 72, en_revision: 80, revision_solicitada: 88 };
+      const ICON  = { enviado: '📤', en_revision: '⏳', revision_solicitada: '✏' };
+      const LABEL = {
+        enviado:              'Enviado — esperando respuesta editorial',
+        en_revision:          'En revisión — seguimiento activo',
+        revision_solicitada:  '¡Revisión solicitada — requiere acción inmediata!',
+      };
+      items.push({
+        score:   SCORE[s.status] || 72,
+        icon:    ICON[s.status]  || '📤',
+        label:   LABEL[s.status] || 'En pipeline activo',
+        text:    `${proj.title}${s.targetVenue ? ` → ${s.targetVenue}` : ''}`,
+        type:    'paper-pipeline',
+        ref:     s,
+      });
+    });
+
   // 1. Deadlines en los próximos 7 días (prioridad máxima)
   projects
     .filter(p => p.deadline)
@@ -4550,6 +5457,8 @@ async function renderFocusFeed() {
     let actionAttr = '';
     if (item.type === 'deadline' || item.type === 'deadline-overdue' || item.type === 'stale')
       actionAttr = `data-inspect-project="${item.ref.id}"`;
+    else if (item.type === 'paper-pipeline')
+      actionAttr = `data-inspect-submission="${item.ref.id}"`;
     else if (item.type === 'idea')
       actionAttr = `data-inspect-idea="${item.ref.id}"`;
     else if (item.type === 'submission' || item.type === 'submission-deadline')
@@ -4615,19 +5524,191 @@ async function renderOrphans() {
   const refs  = typeof db.references  !== 'undefined' ? await db.references.toArray()  : [];
   const meets = typeof db.meetings    !== 'undefined' ? await db.meetings.toArray()     : [];
 
-  const projIds = new Set(projects.map(p => p.id));
-  const colIds  = new Set(collections.map(c => c.id));
-
   const orphanIdeas    = ideas.filter(i => !i.projectId && !((i.projectIds||[]).length));
   const orphanSnippets = snippets.filter(s => !s.projectId && !((s.projectIds||[]).length));
-  const orphanSnipsNoCol = snippets.filter(s => !s.collectionId);
   const orphanRefs     = refs.filter(r => !r.projectId);
   const orphanMeets    = meets.filter(m => !m.projectId);
-
   const total = orphanIdeas.length + orphanSnippets.length + orphanRefs.length + orphanMeets.length;
 
-  const cols = await db.kanbanColumns.orderBy('order').toArray();
+  App.orphanBulkSelected = new Map(); // reset
 
+  const rowHTML = (item, type, icon) => {
+    const key   = `${type}-${item.id}`;
+    const label = item.title || item.agreements || 'Sin título';
+    return `
+      <div class="orphan-row" data-orphan-key="${key}">
+        <input type="checkbox" class="orphan-cb"
+               data-key="${key}" data-otype="${type}" data-oid="${item.id}"
+               data-otitle="${esc(label)}"
+               style="accent-color:var(--accent);flex-shrink:0;cursor:pointer">
+        <span class="orphan-icon">${icon}</span>
+        <span class="orphan-title">${esc(label)}</span>
+        <span class="orphan-date">${relativeDate(item.createdAt || item.date)}</span>
+        <button class="btn btn-ghost btn-sm orphan-assign-btn"
+                data-otype="${type}" data-oid="${item.id}"
+                data-otitle="${esc(label)}">Asignar →</button>
+        <button class="btn btn-ghost btn-sm orphan-delete-btn"
+                data-otype="${type}" data-oid="${item.id}"
+                style="color:var(--red)">✕</button>
+      </div>`;
+  };
+
+  const section = (label, items, icon) => items.length ? `
+    <div class="orphan-section">
+      <div class="orphan-section-header">${label} <span class="hub-section-count">${items.length}</span></div>
+      ${items.map(i => rowHTML(i, icon.type, icon.icon)).join('')}
+    </div>` : '';
+
+  mainContent.innerHTML = `
+    <div class="view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">🔗 Elementos Huérfanos</div>
+          <div class="view-subtitle">${total} elemento(s) sin proyecto asignado</div>
+        </div>
+        ${total > 0 ? `
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="btn btn-ghost btn-sm" id="orphSelectAll">Selec. todos</button>
+          <button class="btn btn-ghost btn-sm" id="orphClearSel" style="display:none">Limpiar</button>
+        </div>` : ''}
+      </div>
+
+      <!-- Bulk action bar — oculta hasta que haya selección -->
+      <div id="orphBulkBar" style="display:none;background:var(--bg-card);
+           border:1px solid var(--accent);border-radius:var(--radius-lg);
+           padding:10px 16px;margin-bottom:14px;
+           display:none;align-items:center;gap:10px;flex-wrap:wrap">
+        <span id="orphBulkCount" style="font-family:var(--font-mono);font-size:.78rem;
+              color:var(--text-2);min-width:80px">0 seleccionados</span>
+        <div style="flex:1"></div>
+        <button class="btn btn-primary btn-sm" id="orphBulkAssign">⬡ Asignar a proyecto</button>
+        <button class="btn btn-danger btn-sm" id="orphBulkDelete">✕ Eliminar</button>
+      </div>
+
+      ${total === 0
+        ? `<div class="empty-state">
+             <span class="empty-state-icon">✓</span>
+             <h3>Todo conectado</h3>
+             <p>No hay ideas, snippets, referencias ni reuniones sin proyecto.</p>
+           </div>`
+        : `<div class="orphan-list">
+             ${section('◎ Ideas sin proyecto', orphanIdeas,    {type:'idea',      icon:'◎'})}
+             ${section('⟨/⟩ Snippets sin proyecto', orphanSnippets, {type:'snippet', icon:'⟨/⟩'})}
+             ${section('📚 Referencias sin proyecto', orphanRefs,  {type:'reference', icon:'📚'})}
+             ${section('🗓 Reuniones sin proyecto', orphanMeets,  {type:'meeting',   icon:'🗓'})}
+           </div>`}
+    </div>`;
+
+  // ── Bulk checkbox handlers ──────────────────────────────
+  const bulkBar     = $('orphBulkBar');
+  const bulkCount   = $('orphBulkCount');
+
+  const updateBulkUI = () => {
+    const n = App.orphanBulkSelected.size;
+    if (bulkBar)   bulkBar.style.display    = n > 0 ? 'flex' : 'none';
+    if (bulkCount) bulkCount.textContent    = `${n} seleccionado${n !== 1 ? 's' : ''}`;
+    const clearBtn = $('orphClearSel');
+    if (clearBtn)  clearBtn.style.display   = n > 0 ? '' : 'none';
+  };
+
+  mainContent.querySelectorAll('.orphan-cb').forEach(cb => {
+    cb.addEventListener('change', () => {
+      if (cb.checked)
+        App.orphanBulkSelected.set(cb.dataset.key, {
+          type:  cb.dataset.otype,
+          id:    +cb.dataset.oid,
+          title: cb.dataset.otitle
+        });
+      else
+        App.orphanBulkSelected.delete(cb.dataset.key);
+      updateBulkUI();
+    });
+  });
+
+  $('orphSelectAll')?.addEventListener('click', () => {
+    mainContent.querySelectorAll('.orphan-cb').forEach(cb => {
+      cb.checked = true;
+      App.orphanBulkSelected.set(cb.dataset.key, {
+        type: cb.dataset.otype, id: +cb.dataset.oid, title: cb.dataset.otitle
+      });
+    });
+    updateBulkUI();
+  });
+
+  $('orphClearSel')?.addEventListener('click', () => {
+    App.orphanBulkSelected.clear();
+    mainContent.querySelectorAll('.orphan-cb').forEach(cb => cb.checked = false);
+    updateBulkUI();
+  });
+
+  // ── Bulk assign ─────────────────────────────────────────
+  $('orphBulkAssign')?.addEventListener('click', async () => {
+    if (!App.orphanBulkSelected.size) return;
+    showModal('Asignar a proyecto', `
+      <div class="modal-body">
+        <p style="font-size:.8rem;color:var(--text-2);margin-bottom:10px">
+          Asignar <strong>${App.orphanBulkSelected.size}</strong> elemento(s) al mismo proyecto:
+        </p>
+        <div class="form-group">
+          <label class="form-label">Proyecto destino</label>
+          <select class="form-select" id="orphBulkProjSel">
+            <option value="">— Elige un proyecto —</option>
+            ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="obCancel">Cancelar</button>
+        <button class="btn btn-primary" id="obConfirm">Asignar</button>
+      </div>`);
+
+    $('obCancel').addEventListener('click', closeModal);
+    $('obConfirm').addEventListener('click', async () => {
+      const pid = +$('orphBulkProjSel').value;
+      if (!pid) { showToast('Elige un proyecto', 'error'); return; }
+      const TABLE_MAP = {
+        idea:      db.ideas,
+        snippet:   db.snippets,
+        reference: typeof db.references !== 'undefined' ? db.references : null,
+        meeting:   typeof db.meetings   !== 'undefined' ? db.meetings   : null,
+      };
+      const now = new Date().toISOString();
+      await dbWrite(async () => {
+        for (const { type, id } of App.orphanBulkSelected.values()) {
+          const table = TABLE_MAP[type];
+          if (table) await table.update(id, { projectId: pid, updatedAt: now });
+        }
+      });
+      const n = App.orphanBulkSelected.size;
+      App.orphanBulkSelected.clear();
+      closeModal();
+      showToast(`${n} elemento(s) asignados ✓`, 'success');
+      renderOrphans();
+    });
+  });
+
+  // ── Bulk delete ─────────────────────────────────────────
+  $('orphBulkDelete')?.addEventListener('click', async () => {
+    if (!App.orphanBulkSelected.size) return;
+    const n = App.orphanBulkSelected.size;
+    if (!confirm(`¿Eliminar ${n} elemento(s)?`)) return;
+    const TABLE_MAP = {
+      idea: db.ideas, snippet: db.snippets,
+      reference: typeof db.references !== 'undefined' ? db.references : null,
+      meeting:   typeof db.meetings   !== 'undefined' ? db.meetings   : null,
+    };
+    await dbWrite(async () => {
+      for (const { type, id } of App.orphanBulkSelected.values()) {
+        const table = TABLE_MAP[type];
+        if (table) await table.delete(id);
+      }
+    });
+    App.orphanBulkSelected.clear();
+    showToast(`${n} elemento(s) eliminados`, 'info');
+    renderOrphans();
+  });
+
+  // ── Assign individual ───────────────────────────────────
   const assignModal = async (entityType, entityId, currentTitle) => {
     showModal(`Asignar proyecto — "${currentTitle}"`, `
       <div class="modal-body">
@@ -4649,53 +5730,14 @@ async function renderOrphans() {
       if (!pid) { closeModal(); return; }
       const table = { idea: db.ideas, snippet: db.snippets,
                       reference: db.references, meeting: db.meetings }[entityType];
-      if (table) await dbWrite(() => table.update(entityId, { projectId: pid, updatedAt: new Date().toISOString() }));
+      if (table) await dbWrite(() => table.update(entityId, {
+        projectId: pid, updatedAt: new Date().toISOString()
+      }));
       closeModal();
       showToast('Asignado ✓', 'success');
       renderOrphans();
     });
   };
-
-  const rowHTML = (item, type, icon) => `
-    <div class="orphan-row">
-      <span class="orphan-icon">${icon}</span>
-      <span class="orphan-title">${esc(item.title||item.agreements||'Sin título')}</span>
-      <span class="orphan-date">${relativeDate(item.createdAt||item.date)}</span>
-      <button class="btn btn-ghost btn-sm orphan-assign-btn"
-              data-otype="${type}" data-oid="${item.id}"
-              data-otitle="${esc(item.title||'?')}">Asignar →</button>
-      <button class="btn btn-ghost btn-sm orphan-delete-btn"
-              data-otype="${type}" data-oid="${item.id}"
-              style="color:var(--red)">✕</button>
-    </div>`;
-
-  const section = (label, items, icon) => items.length ? `
-    <div class="orphan-section">
-      <div class="orphan-section-header">${label} <span class="hub-section-count">${items.length}</span></div>
-      ${items.map(i => rowHTML(i, icon.type, icon.icon)).join('')}
-    </div>` : '';
-
-  mainContent.innerHTML = `
-    <div class="view">
-      <div class="view-header">
-        <div>
-          <div class="view-title">🔗 Elementos Huérfanos</div>
-          <div class="view-subtitle">${total} elemento(s) sin proyecto asignado</div>
-        </div>
-      </div>
-      ${total === 0
-        ? `<div class="empty-state">
-             <span class="empty-state-icon">✓</span>
-             <h3>Todo conectado</h3>
-             <p>No hay ideas, snippets, referencias ni reuniones sin proyecto.</p>
-           </div>`
-        : `<div class="orphan-list">
-             ${section('◎ Ideas sin proyecto', orphanIdeas, {type:'idea', icon:'◎'})}
-             ${section('⟨/⟩ Snippets sin proyecto', orphanSnippets, {type:'snippet', icon:'⟨/⟩'})}
-             ${section('📚 Referencias sin proyecto', orphanRefs, {type:'reference', icon:'📚'})}
-             ${section('🗓 Reuniones sin proyecto', orphanMeets, {type:'meeting', icon:'🗓'})}
-           </div>`}
-    </div>`;
 
   mainContent.querySelectorAll('.orphan-assign-btn').forEach(btn => {
     btn.addEventListener('click', () =>
@@ -5346,14 +6388,52 @@ async function renderStarred() {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  SUBMISSION → KANBAN COLUMN SYNC (Feature 15)
+// ══════════════════════════════════════════════════════════════
+async function _getSubColMapping() {
+  const s = await db.settings.get('ros-sub-col-map');
+  return s?.value ? JSON.parse(s.value) : {};
+}
+async function _saveSubColMapping(map) {
+  await db.settings.put({ key: 'ros-sub-col-map', value: JSON.stringify(map) });
+}
+
+/**
+ * Cuando cambia el estado de una submission vinculada a un Paper,
+ * mueve el proyecto a la columna Kanban mapeada (si el toggle está activo).
+ */
+async function _syncPaperColumn(subId, newStatus) {
+  const toggle = await db.settings.get('ros-auto-sync-paper-col');
+  if (toggle?.value !== 'true') return;
+  const sub = await db.submissions.get(subId);
+  if (!sub?.projectId) return;
+  const proj = await db.projects.get(sub.projectId);
+  if (!proj || proj.type !== 'Paper') return;
+  const mapping = await _getSubColMapping();
+  const colId   = mapping[newStatus] ? +mapping[newStatus] : null;
+  if (!colId || proj.columnId === colId) return;
+  const col = await db.kanbanColumns.get(colId);
+  if (!col) return;
+  await dbWrite(() => db.projects.update(proj.id, {
+    columnId: colId, updatedAt: new Date().toISOString()
+  }));
+  showToast(`📄 "${proj.title.slice(0,28)}" → "${col.title}"`, 'success');
+  if (App.view === 'kanban') renderKanban();
+}
+
+// ══════════════════════════════════════════════════════════════
 //  VIEW: SETTINGS & EXPORT
 // ══════════════════════════════════════════════════════════════
 async function renderSettings() {
-  const [cp, ci, cs, csub, cmeet, cref, ccol] = await Promise.all([
-    db.projects.count(), db.ideas.count(), db.snippets.count(),
-    db.submissions.count(), db.meetings.count(),
-    db.references.count(), db.collaborators.count()
-  ]);
+  const [cp, ci, cs, csub, cmeet, cref, ccol, settingsCols, _subColMap, _autoSyncRow] =
+    await Promise.all([
+      db.projects.count(), db.ideas.count(), db.snippets.count(),
+      db.submissions.count(), db.meetings.count(),
+      db.references.count(), db.collaborators.count(),
+      db.kanbanColumns.orderBy('order').toArray(),
+      _getSubColMapping(),
+      db.settings.get('ros-auto-sync-paper-col'),
+    ]);
   const counts = { p: cp, i: ci, s: cs, sub: csub, meet: cmeet, ref: cref, col: ccol };
 
   let storageHTML = '';
@@ -5637,6 +6717,207 @@ async function renderSettings() {
       body: 'Las notificaciones de deadline funcionan correctamente.',
     });
   });
+
+  // ── Feature 15: Paper Pipeline Sync section ──────────────
+  const _dangerZone = mainContent.querySelector('.settings-danger-zone');
+  if (_dangerZone) {
+    _dangerZone.insertAdjacentHTML('beforebegin', `
+      <div class="settings-section" id="paperSyncSection">
+        <div class="settings-section-title">📤 Paper Pipeline — Sincronización automática</div>
+        <div class="settings-body">
+          <div class="settings-row">
+            <div>
+              <div class="settings-row-label">Auto-mover Paper al cambiar submission</div>
+              <div class="settings-row-desc">
+                Cuando una submission vinculada a un Paper cambia de estado,
+                mueve automáticamente el proyecto a la columna Kanban mapeada.
+              </div>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="autoSyncPaperToggle"
+                     ${_autoSyncRow?.value === 'true' ? 'checked' : ''}>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div id="subColMappingRows" style="${_autoSyncRow?.value === 'true' ? '' : 'opacity:.45;pointer-events:none'}">
+            <div style="font-family:var(--font-mono);font-size:.62rem;text-transform:uppercase;
+                        letter-spacing:.08em;color:var(--text-3);margin:10px 0 6px">
+              Mapeo estado submission → columna Kanban
+            </div>
+            ${SUB_STATUSES.map(st => `
+              <div class="settings-row" style="margin-bottom:6px">
+                <span style="font-size:.78rem;color:var(--text-1);min-width:140px">${st.label}</span>
+                <select class="form-select scm-select" data-status="${st.key}"
+                        style="font-size:.78rem;padding:5px 8px;max-width:200px">
+                  <option value="">— Sin cambio —</option>
+                  ${settingsCols.map(c =>
+                    `<option value="${c.id}" ${+(_subColMap[st.key]||0) === c.id ? 'selected' : ''}>
+                      ${esc(c.title)}
+                    </option>`
+                  ).join('')}
+                </select>
+              </div>`).join('')}
+            <button class="btn btn-primary btn-sm" id="saveSubColMapBtn"
+                    style="margin-top:8px">Guardar mapeo</button>
+          </div>
+        </div>
+      </div>`);
+
+    // Feature 15 listeners
+    $('autoSyncPaperToggle')?.addEventListener('change', async e => {
+      await db.settings.put({ key: 'ros-auto-sync-paper-col', value: String(e.target.checked) });
+      const rows = $('subColMappingRows');
+      if (rows) {
+        rows.style.opacity          = e.target.checked ? '1' : '.45';
+        rows.style.pointerEvents    = e.target.checked ? 'auto' : 'none';
+      }
+      showToast(e.target.checked ? 'Auto-sync activado ✓' : 'Auto-sync desactivado', 'success');
+    });
+
+    $('saveSubColMapBtn')?.addEventListener('click', async () => {
+      const map = {};
+      mainContent.querySelectorAll('.scm-select').forEach(sel => {
+        if (sel.value) map[sel.dataset.status] = +sel.value;
+      });
+      await _saveSubColMapping(map);
+      showToast('Mapeo guardado ✓', 'success');
+    });
+  }
+
+  // ── Feature 17: Custom Fields settings section ───────────
+  const _cfDangerZone = mainContent.querySelector('.settings-danger-zone');
+  if (_cfDangerZone) {
+    const _cfSchemas = await _getTypeSchemas();
+    _cfDangerZone.insertAdjacentHTML('beforebegin', `
+      <div class="settings-section" id="cfSettingsSection">
+        <div class="settings-section-title">🗂 Campos personalizados por tipo</div>
+        <div class="settings-body">
+          <div style="font-size:.78rem;color:var(--text-2);margin-bottom:12px;line-height:1.55">
+            Define campos extra que aparecen al crear o editar proyectos de cada tipo.
+            Los cambios se aplican a nuevos proyectos; los datos existentes se conservan.
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px" id="cfSchemaList">
+            ${Object.entries(_cfSchemas).map(([type, fields]) => `
+              <div style="background:var(--bg-elevated);border:1px solid var(--border);
+                          border-radius:var(--radius-md);overflow:hidden">
+                <div style="display:flex;align-items:center;justify-content:space-between;
+                            padding:8px 14px;border-bottom:1px solid var(--border)">
+                  <span style="font-size:.82rem;font-weight:600;color:var(--text-1)">
+                    <span class="badge ${typeBadgeClass(type)}">${esc(type)}</span>
+                  </span>
+                  <button class="btn btn-ghost btn-sm cf-edit-type-btn"
+                          data-type="${type}"
+                          style="font-size:.68rem">✎ Editar campos</button>
+                </div>
+                ${fields.length
+                  ? `<div style="padding:8px 14px;display:flex;flex-wrap:wrap;gap:5px">
+                      ${fields.map(f => `
+                        <span style="font-family:var(--font-mono);font-size:.65rem;
+                              background:var(--bg-card);border:1px solid var(--border-str);
+                              padding:2px 8px;border-radius:99px;color:var(--text-2)">
+                          ${esc(f.label)}
+                          <span style="color:var(--text-3)">(${f.type})</span>
+                        </span>`).join('')}
+                     </div>`
+                  : `<div style="padding:8px 14px;font-size:.74rem;color:var(--text-3);
+                                font-style:italic">Sin campos extra.</div>`}
+              </div>`).join('')}
+          </div>
+          <button class="btn btn-ghost btn-sm" id="cfResetDefaultsBtn"
+                  style="margin-top:10px;font-size:.72rem;color:var(--text-3)">
+            ↩ Restaurar schemas por defecto
+          </button>
+        </div>
+      </div>`);
+
+    // Editar campos de un tipo
+    mainContent.querySelectorAll('.cf-edit-type-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const type   = btn.dataset.type;
+        const schemas = await _getTypeSchemas();
+        let fields    = JSON.parse(JSON.stringify(schemas[type] || []));
+
+        const renderFieldRows = () => fields.map((f, i) => `
+          <div style="display:grid;grid-template-columns:1fr 1fr 80px auto;
+                      gap:6px;align-items:center;padding:6px 0;
+                      border-bottom:1px solid var(--border)">
+            <input class="form-input cf-edit-label" value="${esc(f.label)}"
+                   data-fi="${i}" placeholder="Etiqueta"
+                   style="font-size:.78rem;padding:5px 8px">
+            <input class="form-input cf-edit-key" value="${esc(f.key)}"
+                   data-fi="${i}" placeholder="key (sin espacios)"
+                   style="font-size:.72rem;font-family:var(--font-mono);padding:5px 8px">
+            <select class="form-select cf-edit-type" data-fi="${i}"
+                    style="font-size:.75rem;padding:5px 6px">
+              <option value="text"   ${f.type==='text'  ?'selected':''}>texto</option>
+              <option value="number" ${f.type==='number'?'selected':''}>número</option>
+            </select>
+            <button class="btn btn-ghost btn-sm cf-del-field" data-fi="${i}"
+                    style="color:var(--red);padding:4px 8px">✕</button>
+          </div>`).join('');
+
+        showModal(`✎ Campos de ${type}`, `
+          <div class="modal-body">
+            <div id="cfEditRows">${renderFieldRows()}</div>
+            <button class="btn btn-ghost btn-sm" id="cfAddFieldBtn"
+                    style="margin-top:10px;width:100%">+ Agregar campo</button>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" id="cfEditCancel">Cancelar</button>
+            <button class="btn btn-primary" id="cfEditSave">Guardar</button>
+          </div>`);
+
+        const reRenderRows = () => {
+          $('cfEditRows').innerHTML = renderFieldRows();
+          attachCFRowHandlers();
+        };
+        const attachCFRowHandlers = () => {
+          document.querySelectorAll('.cf-del-field').forEach(b => {
+            b.addEventListener('click', () => {
+              fields.splice(+b.dataset.fi, 1);
+              reRenderRows();
+            });
+          });
+        };
+        attachCFRowHandlers();
+
+        $('cfAddFieldBtn').addEventListener('click', () => {
+          fields.push({ key: `field${fields.length+1}`, label: 'Nuevo campo', type: 'text', placeholder: '' });
+          reRenderRows();
+        });
+        $('cfEditCancel').addEventListener('click', closeModal);
+        $('cfEditSave').addEventListener('click', async () => {
+          // Leer valores del DOM
+          document.querySelectorAll('.cf-edit-label').forEach(inp => {
+            const i = +inp.dataset.fi;
+            if (fields[i]) fields[i].label = inp.value.trim() || fields[i].label;
+          });
+          document.querySelectorAll('.cf-edit-key').forEach(inp => {
+            const i = +inp.dataset.fi;
+            if (fields[i]) fields[i].key = inp.value.trim().replace(/\s+/g,'') || fields[i].key;
+          });
+          document.querySelectorAll('.cf-edit-type').forEach(sel => {
+            const i = +sel.dataset.fi;
+            if (fields[i]) fields[i].type = sel.value;
+          });
+          const fresh = await _getTypeSchemas();
+          fresh[type] = fields;
+          await _saveTypeSchemas(fresh);
+          closeModal();
+          showToast(`Campos de ${type} guardados ✓`, 'success');
+          renderSettings(); // refrescar la vista
+        });
+      });
+    });
+
+    // Restaurar defaults
+    $('cfResetDefaultsBtn')?.addEventListener('click', async () => {
+      if (!confirm('¿Restaurar los schemas por defecto? Los campos personalizados se perderán.')) return;
+      await _saveTypeSchemas({ ...DEFAULT_TYPE_SCHEMAS });
+      showToast('Schemas restaurados ✓', 'success');
+      renderSettings();
+    });
+  }
 }
 
 // ── Renderiza (o refresca) el bloque Google Sync dentro de Settings ──
@@ -5772,6 +7053,121 @@ const PROJECT_TEMPLATES = {
   blank: { label: '⬡ En blanco', type: 'Proyecto', priority: 'Media', tags: [], description: '' },
 };
 
+// ══════════════════════════════════════════════════════════════
+//  CUSTOM FIELDS PER TYPE (Feature 17)
+// ══════════════════════════════════════════════════════════════
+const DEFAULT_TYPE_SCHEMAS = {
+  Paper: [
+    { key: 'targetJournal', label: 'Journal objetivo',  type: 'text',   placeholder: 'Nature, PLOS ONE, Ecology Letters…' },
+    { key: 'impactFactor',  label: 'Factor de impacto', type: 'number', placeholder: '5.2' },
+    { key: 'wordCount',     label: 'Palabras (~)',       type: 'number', placeholder: '8500' },
+    { key: 'manuscriptUrl', label: 'URL manuscrito',    type: 'text',   placeholder: 'https://overleaf.com/…' },
+  ],
+  Grant: [
+    { key: 'agency',   label: 'Agencia',              type: 'text',   placeholder: 'ANID, NSF, NIH…' },
+    { key: 'callId',   label: 'ID convocatoria',       type: 'text',   placeholder: 'FONDECYT-11240001' },
+    { key: 'amount',   label: 'Monto solicitado (CLP)',type: 'number', placeholder: '50000000' },
+    { key: 'duration', label: 'Duración (meses)',      type: 'number', placeholder: '24' },
+  ],
+  Análisis: [
+    { key: 'software',   label: 'Software / Lenguaje', type: 'text',   placeholder: 'R 4.3, Python 3.11' },
+    { key: 'dataSource', label: 'Fuente de datos',     type: 'text',   placeholder: 'GBIF, INE, MODIS' },
+    { key: 'sampleN',    label: 'N muestral',          type: 'number', placeholder: '1200' },
+  ],
+  Dataset: [
+    { key: 'format',   label: 'Formato',       type: 'text',   placeholder: 'CSV, GeoTIFF, Shapefile' },
+    { key: 'nRecords', label: 'N registros',   type: 'number', placeholder: '50000' },
+    { key: 'doiDs',    label: 'DOI dataset',   type: 'text',   placeholder: '10.5061/dryad…' },
+    { key: 'license',  label: 'Licencia',      type: 'text',   placeholder: 'CC-BY 4.0' },
+  ],
+  Presentación: [
+    { key: 'event',     label: 'Evento / Congreso', type: 'text',   placeholder: 'ICES 2025, ISMIR 2025…' },
+    { key: 'duration',  label: 'Duración (min)',    type: 'number', placeholder: '20' },
+    { key: 'slidesUrl', label: 'URL slides',        type: 'text',   placeholder: 'https://…' },
+  ],
+  Proyecto: [],
+};
+
+async function _getTypeSchemas() {
+  const s = await db.settings.get('ros-type-schemas');
+  if (s?.value) {
+    try {
+      const saved = JSON.parse(s.value);
+      // Merge: defaults provide fallback for types not yet customized
+      return Object.fromEntries(
+        Object.keys(DEFAULT_TYPE_SCHEMAS).map(t => [t, saved[t] ?? DEFAULT_TYPE_SCHEMAS[t]])
+      );
+    } catch { /* fallthrough */ }
+  }
+  return { ...DEFAULT_TYPE_SCHEMAS };
+}
+async function _saveTypeSchemas(schemas) {
+  await db.settings.put({ key: 'ros-type-schemas', value: JSON.stringify(schemas) });
+}
+
+/** Renderiza los campos de formulario para un tipo. */
+function _customFieldsFormHTML(type, schemas, values = {}) {
+  const fields = schemas?.[type] || [];
+  if (!fields.length) return '';
+  return `
+    <div id="cfSection" style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+      <div style="font-family:var(--font-mono);font-size:.6rem;text-transform:uppercase;
+                  letter-spacing:.1em;color:var(--text-3);margin-bottom:8px">
+        Campos de ${esc(type)}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">
+        ${fields.map(f => `
+          <div class="form-group" style="margin:0">
+            <label class="form-label">${esc(f.label)}</label>
+            <input class="form-input cf-field"
+                   type="${f.type === 'number' ? 'number' : 'text'}"
+                   data-cf-key="${f.key}"
+                   value="${esc(String(values[f.key] ?? ''))}"
+                   placeholder="${esc(f.placeholder || '')}">
+          </div>`).join('')}
+      </div>
+    </div>`;
+}
+
+/** Lee los valores de los campos custom del DOM. */
+function _readCustomFields() {
+  const vals = {};
+  document.querySelectorAll('.cf-field').forEach(inp => {
+    const key = inp.dataset.cfKey;
+    const v   = inp.value.trim();
+    if (key && v !== '') vals[key] = inp.type === 'number' && v !== '' ? +v : v;
+  });
+  return Object.keys(vals).length ? vals : null;
+}
+
+/** Renderiza custom fields en el inspector / Hub (solo lectura). */
+function _customFieldsDisplayHTML(customFields, schemas, type) {
+  const fields  = schemas?.[type] || [];
+  const entries = fields.filter(f =>
+    customFields?.[f.key] !== undefined && customFields[f.key] !== ''
+  );
+  if (!entries.length) return '';
+  return `
+    <div class="inspector-related-title" style="margin-top:10px">
+      Detalles de ${esc(type)}
+    </div>
+    <div class="inspector-meta">
+      ${entries.map(f => `
+        <div class="inspector-meta-row">
+          <span class="inspector-meta-key">${esc(f.label)}</span>
+          <span class="inspector-meta-val" style="font-family:var(--font-mono);font-size:.75rem">
+            ${f.key.includes('Url') || f.key.includes('url')
+              ? `<a href="${esc(String(customFields[f.key]))}" target="_blank"
+                    style="color:var(--accent);text-decoration:none"
+                    onclick="event.stopPropagation()">
+                   ${esc(String(customFields[f.key]).replace(/^https?:\/\//,'').slice(0,38))} ↗
+                 </a>`
+              : esc(String(customFields[f.key]))}
+          </span>
+        </div>`).join('')}
+    </div>`;
+}
+
 async function showAddProjectModal(defaultColId, defaultParentId = null) {
   // ── Paso 0: elegir template ────────────────────────
   if (!App._skipTemplateStep) {
@@ -5802,7 +7198,10 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
   const tpl = PROJECT_TEMPLATES[App._projectTemplate || 'blank'];
   App._projectTemplate = null;
 
-  const cols = await db.kanbanColumns.orderBy('order').toArray();
+  const [cols, _addSchemas] = await Promise.all([
+    db.kanbanColumns.orderBy('order').toArray(),
+    _getTypeSchemas(),
+  ]);
   const body = `
     <div class="modal-body">
       <div class="form-group">
@@ -5865,6 +7264,9 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
             `<option value="${a.id}">${esc(a.name)}</option>`).join('')}
         </select>
       </div>
+      <div id="mpCFContainer">
+        ${_customFieldsFormHTML(tpl.type, _addSchemas)}
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" id="mpCancel">Cancelar</button>
@@ -5872,6 +7274,11 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
     </div>`;
 
   showModal('Nuevo Proyecto', body);
+  // Feature 17: actualizar custom fields al cambiar tipo
+  $('mp-type')?.addEventListener('change', e => {
+    const cf = $('mpCFContainer');
+    if (cf) cf.innerHTML = _customFieldsFormHTML(e.target.value, _addSchemas);
+  });
   setTimeout(() => $('mp-title')?.focus(), 60);
 
   setTimeout(() => {
@@ -5883,23 +7290,34 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
   $('mpSave').addEventListener('click', async () => {
     const title = $('mp-title').value.trim();
     if (!title) { showToast('El título es requerido', 'error'); return; }
+
+    // Feature 1: nombres canonizados + IDs
+    const responsibleId = _getPersonId($('mp-responsible'));
+    const responsible   = await _resolveCanonicalName($('mp-responsible'));
+    const coauthorNames = await _resolveCanonicalNames($('mp-coauthors'));
+    const coauthorPairs = _getPersonIds($('mp-coauthors'));
+    const coauthorIds   = coauthorPairs.map(p => p.id).filter(Boolean);
+
     await dbWrite(() => db.projects.add({
       title,
-      type:        $('mp-type').value,
-      columnId:    +$('mp-col').value,
-      responsible: $('mp-responsible').value.trim(),
-      coauthors:   $('mp-coauthors').value.split(',').map(s => s.trim()).filter(Boolean),
-      deadline:    $('mp-deadline').value || null,
-      priority:    $('mp-priority').value,
-      description: $('mp-desc').value.trim(),
-      tags:        $('mp-tags').value.split(',').map(s => s.trim()).filter(Boolean),
-      parentId:    +$('mp-parent').value || null,
-      areaId:      +$('mp-area').value   || null,
-      status:      'active',
-      archived:    false,
-      starred:     false,
-      createdAt:   new Date().toISOString(),
-      updatedAt:   new Date().toISOString()
+      type:          $('mp-type').value,
+      columnId:      +$('mp-col').value,
+      responsible,
+      responsibleId: responsibleId || null,  // Feature 1
+      coauthors:     coauthorNames,
+      coauthorIds:   coauthorIds.length ? coauthorIds : [],  // Feature 1
+      deadline:      $('mp-deadline').value || null,
+      priority:      $('mp-priority').value,
+      description:   $('mp-desc').value.trim(),
+      tags:          $('mp-tags').value.split(',').map(s => s.trim()).filter(Boolean),
+      parentId:      +$('mp-parent').value || null,
+      areaId:        +$('mp-area').value   || null,
+      status:        'active',
+      archived:      false,
+      starred:       false,
+      createdAt:     new Date().toISOString(),
+      updatedAt:     new Date().toISOString(),
+      customFields:  _readCustomFields() || {},
     }));
     closeModal();
     showToast('Proyecto creado ✓', 'success');
@@ -6228,12 +7646,18 @@ async function inspectProject(id) {
           <span class="inspector-meta-key">Responsable</span>
           <span class="inspector-meta-val"
                 data-inplace="responsible"
-                data-inplace-value="${esc(p.responsible || '')}">${esc(p.responsible || '—')}</span>
+                data-inplace-value="${esc(p.responsible || '')}">
+            ${_personChipHTML(p.responsible || '', p.responsibleId || null)}
+          </span>
         </div>
         ${p.coauthors?.length ? `
         <div class="inspector-meta-row">
           <span class="inspector-meta-key">Coautores</span>
-          <span class="inspector-meta-val">${p.coauthors.map(esc).join(', ')}</span>
+          <span class="inspector-meta-val" style="display:flex;flex-wrap:wrap;gap:3px">
+            ${p.coauthors.map((name, i) =>
+              _personChipHTML(name, p.coauthorIds?.[i] || null, { small: true })
+            ).join('')}
+          </span>
         </div>` : ''}
         <div class="inspector-meta-row">
           <span class="inspector-meta-key">Deadline</span>
@@ -6309,6 +7733,7 @@ async function inspectProject(id) {
         <div style="display:flex;gap:4px;flex-wrap:wrap">
           ${p.tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}
         </div>` : ''}
+      <div id="cfDisplay"></div>
 
       ${(p._history||[]).length ? (() => {
         const hist = [...(p._history||[])].reverse().slice(0, 5);
@@ -6350,11 +7775,27 @@ async function inspectProject(id) {
         const meets = await getMeetings(p.id);
         let html = '';
         if (p.type === 'Paper' || subs.length) {
-          html += `<div class="inspector-related-title" style="display:flex;align-items:center;justify-content:space-between">
-            <span>📤 Tracking de Submission${subs.length > 1 ? ` (${subs.length})` : ''}</span>
-            <button class="btn btn-ghost btn-sm" id="insp-new-sub-btn"
-                    style="font-size:.65rem;padding:2px 7px">+ Nuevo envío</button>
-          </div>`;
+            // Submission activa más reciente para el pipeline
+            const latestSub = subs
+              .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
+            const pipelinePreview = latestSub ? (() => {
+              const SC = { preparacion:'var(--text-3)', enviado:'var(--accent)',
+                en_revision:'var(--amber)', revision_solicitada:'var(--purple)',
+                aceptado:'var(--green)', rechazado:'var(--red)' };
+              const SL = { preparacion:'En preparación', enviado:'Enviado',
+                en_revision:'En revisión', revision_solicitada:'Revisión solicitada',
+                aceptado:'Aceptado ✓', rechazado:'Rechazado' };
+              const sc = SC[latestSub.status] || 'var(--text-3)';
+              return `<span style="font-family:var(--font-mono);font-size:.62rem;
+                color:${sc};background:color-mix(in srgb,${sc} 12%,transparent);
+                border:1px solid color-mix(in srgb,${sc} 25%,transparent);
+                padding:2px 8px;border-radius:99px">📤 ${SL[latestSub.status] || latestSub.status}</span>`;
+            })() : '';
+            html += `<div class="inspector-related-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px">
+              <span>📤 Submissions${subs.length > 1 ? ` (${subs.length})` : ''} ${pipelinePreview}</span>
+              <button class="btn btn-ghost btn-sm" id="insp-new-sub-btn"
+                      style="font-size:.65rem;padding:2px 7px">+ Nuevo envío</button>
+            </div>`;
           if (subs.length) {
             html += subs.slice(0, 5).map(s => `
               <div class="inspector-related-item sub-unified-row"
@@ -6432,6 +7873,13 @@ async function inspectProject(id) {
   }
 
   openInspector();
+
+  // Feature 17: mostrar custom fields
+  _getTypeSchemas().then(schemas => {
+    const el = $('cfDisplay');
+    if (!el) return;
+    el.innerHTML = _customFieldsDisplayHTML(p.customFields || {}, schemas, p.type);
+  });
 
   // ── Enlace submission desde inspector de Paper ──────
   $('insp-new-sub-btn')?.addEventListener('click', () => {
@@ -6799,7 +8247,10 @@ async function showEditSnippetModal(s) {
 }
 
 async function showEditProjectModal(p) {
-  const cols = await db.kanbanColumns.orderBy('order').toArray();
+  const [cols, _editSchemas] = await Promise.all([
+    db.kanbanColumns.orderBy('order').toArray(),
+    _getTypeSchemas(),
+  ]);
   const body = `
     <div class="modal-body">
       <div class="form-group">
@@ -6852,6 +8303,9 @@ async function showEditProjectModal(p) {
             `<option value="${a.id}" ${a.id === p.areaId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}
         </select>
       </div>
+      <div id="epCFContainer">
+        ${_customFieldsFormHTML(p.type, _editSchemas, p.customFields || {})}
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" id="epCancel">Cancelar</button>
@@ -6860,26 +8314,55 @@ async function showEditProjectModal(p) {
 
   showModal('Editar Proyecto', body);
 
+  // Feature 17: actualizar custom fields al cambiar tipo
+  $('ep-type')?.addEventListener('change', e => {
+    const cf = $('epCFContainer');
+    if (cf) cf.innerHTML = _customFieldsFormHTML(e.target.value, _editSchemas, p.customFields || {});
+  });
+
   setTimeout(() => {
-    _attachCollaboratorAutocomplete($('ep-responsible'));
-    _attachCollaboratorAutocomplete($('ep-coauthors'), { multi: true });
+    const respInput   = $('ep-responsible');
+    const coauthInput = $('ep-coauthors');
+    _attachCollaboratorAutocomplete(respInput);
+    _attachCollaboratorAutocomplete(coauthInput, { multi: true });
+
+    // Feature 1: restaurar IDs guardados previamente
+    if (p.responsibleId)
+      respInput.dataset.selectedCollabId = String(p.responsibleId);
+    if ((p.coauthorIds || []).length && (p.coauthors || []).length) {
+      const pairs = p.coauthors
+        .map((name, i) => [name, p.coauthorIds[i] || null])
+        .filter(([, id]) => id);
+      if (pairs.length)
+        coauthInput.dataset.collabIdMap = JSON.stringify(pairs);
+    }
   }, 80);
 
   $('epCancel').addEventListener('click', closeModal);
   $('epSave').addEventListener('click', async () => {
-    await snapshotProject(p.id);          // Save snapshot before overwriting
+    // Feature 1: nombres canonizados + IDs
+    const responsibleId = _getPersonId($('ep-responsible'));
+    const responsible   = await _resolveCanonicalName($('ep-responsible'));
+    const coauthorNames = await _resolveCanonicalNames($('ep-coauthors'));
+    const coauthorPairs = _getPersonIds($('ep-coauthors'));
+    const coauthorIds   = coauthorPairs.map(pr => pr.id).filter(Boolean);
+
+    await snapshotProject(p.id);
     await db.projects.update(p.id, {
-      title:       $('ep-title').value.trim(),
-      type:        $('ep-type').value,
-      columnId:    +$('ep-col').value,
-      responsible: $('ep-responsible').value.trim(),
-      coauthors:   $('ep-coauthors').value.split(',').map(s => s.trim()).filter(Boolean),
-      deadline:    $('ep-deadline').value || null,
-      priority:    $('ep-priority').value,
-      description: $('ep-desc').value.trim(),
-      tags:        $('ep-tags').value.split(',').map(s => s.trim()).filter(Boolean),
-      areaId:      +$('ep-area').value || null,
-      updatedAt:   new Date().toISOString()
+      title:         $('ep-title').value.trim(),
+      type:          $('ep-type').value,
+      columnId:      +$('ep-col').value,
+      responsible,
+      responsibleId: responsibleId || null,
+      coauthors:     coauthorNames,
+      coauthorIds:   coauthorIds.length ? coauthorIds : [],
+      deadline:      $('ep-deadline').value || null,
+      priority:      $('ep-priority').value,
+      description:   $('ep-desc').value.trim(),
+      tags:          $('ep-tags').value.split(',').map(s => s.trim()).filter(Boolean),
+      areaId:        +$('ep-area').value || null,
+      updatedAt:     new Date().toISOString(),
+      customFields:  _readCustomFields() || p.customFields || {},
     });
     closeModal();
     showToast('Proyecto actualizado ✓', 'success');
@@ -7840,6 +9323,82 @@ function _projectPickerHTML(id, placeholder = 'Buscar y añadir proyecto…') {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  PERSON ID HELPERS — Feature 1
+//  Leen los IDs de colaborador almacenados como data-attrs
+//  en los inputs de persona tras selección desde autocomplete.
+// ══════════════════════════════════════════════════════════════
+
+/** Devuelve el collaborator.id del responsable seleccionado, o null. */
+function _getPersonId(inputEl) {
+  const raw = inputEl?.dataset?.selectedCollabId;
+  return raw ? +raw : null;
+}
+
+/**
+ * Para inputs multi (coautores, participantes).
+ * Devuelve [{name, id}] — id puede ser null si se escribió a mano.
+ */
+function _getPersonIds(inputEl) {
+  const names = (inputEl?.value || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  let map = new Map();
+  try {
+    const stored = inputEl?.dataset?.collabIdMap;
+    if (stored) map = new Map(JSON.parse(stored));
+  } catch { /* map vacío */ }
+  return names.map(name => ({ name, id: map.get(name) || null }));
+}
+
+/**
+ * Normaliza nombre desde tabla de colaboradores si existe el ID.
+ * Garantiza nombre canónico al guardar.
+ */
+async function _resolveCanonicalName(inputEl) {
+  const id = _getPersonId(inputEl);
+  const raw = inputEl?.value?.trim() || '';
+  if (!id) return raw;
+  const c = await db.collaborators.get(id);
+  return c?.name || raw;
+}
+
+/** Idem para multi: devuelve [string] de nombres canonizados. */
+async function _resolveCanonicalNames(inputEl) {
+  const pairs = _getPersonIds(inputEl);
+  return Promise.all(pairs.map(async ({ name, id }) => {
+    if (!id) return name;
+    const c = await db.collaborators.get(id);
+    return c?.name || name;
+  }));
+}
+
+// ══════════════════════════════════════════════════════════════
+//  PERSON CHIP (Feature 16) — chip visual con link a Hub
+// ══════════════════════════════════════════════════════════════
+function _personChipHTML(name, collabId = null, { small = false } = {}) {
+  if (!name) return '<span style="color:var(--text-3)">—</span>';
+  const sz      = small ? '.62rem' : '.72rem';
+  const linked  = !!collabId;
+  const bg      = linked
+    ? 'color-mix(in srgb,var(--accent) 10%,transparent)'
+    : 'var(--bg-elevated)';
+  const border  = linked
+    ? 'color-mix(in srgb,var(--accent) 32%,transparent)'
+    : 'var(--border-str)';
+  const color   = linked ? 'var(--accent)' : 'var(--text-2)';
+  const dot     = linked ? 'var(--accent)' : 'var(--text-3)';
+  return `<span class="person-chip"
+    ${linked ? `data-collab-hub="${collabId}" title="Ver hub de ${esc(name)}"` : ''}
+    style="display:inline-flex;align-items:center;gap:4px;
+           font-family:var(--font-mono);font-size:${sz};
+           background:${bg};border:1px solid ${border};color:${color};
+           padding:1px 8px;border-radius:99px;white-space:nowrap;
+           ${linked ? 'cursor:pointer;' : ''}">
+    <span style="width:5px;height:5px;border-radius:50%;flex-shrink:0;background:${dot}"></span>
+    ${esc(name)}
+  </span>`;
+}
+
+// ══════════════════════════════════════════════════════════════
 //  AUTOCOMPLETE DE COLABORADORES — reutilizable en todos los modales
 // ══════════════════════════════════════════════════════════════
 async function _attachCollaboratorAutocomplete(inputEl, { multi = false } = {}) {
@@ -7847,8 +9406,15 @@ async function _attachCollaboratorAutocomplete(inputEl, { multi = false } = {}) 
   const collabs = await db.collaborators.orderBy('name').toArray();
   if (!collabs.length) return;
 
-  let popup = null;
+  // Map local de nombre→id para el modo multi (vive en closure)
+  const _idMap = new Map();
+  // Si hay un mapa previo serializado, restaurarlo
+  try {
+    const stored = inputEl.dataset.collabIdMap;
+    if (stored) JSON.parse(stored).forEach(([k, v]) => _idMap.set(k, v));
+  } catch {}
 
+  let popup = null;
   const removePopup = () => { popup?.remove(); popup = null; };
 
   const showPopup = (query) => {
@@ -7881,14 +9447,20 @@ async function _attachCollaboratorAutocomplete(inputEl, { multi = false } = {}) 
         e.preventDefault();
         if (multi) {
           const parts = inputEl.value.split(',').map(s => s.trim()).filter(Boolean);
-          if (!parts[parts.length - 1] ||
-              !c.name.toLowerCase().startsWith(parts[parts.length - 1].toLowerCase()))
+          // Reemplazar el fragmento actual que el usuario estaba escribiendo
+          const lastPart = parts[parts.length - 1] || '';
+          if (c.name.toLowerCase().startsWith(lastPart.toLowerCase()))
             parts.pop();
-          // Evitar duplicados
-          if (!parts.includes(c.name)) parts.push(c.name);
+          if (!parts.includes(c.name)) {
+            parts.push(c.name);
+            _idMap.set(c.name, c.id); // ← Feature 1: guardar ID canónico
+          }
           inputEl.value = parts.join(', ');
+          // Serializar mapa actualizado
+          inputEl.dataset.collabIdMap = JSON.stringify([..._idMap.entries()]);
         } else {
           inputEl.value = c.name;
+          inputEl.dataset.selectedCollabId = String(c.id); // ← Feature 1
         }
         removePopup();
         inputEl.focus();
@@ -7906,7 +9478,11 @@ async function _attachCollaboratorAutocomplete(inputEl, { multi = false } = {}) 
     return parts[parts.length - 1].trim();
   };
 
-  inputEl.addEventListener('input',  () => showPopup(getQuery()));
+  // Al escribir manualmente (no desde dropdown), invalidar el ID almacenado
+  inputEl.addEventListener('input', () => {
+    if (!multi) delete inputEl.dataset.selectedCollabId;
+    showPopup(getQuery());
+  });
   inputEl.addEventListener('focus',  () => showPopup(getQuery()));
   inputEl.addEventListener('blur',   () => setTimeout(removePopup, 160));
   inputEl.addEventListener('keydown', e => {
@@ -8009,6 +9585,16 @@ async function init() {
   _buildSearchIndex().catch(() => {});
   // Initial view
   navigate('dashboard');
+
+  // Feature 16: delegación global para person-chip → collaborator hub
+  document.addEventListener('click', e => {
+    const chip = e.target.closest('[data-collab-hub]');
+    if (!chip) return;
+    const cid = +chip.dataset.collabHub;
+    if (!cid) return;
+    App.collaboratorHubId = cid;
+    navigate('collaborator-hub');
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -8020,6 +9606,27 @@ async function _getAreas() {
 }
 async function _saveAreas(areas) {
   await db.settings.put({ key: 'ros-areas', value: JSON.stringify(areas) });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  COLUMN PRESETS — vistas nombradas del Kanban
+//  Almacenadas en settings['ros-col-presets'] como JSON
+// ══════════════════════════════════════════════════════════════
+async function _getColPresets() {
+  const s = await db.settings.get('ros-col-presets');
+  if (s?.value) return JSON.parse(s.value);
+  const defaults = [
+    { id: 'research', name: 'Investigación', icon: '🔬',
+      types: ['Paper', 'Grant', 'Análisis', 'Dataset'] },
+    { id: 'teaching', name: 'Docencia', icon: '🎓',
+      types: ['Proyecto', 'Presentación'] },
+  ];
+  await _saveColPresets(defaults);
+  return defaults;
+}
+
+async function _saveColPresets(presets) {
+  await db.settings.put({ key: 'ros-col-presets', value: JSON.stringify(presets) });
 }
 
 const AREA_COLORS = ['#3b82f6','#8b5cf6','#10b981','#f59e0b','#ef4444','#14b8a6','#f97316','#ec4899'];
