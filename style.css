@@ -3266,7 +3266,6 @@ body.presentation-mode .kanban-col { width: 300px; }
   gap: 5px;
   text-align: center;
   min-height: 110px;
-  position: sticky;
   left: 0;
   z-index: 2;
   backdrop-filter: blur(10px);
