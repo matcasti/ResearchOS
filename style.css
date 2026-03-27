@@ -1671,6 +1671,11 @@ body.presentation-mode .kanban-col { width: 300px; }
   display: flex; align-items: center; gap: 8px;
   padding: 6px 0; border-bottom: 1px solid var(--border);
 }
+.col-manage-row.drag-over {
+  outline: 2px solid var(--accent);
+  background: var(--accent-d);
+  border-radius: var(--radius-sm);
+}
 .col-manage-handle {
   color: var(--text-3); cursor: grab; font-size: 1rem; padding: 0 4px;
 }
@@ -3297,3 +3302,5 @@ body.presentation-mode .kanban-col { width: 300px; }
   font-family: var(--font-mono);
   opacity: .5;
 }
+
+

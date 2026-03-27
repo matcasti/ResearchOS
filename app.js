@@ -35,6 +35,8 @@ const App = {
   _tutorialTab:    'quickstart',
   activeColPreset:   'all',   // id del preset activo en Kanban
   kanbanGroupBy:     'none',  // 'none' | 'type' | 'area'
+  projSortKey:       '',      // '' | 'title' | 'type' | 'priority' | 'column' | 'responsible' | 'area' | 'deadline'
+  projSortDir:       'asc',   // 'asc' | 'desc'
   collaboratorHubId: null,    //
   ideaBulkMode:      false,    // Feature 11
   ideaBulkSelected:  new Set(), // Feature 11
@@ -1062,8 +1064,8 @@ async function showManageColumnsModal() {
   const cols = await db.kanbanColumns.orderBy('order').toArray();
 
   const renderRows = () => cols.map((c, i) => `
-    <div class="col-manage-row" data-col-id="${c.id}">
-      <span class="col-manage-handle" title="Reordenar">⠿</span>
+    <div class="col-manage-row" data-col-id="${c.id}" data-col-idx="${i}">
+      <span class="col-manage-handle" title="Reordenar" style="cursor:grab">⠿</span>
       <input class="form-input col-manage-title"
              value="${esc(c.title)}" data-col-id="${c.id}"
              style="flex:1;padding:5px 8px;font-size:.82rem">
@@ -1102,6 +1104,7 @@ async function showManageColumnsModal() {
     });
     $('colManageList').innerHTML = renderRows();
     attachColRowHandlers();
+    attachDragToRows();
   });
 
   const attachColRowHandlers = () => {
@@ -1118,6 +1121,41 @@ async function showManageColumnsModal() {
     });
   };
   attachColRowHandlers();
+
+  const attachDragToRows = () => {
+    const list = $('colManageList');
+    if (!list) return;
+    let dragSrcIdx = null;
+    list.querySelectorAll('.col-manage-row').forEach(row => {
+      row.setAttribute('draggable', 'true');
+      row.addEventListener('dragstart', e => {
+        dragSrcIdx = +row.dataset.colIdx;
+        e.dataTransfer.effectAllowed = 'move';
+        row.style.opacity = '0.4';
+      });
+      row.addEventListener('dragend', () => {
+        row.style.opacity = '';
+        list.querySelectorAll('.col-manage-row').forEach(r => r.classList.remove('drag-over'));
+      });
+      row.addEventListener('dragover', e => {
+        e.preventDefault();
+        if (+row.dataset.colIdx !== dragSrcIdx) row.classList.add('drag-over');
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+      row.addEventListener('drop', e => {
+        e.preventDefault();
+        row.classList.remove('drag-over');
+        const tgtIdx = +row.dataset.colIdx;
+        if (dragSrcIdx === null || dragSrcIdx === tgtIdx) return;
+        const [moved] = cols.splice(dragSrcIdx, 1);
+        cols.splice(tgtIdx, 0, moved);
+        $('colManageList').innerHTML = renderRows();
+        attachColRowHandlers();
+        attachDragToRows();
+      });
+    });
+  };
+  attachDragToRows();
 
   $('colManageSave').addEventListener('click', async () => {
     // Leer valores editados
@@ -1552,6 +1590,8 @@ async function renderProjects() {
     App.filterResponsible = 'all';
     App.filterArea = 'all';
     App.groupBy = 'none';
+    App.projSortKey = '';
+    App.projSortDir = 'asc';
     App._projPage = 1;
     renderView('projects');
   });
@@ -1659,6 +1699,25 @@ async function renderProjects() {
     };
 
     if (App.projViewMode === 'list') {
+
+      // Ordenar según estado de sort
+      if (App.projSortKey) {
+        const PRIO = { Alta: 0, Media: 1, Baja: 2 };
+        visible.sort((a, b) => {
+          let cmp = 0;
+          switch (App.projSortKey) {
+            case 'title':       cmp = (a.title||'').localeCompare(b.title||''); break;
+            case 'type':        cmp = (a.type||'').localeCompare(b.type||''); break;
+            case 'priority':    cmp = (PRIO[a.priority]??99) - (PRIO[b.priority]??99); break;
+            case 'column':      cmp = (colMap[a.columnId]?.title||'').localeCompare(colMap[b.columnId]?.title||''); break;
+            case 'responsible': cmp = (a.responsible||'').localeCompare(b.responsible||''); break;
+            case 'area':        cmp = (areaMap[a.areaId]?.name||'').localeCompare(areaMap[b.areaId]?.name||''); break;
+            case 'deadline':    cmp = (a.deadline||'9999').localeCompare(b.deadline||'9999'); break;
+          }
+          return App.projSortDir === 'desc' ? -cmp : cmp;
+        });
+      }
+
       // ── VISTA TABLA ──────────────────────────────────────
       const rows = await Promise.all(visible.map(async p => {
         const pct     = await projectCompleteness(p);
@@ -1719,22 +1778,38 @@ async function renderProjects() {
             </td>
           </tr>`;
       }));
+      const _si = k => App.projSortKey === k ? (App.projSortDir === 'asc' ? ' ↑' : ' ↓') : '';
       container.innerHTML = `
         <table class="proj-table">
           <thead>
             <tr>
-              <th class="pth">Título</th>
-              <th class="pth">Tipo</th>
-              <th class="pth">Prioridad</th>
-              <th class="pth">Columna</th>
-              <th class="pth">Responsable</th>
-              <th class="pth">Área</th>
-              <th class="pth">Deadline</th>
+              <th class="pth" data-sk="title"       style="cursor:pointer;user-select:none">Título${_si('title')}</th>
+              <th class="pth" data-sk="type"        style="cursor:pointer;user-select:none">Tipo${_si('type')}</th>
+              <th class="pth" data-sk="priority"    style="cursor:pointer;user-select:none">Prioridad${_si('priority')}</th>
+              <th class="pth" data-sk="column"      style="cursor:pointer;user-select:none">Columna${_si('column')}</th>
+              <th class="pth" data-sk="responsible" style="cursor:pointer;user-select:none">Responsable${_si('responsible')}</th>
+              <th class="pth" data-sk="area"        style="cursor:pointer;user-select:none">Área${_si('area')}</th>
+              <th class="pth" data-sk="deadline"    style="cursor:pointer;user-select:none">Deadline${_si('deadline')}</th>
               <th class="pth">Completitud</th>
             </tr>
           </thead>
           <tbody>${rows.join('')}</tbody>
         </table>`;
+
+      // Listeners de ordenación
+      container.querySelectorAll('th[data-sk]').forEach(th => {
+        th.addEventListener('click', () => {
+          const key = th.dataset.sk;
+          if (App.projSortKey === key) {
+            App.projSortDir = App.projSortDir === 'asc' ? 'desc' : 'asc';
+          } else {
+            App.projSortKey = key;
+            App.projSortDir = 'asc';
+          }
+          App._projPage = 1;
+          renderView('projects');
+        });
+      });
     } else if (App.groupBy === 'none') {
       const cards = await Promise.all(visible.map(renderCard));
       container.className = 'projects-grid';
@@ -3358,7 +3433,8 @@ async function renderWeeklyAgenda() {
     db.ideas.filter(i => !!i.deadline).toArray(),
   ]);
 
-  const isoDay  = d => d.toISOString().split('T')[0];
+  const isoDay = d =>
+    `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   const todayIso = isoDay(today);
   const DAY_LABELS   = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
   const MONTH_SHORT  = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
@@ -7838,11 +7914,21 @@ async function inspectProject(id) {
 
       ${relIdeas.length ? `
         <div class="inspector-related-title">Ideas vinculadas (${relIdeas.length})</div>
-        ${relIdeas.slice(0,4).map(i => `<div class="inspector-related-item">◎ ${esc(i.title)}</div>`).join('')}` : ''}
+        ${relIdeas.slice(0,4).map(i => `
+          <div class="inspector-related-item" data-goto-idea="${i.id}"
+               style="cursor:pointer;display:flex;align-items:center;gap:4px">
+            <span style="flex:1">◎ ${esc(i.title)}</span>
+            <span style="font-size:.62rem;color:var(--text-3);flex-shrink:0">→</span>
+          </div>`).join('')}` : ''}
 
       ${relSnips.length ? `
         <div class="inspector-related-title">Snippets vinculados (${relSnips.length})</div>
-        ${relSnips.slice(0,4).map(s => `<div class="inspector-related-item">⟨/⟩ ${esc(s.title)}</div>`).join('')}` : ''}
+        ${relSnips.slice(0,4).map(s => `
+          <div class="inspector-related-item" data-goto-snip="${s.id}"
+               style="cursor:pointer;display:flex;align-items:center;gap:4px">
+            <span style="flex:1">⟨/⟩ ${esc(s.title)}</span>
+            <span style="font-size:.62rem;color:var(--text-3);flex-shrink:0">→</span>
+          </div>`).join('')}` : ''}
 
       ${await (async () => {
         const subs = await getSubmissions(p.id);
@@ -7874,7 +7960,7 @@ async function inspectProject(id) {
           if (subs.length) {
             html += subs.slice(0, 5).map(s => `
               <div class="inspector-related-item sub-unified-row"
-                   data-inspect-submission="${s.id}" style="cursor:pointer">
+                   data-goto-sub="${s.id}" style="cursor:pointer">
                 <div style="flex:1;min-width:0">
                   <div style="font-size:.77rem;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
                     ${esc(s.targetVenue || s.title)}
@@ -7895,14 +7981,18 @@ async function inspectProject(id) {
         if (refs.length) html += `
           <div class="inspector-related-title">Referencias (${refs.length})</div>
           ${refs.slice(0,3).map(r => `
-            <div class="inspector-related-item" data-inspect-ref="${r.id}" style="cursor:pointer">
-              📚 ${esc(r.authors?.split(',')[0]||'')} (${r.year||'?'}) — ${esc(r.title.slice(0,40))}
+            <div class="inspector-related-item" data-goto-ref="${r.id}"
+                 style="cursor:pointer;display:flex;align-items:center;gap:4px">
+              <span style="flex:1">📚 ${esc(r.authors?.split(',')[0]||'')} (${r.year||'?'}) — ${esc(r.title.slice(0,40))}</span>
+              <span style="font-size:.62rem;color:var(--text-3);flex-shrink:0">→</span>
             </div>`).join('')}`;
         if (meets.length) html += `
           <div class="inspector-related-title">Reuniones (${meets.length})</div>
           ${meets.slice(0,3).map(m => `
-            <div class="inspector-related-item" data-inspect-meeting="${m.id}" style="cursor:pointer">
-              🗓 ${formatDate(m.date)} — ${esc(m.title)}
+            <div class="inspector-related-item" data-goto-meet="${m.id}"
+                 style="cursor:pointer;display:flex;align-items:center;gap:4px">
+              <span style="flex:1">🗓 ${formatDate(m.date)} — ${esc(m.title)}</span>
+              <span style="font-size:.62rem;color:var(--text-3);flex-shrink:0">→</span>
             </div>`).join('')}`;
         return html;
       })()}
@@ -7972,9 +8062,9 @@ async function inspectProject(id) {
       updatedAt: new Date().toISOString()
     }));
     showToast('Campo actualizado ✓', 'success');
-    SaveIndicator.done();
-    inspectProject(id);
-    if (['kanban','projects','starred','archived'].includes(App.view)) renderView(App.view);
+    // Re-render la vista activa y re-abrir el inspector para el mismo proyecto
+    renderView(App.view);
+    setTimeout(() => inspectProject(id), 80);
   });
 
   $('inspDeleteBtn').addEventListener('click', async () => {
@@ -8110,13 +8200,33 @@ async function inspectProject(id) {
     renderView(App.view);
   });
 
-  // Relacionados desde el inspector
-  inspectorBody.querySelectorAll('[data-inspect-submission]').forEach(el =>
-    el.addEventListener('click', () => inspectSubmission(+el.dataset.inspectSubmission)));
-  inspectorBody.querySelectorAll('[data-inspect-ref]').forEach(el =>
-    el.addEventListener('click', () => inspectReference(+el.dataset.inspectRef)));
-  inspectorBody.querySelectorAll('[data-inspect-meeting]').forEach(el =>
-    el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
+  // Elementos relacionados — navegan a su vista y abren inspector
+  inspectorBody.querySelectorAll('[data-goto-idea]').forEach(el =>
+    el.addEventListener('click', () => {
+      //navigate('ideas');
+      setTimeout(() => inspectIdea(+el.dataset.gotoIdea), 150);
+    }));
+  inspectorBody.querySelectorAll('[data-goto-snip]').forEach(el =>
+    el.addEventListener('click', async () => {
+      //navigate('snippets');
+      const s = await db.snippets.get(+el.dataset.gotoSnip);
+      setTimeout(() => { if (s) inspectSnippet(s); }, 150);
+    }));
+  inspectorBody.querySelectorAll('[data-goto-sub]').forEach(el =>
+    el.addEventListener('click', () => {
+      //navigate('submissions');
+      setTimeout(() => inspectSubmission(+el.dataset.gotoSub), 150);
+    }));
+  inspectorBody.querySelectorAll('[data-goto-ref]').forEach(el =>
+    el.addEventListener('click', () => {
+      //navigate('references');
+      setTimeout(() => inspectReference(+el.dataset.gotoRef), 150);
+    }));
+  inspectorBody.querySelectorAll('[data-goto-meet]').forEach(el =>
+    el.addEventListener('click', () => {
+      //navigate('meetings');
+      setTimeout(() => inspectMeeting(+el.dataset.gotoMeet), 150);
+    }));
 
   // Async: show subprojects
   db.projects.where('parentId').equals(id).toArray().then(children => {
