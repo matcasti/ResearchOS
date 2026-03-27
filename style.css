@@ -512,7 +512,7 @@ body.inspector-closed {
 }
 .kanban-card-footer {
   display: flex; align-items: center; justify-content: space-between;
-  margin-top: 8px;
+  margin-top: 8px; gap: 10px;
 }
 .kanban-card-person {
   font-size: .7rem; color: var(--text-2); font-family: var(--font-mono);
