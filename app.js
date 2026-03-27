@@ -687,6 +687,7 @@ const HoverCard = {
   },
 
   async show(projectId, anchorEl) {
+    if (App._isDragging) return;
     this.init();
     clearTimeout(this._timer);
     clearTimeout(this._hideTimer);
@@ -767,7 +768,10 @@ function _kanbanBoardHTML(kanbanData, filterFn, unreadByProject, activeSubByProj
       App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible
     );
     return `
-    <div class="kanban-col" data-col-id="${col.id}" id="col-${col.id}">
+    <div class="kanban-col" data-col-id="${col.id}" id="col-${col.id}"
+           ondragover="kanbanDragOver(event)"
+           ondragleave="kanbanDragLeave(event)"
+           ondrop="kanbanDrop(event)">
       <div class="kanban-col-header">
         <span class="kanban-col-dot" style="background:${col.color}"></span>
         <span class="kanban-col-title">${esc(col.title)}</span>
@@ -1299,12 +1303,15 @@ function kanbanCardHTML(p, unreadCount = 0, activeSub = null, pendingAIs = 0) {
 
 // Drag & Drop
 function kanbanDragStart(e) {
-  App.draggedId = +e.currentTarget.dataset.projectId;
+  App.draggedId    = +e.currentTarget.dataset.projectId;
+  App._isDragging  = true;
+  HoverCard.hide();
   e.currentTarget.classList.add('dragging');
   e.dataTransfer.effectAllowed = 'move';
 }
 function kanbanDragEnd(e) {
   e.currentTarget.classList.remove('dragging');
+  App._isDragging = false;
 }
 function kanbanDragOver(e) {
   e.preventDefault();
@@ -1313,9 +1320,13 @@ function kanbanDragOver(e) {
   t?.classList.add('drag-over');
 }
 function kanbanDragLeave(e) {
-  if (!e.currentTarget.contains(e.relatedTarget)) {
-    const t = e.currentTarget.closest('[data-swim-col]') || e.currentTarget.closest('.kanban-col');
-    t?.classList.remove('drag-over');
+  // Determinar la columna contenedora real (puede ser el propio elemento o un ancestro)
+  const col = e.currentTarget.classList?.contains('kanban-col')
+    ? e.currentTarget
+    : e.currentTarget.closest('[data-swim-col]') || e.currentTarget.closest('.kanban-col');
+  // Solo quitar la clase si el puntero salió completamente de la columna
+  if (col && !col.contains(e.relatedTarget)) {
+    col.classList.remove('drag-over');
   }
 }
 async function kanbanDrop(e) {
@@ -1328,10 +1339,32 @@ async function kanbanDrop(e) {
   const draggedId = App.draggedId;
   App.draggedId   = null;
   if (!draggedId || !newColId) return;
+  // DESPUÉS:
   try {
+    // En modo swimlane, el drop vertical también actualiza el grupo (tipo o área)
+    const groupUpdates = {};
+    if (swimCell && App.kanbanGroupBy === 'type') {
+      const newType = swimCell.dataset.swimGroup;
+      if (newType && newType !== 'Sin tipo') groupUpdates.type = newType;
+    } else if (swimCell && App.kanbanGroupBy === 'area') {
+      const groupName = swimCell.dataset.swimGroup;
+      const areas     = await _getAreas();
+      const area      = areas.find(a => a.name === groupName);
+      groupUpdates.areaId = area ? area.id : null;
+    }
+    if (Object.keys(groupUpdates).length) {
+      await dbWrite(() => db.projects.update(draggedId, {
+        ...groupUpdates, updatedAt: new Date().toISOString()
+      }));
+    }
     await recordColumnChange(draggedId, newColId);
     await renderKanban();
-    showToast('Tarjeta movida', 'success');
+    const moved = Object.keys(groupUpdates).length
+      ? `Movida · ${App.kanbanGroupBy === 'type'
+          ? `tipo → ${groupUpdates.type}`
+          : 'área actualizada'}`
+      : 'Tarjeta movida';
+    showToast(moved, 'success');
   } catch (err) {
     showToast('Error al mover tarjeta', 'error');
     console.error(err);
@@ -1943,6 +1976,9 @@ async function renderIdeas() {
   const projects = await db.projects.toArray();
   const projMap  = Object.fromEntries(projects.map(p => [p.id, p]));
 
+  const _draftTitle   = sessionStorage.getItem('ros-idea-draft-title')   || '';
+  const _draftContent = sessionStorage.getItem('ros-idea-draft-content') || '';
+
   mainContent.innerHTML = `
     <div class="view">
       <div class="view-header">
@@ -1964,8 +2000,12 @@ async function renderIdeas() {
       <!-- Quick capture -->
       <div class="inbox-capture">
         <div class="inbox-capture-title">⚡ Captura rápida</div>
-        <input class="inbox-input" id="ideaTitleInput" placeholder="Título de la idea…" maxlength="200">
-        <textarea class="inbox-input inbox-textarea" id="ideaContentInput" placeholder="Contenido, URL, nota… (opcional)"></textarea>
+        <input class="inbox-input" id="ideaTitleInput"
+               placeholder="Título de la idea…" maxlength="200"
+               value="${esc(_draftTitle)}">
+        <textarea class="inbox-input inbox-textarea" id="ideaContentInput"
+                  style="font-family:var(--font-mono);font-size:.82rem"
+                  placeholder="Contenido en Markdown: **negrita**, \`código\`, - lista…">${esc(_draftContent)}</textarea>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;margin-top:4px">
           <div style="flex:2;min-width:180px">
             <label class="form-label" style="display:block;margin-bottom:5px">Proyectos</label>
@@ -2054,7 +2094,9 @@ async function renderIdeas() {
                       data-idea-id="${i.id}" title="Marcar como revisada"></button>
               <div class="idea-body">
                 <div class="idea-title">${esc(i.title)}</div>
-                ${i.content?`<div class="idea-content">${esc(i.content)}</div>`:''}
+                ${i.content ? `<div class="idea-content md-preview"
+                  style="font-family:var(--font-mono);font-size:.73rem;
+                         max-height:3.6em;overflow:hidden">${renderMd(i.content)}</div>` : ''}
                 <div class="idea-footer">
                   ${(i.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
                   ${(i.projectIds||[i.projectId]).filter(Boolean).map(pid=>{
@@ -2080,6 +2122,10 @@ async function renderIdeas() {
     </div>`;
 
   $('saveIdeaBtn').addEventListener('click', saveQuickIdea);
+  $('ideaTitleInput').addEventListener('input', () =>
+    sessionStorage.setItem('ros-idea-draft-title',   $('ideaTitleInput').value));
+  $('ideaContentInput').addEventListener('input', () =>
+    sessionStorage.setItem('ros-idea-draft-content', $('ideaContentInput').value));
   $('startTriageBtn')?.addEventListener('click', () => { App.triageIdx = 0; navigate('triage'); });
   $('ideaBulkToggle')?.addEventListener('click', () => {
     App.ideaBulkMode = !App.ideaBulkMode;
@@ -2296,7 +2342,9 @@ function ideaItemHTML(idea, projMap) {
               data-idea-id="${idea.id}" title="Marcar como revisada"></button>
       <div class="idea-body">
         <div class="idea-title">${esc(idea.title)}</div>
-        ${idea.content ? `<div class="idea-content">${esc(idea.content)}</div>` : ''}
+        ${idea.content ? `<div class="idea-content md-preview"
+        style="font-family:var(--font-mono);font-size:.73rem;
+               max-height:3.6em;overflow:hidden">${renderMd(idea.content)}</div>` : ''}
         <div class="idea-footer">
           ${(idea.tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
           ${(idea.projectIds||[idea.projectId]).filter(Boolean).map(pid => {
@@ -2329,6 +2377,8 @@ async function saveQuickIdea() {
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   }));
   showToast('Idea guardada ✓', 'success');
+  sessionStorage.removeItem('ros-idea-draft-title');
+  sessionStorage.removeItem('ros-idea-draft-content');
   renderIdeas();
 }
 
@@ -2911,9 +2961,13 @@ async function renderTimeline() {
       const rows = [];
 
       (childProjMap[projId] || [])
-        .filter(cp => inWindow(cp.deadline))
+        .filter(cp => inWindow(cp.deadline) ||
+          (subsByProject[cp.id]||[]).some(s => inWindow(s.deadlineAt)) ||
+          (ideasByProject[cp.id]||[]).some(i => inWindow(i.deadline))    ||
+          (meetsByProject[cp.id]||[]).some(m => inWindow(m.date)))
         .forEach(cp => {
-          const cpO = new Date(cp.deadline + 'T12:00:00') < today;
+          const cpHasDl = !!cp.deadline && inWindow(cp.deadline);
+          const cpO = cpHasDl && new Date(cp.deadline + 'T12:00:00') < today;
           rows.push(`
             <div class="timeline-row ${cpO ? 'tl-row-overdue' : ''}"
                  style="background:var(--bg-surface)">
@@ -2925,11 +2979,13 @@ async function renderTimeline() {
               </div>
               <div class="timeline-track">
                 <div class="timeline-today-line" style="left:${todayX}"></div>
+                ${cpHasDl ? `
                 <div class="timeline-deadline-dot"
                      data-inspect-project="${cp.id}"
                      style="left:${toX(cp.deadline)};background:${getColor(cp)}"
                      title="${esc(cp.title)} — ${formatDate(cp.deadline)}"></div>
                 <span class="timeline-deadline-label" style="left:${toX(cp.deadline)}">${formatDate(cp.deadline)}</span>
+                ` : ''}
               </div>
             </div>`);
           rows.push(...subRows(cp.id, depth + 1).split('<!-- sep -->').filter(Boolean));
@@ -3753,7 +3809,15 @@ async function inspectSubmission(id) {
         </div>` : ''}
         <div class="inspector-meta-row">
           <span class="inspector-meta-key">Deadline</span>
-          <span class="inspector-meta-val">${s.deadlineAt ? formatDate(s.deadlineAt) : '—'}</span>
+          <span class="inspector-meta-val">
+            ${s.deadlineAt ? formatDate(s.deadlineAt) : '—'}
+            ${s.deadlineAt && proj?.type === 'Paper' ? `
+              <button class="btn btn-ghost btn-sm" id="subSyncDlBtn"
+                      style="font-size:.6rem;padding:1px 7px;margin-left:6px;
+                             color:var(--amber);border-color:rgba(251,191,36,.3)">
+                ↑ Usar en proyecto
+              </button>` : ''}
+          </span>
         </div>
         <div class="inspector-meta-row">
           <span class="inspector-meta-key">Enviado</span>
@@ -3803,6 +3867,16 @@ async function inspectSubmission(id) {
     </div>`;
 
   openInspector();
+
+  $('subSyncDlBtn')?.addEventListener('click', async () => {
+    if (!s.deadlineAt || !s.projectId) return;
+    await dbWrite(() => db.projects.update(s.projectId, {
+      deadline: s.deadlineAt, updatedAt: new Date().toISOString()
+    }));
+    showToast(`Deadline del proyecto → ${formatDate(s.deadlineAt)} ✓`, 'success');
+    if (App.view === 'kanban')   renderKanban();
+    if (App.view === 'timeline') renderView('timeline');
+  });
 
   $('subNavProj')?.addEventListener('click', () => {
     navigate('projects'); setTimeout(() => inspectProject(proj.id), 120);
@@ -7369,7 +7443,9 @@ async function showAddIdeaModal() {
       </div>
       <div class="form-group">
         <label class="form-label">Contenido / URL / Nota</label>
-        <textarea class="form-textarea" id="mi-content" placeholder="Detalles, link, ruta de archivo…"></textarea>
+        <textarea class="form-textarea" id="mi-content"
+                  style="font-family:var(--font-mono);font-size:.82rem"
+                  placeholder="Contenido en Markdown: **negrita**, \`código\`, - lista…"></textarea>
       </div>
       <div class="form-group">
         <label class="form-label">Proyectos vinculados</label>
@@ -7420,7 +7496,8 @@ async function showEditIdeaModal(idea) {
       </div>
       <div class="form-group">
         <label class="form-label">Contenido / URL / Nota</label>
-        <textarea class="form-textarea" id="ei-content" rows="4">${esc(idea.content || '')}</textarea>
+        <textarea class="form-textarea" id="ei-content" rows="4"
+                style="font-family:var(--font-mono);font-size:.82rem">${esc(idea.content || '')}</textarea>
       </div>
       <div class="form-group">
         <label class="form-label">Proyectos vinculados</label>
@@ -8381,7 +8458,8 @@ async function inspectIdea(id) {
         ${idea.status === 'reviewed' ? '✓ Revisada' : '● Sin revisar'}
       </div>
       <div class="inspector-project-title">${esc(idea.title)}</div>
-      ${idea.content ? `<div class="inspector-desc">${esc(idea.content)}</div>` : ''}
+      ${idea.content ? `<div class="inspector-desc md-preview"
+        style="font-family:var(--font-mono);font-size:.78rem">${renderMd(idea.content)}</div>` : ''}
       ${(idea._history||[]).length ? (() => {
         const hist = [...(idea._history||[])].reverse().slice(0, 5);
         return `
