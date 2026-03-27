@@ -9576,7 +9576,7 @@ function _personChipHTML(name, collabId = null, { small = false } = {}) {
     style="display:inline-flex;align-items:center;gap:4px;
            font-family:var(--font-mono);font-size:${sz};
            background:${bg};border:1px solid ${border};color:${color};
-           padding:1px 8px;border-radius:99px;white-space:nowrap;
+           padding:1px 8px;border-radius:99px;
            ${linked ? 'cursor:pointer;' : ''}">
     <span style="width:5px;height:5px;border-radius:50%;flex-shrink:0;background:${dot}"></span>
     ${esc(name)}
