@@ -511,14 +511,21 @@ body.inspector-closed {
   margin-bottom: 8px;
 }
 .kanban-card-footer {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-top: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 8px 0;
+    flex-wrap: wrap;
 }
 .kanban-card-person {
   font-size: .7rem; color: var(--text-2); font-family: var(--font-mono);
 }
 .kanban-card-date {
-  font-size: .68rem; color: var(--text-3); font-family: var(--font-mono);
+    font-size: .68rem;
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    padding: 0 8px;
+    padding-top: 2px;
 }
 .kanban-idea-badge {
   display: inline-block;
