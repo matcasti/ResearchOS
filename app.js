@@ -6,7 +6,7 @@
 
 'use strict';
 
-// ── App state ────────────────────────────────────────────────
+// -- App state ------------------------------------------------
 const App = {
   view:             'dashboard',
   draggedId:        null,
@@ -45,7 +45,7 @@ const App = {
   _hubMenuClickHandler: null,
 };
 
-// ── DOM refs ─────────────────────────────────────────────────
+// -- DOM refs -------------------------------------------------
 const $ = id => document.getElementById(id);
 const mainContent    = $('mainContent');
 const inspectorPanel = $('inspectorPanel');
@@ -54,7 +54,7 @@ const modalOverlay   = $('modalOverlay');
 const modalTitle     = $('modalTitle');
 const modalContent   = $('modalContent');
 
-// ── Auto-save Indicator ──────────────────────────────────────
+// -- Auto-save Indicator --------------------------------------
 const SaveIndicator = {
   _timer: null,
   show() {
@@ -82,7 +82,7 @@ const SaveIndicator = {
   }
 };
 
-// ── INSERTAR: Deadline Reminder Module ───────────────────────
+// -- INSERTAR: Deadline Reminder Module -----------------------
 const DeadlineReminder = {
   _interval: null,
 
@@ -161,7 +161,7 @@ async function dbWrite(fn) {
   }
 }
 
-// ── Breadcrumbs ──────────────────────────────────────────────
+// -- Breadcrumbs ----------------------------------------------
 const VIEW_LABELS = {
   dashboard: 'Dashboard', kanban: 'Kanban', projects: 'Proyectos',
   ideas: 'Ideas Inbox', snippets: 'Snippets',
@@ -181,7 +181,7 @@ function breadcrumbHTML(items) {
   </div>`;
 }
 
-// ── Render Markdown seguro ─────────────────────────
+// -- Render Markdown seguro -------------------------
 function renderMd(text) {
   if (!text || typeof marked === 'undefined') return esc(text || '');
   // Configurar marked para no escapar HTML ya escapado
@@ -192,7 +192,7 @@ function renderMd(text) {
             .replace(/on\w+="[^"]*"/gi, '');
 }
 
-// ── Render LaTeX con KaTeX ─────────────────────────
+// -- Render LaTeX con KaTeX -------------------------
 function renderLatex(container) {
   if (typeof renderMathInElement === 'undefined') return;
   renderMathInElement(container, {
@@ -212,9 +212,9 @@ function attachBreadcrumbHandlers() {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  ROUTER
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 function navigate(view, addToHistory = true) {
   App.view = view;
   if (addToHistory) {
@@ -321,9 +321,9 @@ async function renderView(view) {
   await updateBadges();
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: DASHBOARD
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderDashboard() {
   const { projects, ideas, snippets, ideaUnread, recentProjects } =
     await getDashboardStats();
@@ -528,7 +528,7 @@ async function renderDashboard() {
   // Render heatmap
   await renderActivityHeatmap();
 
-  // ── Panel de alertas (zombie, urgentes, stale) ──────
+  // -- Panel de alertas (zombie, urgentes, stale) ------
   await _renderAlertPanel(mainContent.querySelector('.view'));
 }
 
@@ -677,9 +677,9 @@ async function renderActivityHeatmap() {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  HOVER CONTEXT CARD — popover no-modal sobre proyectos
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 const HoverCard = {
   _el: null, _timer: null, _hideTimer: null,
 
@@ -770,7 +770,7 @@ const HoverCard = {
   }
 };
 
-// ── Helper: board estándar — extrae la lógica de columnas ──
+// -- Helper: board estándar — extrae la lógica de columnas --
 function _kanbanBoardHTML(kanbanData, filterFn, unreadByProject, activeSubByProject, pendingAIByProject) {
   return kanbanData.map(col => {
     const visibleCards = filterFn(col.cards).filter(p =>
@@ -805,7 +805,7 @@ function _kanbanBoardHTML(kanbanData, filterFn, unreadByProject, activeSubByProj
   }).join('');
 }
 
-// ── Helper: board en modo swimlane 2D ──────────
+// -- Helper: board en modo swimlane 2D ----------
 function _kanbanSwimlaneHTML(kanbanData, filterFn, unreadByProject, activeSubByProject, pendingAIByProject, groupBy, areaMap) {
   const TYPE_ICONS = {
     Paper:'📄', Grant:'💰', Análisis:'📊', Dataset:'🗄',
@@ -884,9 +884,9 @@ function _kanbanSwimlaneHTML(kanbanData, filterFn, unreadByProject, activeSubByP
     </div>`;
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: KANBAN
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderKanban() {
   const [kanbanData, colPresets, areas] = await Promise.all([
     getKanbanData(),
@@ -916,7 +916,7 @@ async function renderKanban() {
       };
   });
 
-  // Action items pendientes por proyecto (Feature 5)
+  // Action items pendientes por proyecto
   const pendingAIByProject = {};
   allKanbanMeets.forEach(m => {
     if (!m.projectId) return;
@@ -928,20 +928,20 @@ async function renderKanban() {
     kanbanData.flatMap(c => c.cards).map(p => p.responsible).filter(Boolean)
   )].sort();
 
-  // ── Filtro por preset activo ──────────────────────────────
+  // -- Filtro por preset activo ------------------------------
   const activePreset  = colPresets.find(pr => pr.id === App.activeColPreset);
   const filterByPreset = cards =>
     (App.activeColPreset === 'all' || !activePreset)
       ? cards
       : cards.filter(p => activePreset.types.includes(p.type));
 
-  // ── Contar visibles para el subtitle ─────────────────────
+  // -- Contar visibles para el subtitle ---------------------
   const totalVisible = kanbanData.reduce((s, c) =>
     s + filterByPreset(c.cards).filter(p =>
       App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible
     ).length, 0);
 
-  // ── Generar board (estándar o swimlane) ───────────────────
+  // -- Generar board (estándar o swimlane) -------------------
   const boardHTML = App.kanbanGroupBy === 'none'
     ? _kanbanBoardHTML(kanbanData, filterByPreset, unreadByProject, activeSubByProject, pendingAIByProject)
     : _kanbanSwimlaneHTML(kanbanData, filterByPreset, unreadByProject, activeSubByProject, pendingAIByProject, App.kanbanGroupBy, areaMap);
@@ -955,7 +955,7 @@ async function renderKanban() {
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
         <button class="btn btn-ghost btn-sm" id="kanbanPresBtn" title="Modo presentación (F5)">⛶</button>
         <button class="btn btn-ghost btn-sm" id="kanbanManageCols">⚙ Columnas</button>
-        <!-- Swimlane toggle (Feature 14) -->
+        <!-- Swimlane toggle -->
         <div class="tl-btn-group">
           <button class="btn btn-ghost btn-sm ${App.kanbanGroupBy==='none'?'active':''}"
                   data-swim="none" title="Vista board estándar">⊞</button>
@@ -968,7 +968,7 @@ async function renderKanban() {
       </div>
     </div>
 
-    <!-- Preset tabs (Feature 8) -->
+    <!-- Preset tabs -->
     <div style="display:flex;align-items:center;gap:5px;padding:8px 32px 0;flex-wrap:wrap">
       <span style="font-family:var(--font-mono);font-size:.6rem;color:var(--text-3);
                    text-transform:uppercase;letter-spacing:.08em;margin-right:2px">Vista:</span>
@@ -1000,7 +1000,7 @@ async function renderKanban() {
   });
   $('kanbanManageCols')?.addEventListener('click', showManageColumnsModal);
 
-  // Swimlane toggle (Feature 14)
+  // Swimlane toggle
   mainContent.querySelectorAll('[data-swim]').forEach(btn => {
     btn.addEventListener('click', () => {
       App.kanbanGroupBy = btn.dataset.swim;
@@ -1008,7 +1008,7 @@ async function renderKanban() {
     });
   });
 
-  // Preset tabs (Feature 8)
+  // Preset tabs
   mainContent.querySelectorAll('[data-kpreset]').forEach(btn => {
     btn.addEventListener('click', () => {
       App.activeColPreset = btn.dataset.kpreset;
@@ -1067,7 +1067,7 @@ async function renderKanban() {
   });
 }
 
-// ── Gestionar columnas Kanban ───────────────────────
+// -- Gestionar columnas Kanban -----------------------
 async function showManageColumnsModal() {
   const cols = await db.kanbanColumns.orderBy('order').toArray();
 
@@ -1208,7 +1208,7 @@ async function showManageColumnsModal() {
   });
 }
 
-// ── Gestionar presets de Kanban ─────────────────
+// -- Gestionar presets de Kanban -----------------
 async function showManagePresetsModal() {
   const presets  = await _getColPresets();
   const ALL_TYPES = ['Proyecto','Grant','Paper','Análisis','Dataset','Presentación'];
@@ -1302,7 +1302,7 @@ function kanbanCardHTML(p, unreadCount = 0, activeSub = null, pendingAIs = 0) {
   const staleClass = daysSince > 14 ? ' kanban-card-stale' : '';
   const staleTip   = daysSince > 14 ? ` title="Sin actividad hace ${daysSince} días"` : '';
 
-  // Health badges (Feature 2 + 5)
+  // Health badges
   const healthBadges = [];
   if (pendingAIs > 0)
     healthBadges.push(`<span style="font-size:.58rem;font-family:var(--font-mono);
@@ -1415,7 +1415,7 @@ window.kanbanDragOver  = kanbanDragOver;
 window.kanbanDragLeave = kanbanDragLeave;
 window.kanbanDrop      = kanbanDrop;
 
-// ── Saved Views helpers (localStorage, sin BD) ───────────────
+// -- Saved Views helpers (localStorage, sin BD) ---------------
 function _getSavedViews() {
   try { return JSON.parse(localStorage.getItem('ros-saved-views') || '[]'); }
   catch { return []; }
@@ -1435,9 +1435,9 @@ function _currentSavedView(v) {
          App.filters.column === (v.column||'all');
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: PROJECTS
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderProjects() {
   let allProjects = await db.projects.toArray();
   const cols      = await db.kanbanColumns.toArray();
@@ -1616,7 +1616,7 @@ async function renderProjects() {
     });
   });
 
-  // ── Responsable + Agrupación ───────────────────────────
+  // -- Responsable + Agrupación ---------------------------
   mainContent.querySelectorAll('[data-fresp]').forEach(btn => {
     btn.addEventListener('click', () => {
       App.filterResponsible = btn.dataset.fresp; App._projPage = 1; renderView('projects');
@@ -1626,7 +1626,7 @@ async function renderProjects() {
     App.groupBy = e.target.value; App._projPage = 1; renderView('projects');
   });
 
-  // ── Panel de alertas ────────────────────────────────
+  // -- Panel de alertas --------------------------------
   _renderAlertPanel(mainContent.querySelector('.view')).catch(() => {});
 
   // Async: compute completeness for each card then render
@@ -1643,7 +1643,7 @@ async function renderProjects() {
       return;
     }
 
-    // ── Datos auxiliares: unread, áreas, hijos (rollup) ───
+    // -- Datos auxiliares: unread, áreas, hijos (rollup) ---
     const [unreadIdeas, areas] = await Promise.all([
       db.ideas.where('status').equals('unread').toArray(),
       _getAreas(),
@@ -1686,7 +1686,7 @@ async function renderProjects() {
       return 'all';
     };
 
-    // ── Paginación ─────────────────────────────────────────
+    // -- Paginación -----------------------------------------
     const PAGE_SIZE  = 25;
     const filterKey  = JSON.stringify([App.filters, App.filterResponsible, App.groupBy]);
     if (App._lastFilterKey !== filterKey) { App._projPage = 1; App._lastFilterKey = filterKey; }
@@ -1721,7 +1721,7 @@ async function renderProjects() {
         });
       }
 
-      // ── VISTA TABLA ──────────────────────────────────────
+      // -- VISTA TABLA --------------------------------------
       const rows = await Promise.all(visible.map(async p => {
         const pct     = await projectCompleteness(p);
         const zombie  = isZombie(p);
@@ -1834,7 +1834,7 @@ async function renderProjects() {
       container.innerHTML = sections.join('');
     }
 
-    // ── "Cargar más" ──────────────────────────────────────
+    // -- "Cargar más" --------------------------------------
     if (totalFiltered > App._projPage * PAGE_SIZE) {
       container.insertAdjacentHTML('beforeend', `
         <div style="grid-column:1/-1;text-align:center;padding:12px 0">
@@ -1851,7 +1851,7 @@ async function renderProjects() {
       });
     });
 
-    // ── Bulk Actions Bar (insertar al final de renderProjects) ────
+    // -- Bulk Actions Bar (insertar al final de renderProjects) ----
     $('bulkToggleBtn')?.addEventListener('click', () => {
       App.bulkMode = !App.bulkMode;
       App.bulkSelected.clear();
@@ -2040,9 +2040,9 @@ function projectCardHTML(p, col, completeness = null, zombie = false, area = nul
     </div>`;
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: IDEAS INBOX
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderIdeas() {
   const ideas    = await db.ideas.orderBy('createdAt').reverse().toArray();
   const projects = await db.projects.toArray();
@@ -2313,7 +2313,7 @@ async function renderIdeas() {
 
   _attachProjectPicker('quickCaptureProjs', projects);
 
-  // ── Listeners del panel LaTeX ──────────────────────
+  // -- Listeners del panel LaTeX ----------------------
   if (!App._latexOpen) App._latexOpen = false;
 
   $('latexToggleBtn')?.addEventListener('click', () => {
@@ -2398,7 +2398,7 @@ async function renderIdeas() {
     });
   });
 
-  // ── renderizar LaTeX en ideas del listado ───────────
+  // -- renderizar LaTeX en ideas del listado -----------
   setTimeout(() => {
     const list = $('ideasList');
     if (list) renderLatex(list);
@@ -2455,9 +2455,9 @@ async function saveQuickIdea() {
   renderIdeas();
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: SNIPPETS
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 const LANGS = ['all','R','Python','Bash','SQL','Other'];
 
 async function renderSnippets() {
@@ -2612,11 +2612,11 @@ function snippetCardHTML(s, projMap, colMap = {}) {
     </div>`;
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: FILE SYSTEM BRIDGE
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 
-// ── FS Templates ─────────────────────────────────────────────
+// -- FS Templates ---------------------------------------------
 const FS_TEMPLATES = {
   rstudio: {
     name: 'RStudio Project',
@@ -2890,15 +2890,15 @@ async function createProjectStructure(rootHandle, { name, desc, author }, templa
   }
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: TIMELINE / GANTT
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderTimeline() {
   const projects = await db.projects.toArray();
   const allWithDL = projects.filter(p => p.deadline)
     .sort((a,b) => new Date(a.deadline) - new Date(b.deadline));
 
-  // ── Ideas con deadline ─────────────────────────────────
+  // -- Ideas con deadline ---------------------------------
   const allIdeasWithDL = await db.ideas.filter(i => !!i.deadline).toArray();
   const ideasByProject = {};
   allIdeasWithDL.forEach(i => {
@@ -2913,7 +2913,7 @@ async function renderTimeline() {
     });
   });
 
-  // ── Reuniones con fecha ────────────────────────────────
+  // -- Reuniones con fecha --------------------------------
   const allMeetsWithDate = await db.meetings.filter(m => !!m.date).toArray();
   const meetsByProject = {};
   allMeetsWithDate.forEach(m => {
@@ -2921,7 +2921,7 @@ async function renderTimeline() {
     if (!meetsByProject[key]) meetsByProject[key] = [];
     meetsByProject[key].push(m);
   });
-  // ── Jerarquía de proyectos ─────────────────────────────
+  // -- Jerarquía de proyectos -----------------------------
   const childProjMap  = {};
   projects.filter(p => p.parentId).forEach(p => {
     if (!childProjMap[p.parentId]) childProjMap[p.parentId] = [];
@@ -2934,7 +2934,7 @@ async function renderTimeline() {
 
   const today = new Date(); today.setHours(12,0,0,0);
 
-  // ── Estado mutable del timeline ────────────────────────
+  // -- Estado mutable del timeline ------------------------
   let colorMode    = 'priority';
   let showOverdue  = true;
   let zoomLevel    = 'year';   // 'week' | 'month' | 'year'
@@ -2991,7 +2991,7 @@ async function renderTimeline() {
     };
     const todayX = ((today - start) / totalMs * 100).toFixed(2) + '%';
 
-    // ── Raíces visibles (+ raíces con hijos/sub-items visibles) ──
+    // -- Raíces visibles (+ raíces con hijos/sub-items visibles) --
     const inWindow = (isoDate) => {
       if (!isoDate) return false;
       const d = new Date(isoDate + (isoDate.length === 10 ? 'T12:00:00' : ''));
@@ -3029,7 +3029,7 @@ async function renderTimeline() {
       (!showOverdue && allWithDL.some(p => new Date(p.deadline+'T12:00:00') < today)
         ? ' · vencidos ocultos' : '');
 
-    // ── Helper: filas de sub-ítems para un proyecto ─────────
+    // -- Helper: filas de sub-ítems para un proyecto ---------
     const subRows = (projId, depth = 1) => {
       const pad = depth === 1 ? '16px' : '28px';
       const rows = [];
@@ -3104,7 +3104,7 @@ async function renderTimeline() {
       return rows.join('<!-- sep -->');
     };
 
-    // ── Huérfanos (sin proyecto) ───────────────────────────
+    // -- Huérfanos (sin proyecto) ---------------------------
     const orphanSections = () => {
       const oIdeas = (ideasByProject['_orphan']||[]).filter(i => inWindow(i.deadline));
       const oMeets = (meetsByProject['_orphan']||[]).filter(m => inWindow(m.date));
@@ -3116,7 +3116,7 @@ async function renderTimeline() {
         </div>` + subRows('_orphan', 0).split('<!-- sep -->').join('');
     };
 
-    // ── Etiquetas de escala temporal ──────────────────────
+    // -- Etiquetas de escala temporal ----------------------
     const ticks = [];
     const _tickCur = new Date(start); _tickCur.setDate(1);
     if (zoomLevel === 'week') {
@@ -3202,7 +3202,7 @@ async function renderTimeline() {
         </div>
       </div>`;
 
-    // ── Rebind inspect para todos los tipos ────────────────
+    // -- Rebind inspect para todos los tipos ----------------
     container.querySelectorAll('[data-inspect-project]').forEach(el =>
       el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
     container.querySelectorAll('[data-inspect-idea]').forEach(el =>
@@ -3213,10 +3213,10 @@ async function renderTimeline() {
       el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
   };
 
-  // ── Evento inicial: zoom = año por defecto ──────────────
+  // -- Evento inicial: zoom = año por defecto --------------
   rebuild();
 
-  // ── Listeners de controles ──────────────────────────────
+  // -- Listeners de controles ------------------------------
   mainContent.querySelectorAll('.tl-zoom').forEach(btn => {
     btn.addEventListener('click', () => {
       zoomLevel = btn.dataset.zoom;
@@ -3242,9 +3242,9 @@ async function renderTimeline() {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: ARCHIVADOS & FAVORITOS
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderArchived() {
   const projects = (await db.projects.toArray()).filter(p => p.archived);
   const cols     = await db.kanbanColumns.toArray();
@@ -3274,7 +3274,7 @@ async function renderArchived() {
   });
 }
 
-// ── Vista Proyectos Anidados ────────────────────────
+// -- Vista Proyectos Anidados ------------------------
 async function renderNestedProjects() {
   const all  = await db.projects.filter(p => !p.archived).toArray();
   const cols = await db.kanbanColumns.toArray();
@@ -3367,16 +3367,16 @@ async function renderNestedProjects() {
   $('nestAddRoot')?.addEventListener('click', () => showAddProjectModal(null, null));
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: AGENDA SEMANAL (solo lectura — agrega deadlines,
 //        submissions, reuniones y recordatorios de la semana)
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 
 async function renderWeeklyAgenda() {
   const today = new Date(); today.setHours(0,0,0,0);
   const viewMode = App.agendaViewMode || 'week';
 
-  // ── Cargar todos los elementos con fecha ────────────────
+  // -- Cargar todos los elementos con fecha ----------------
   const [projects, meetings, ideas] = await Promise.all([
     db.projects.filter(p => !p.archived).toArray(),
     db.meetings.toArray(),
@@ -3413,7 +3413,7 @@ async function renderWeeklyAgenda() {
     return '';
   };
 
-  // ── Construir contenido según el modo ─────────────────
+  // -- Construir contenido según el modo -----------------
   let contentHTML = '', subtitleHTML = '', navHTML = '';
 
   if (viewMode === 'week') {
@@ -3448,7 +3448,7 @@ async function renderWeeklyAgenda() {
     }).join('') + `</div>`;
 
   } else {
-    // ── Vista mensual ───────────────────────────────────
+    // -- Vista mensual -----------------------------------
     const offset = App.agendaMonthOffset || 0;
     const ref    = new Date(today.getFullYear(), today.getMonth() + offset, 1);
     const year   = ref.getFullYear();
@@ -3520,7 +3520,7 @@ async function renderWeeklyAgenda() {
       ${contentHTML}
     </div>`;
 
-  // ── Event listeners de navegación ───────────────────────
+  // -- Event listeners de navegación -----------------------
   $('agendaWeekBtn').addEventListener('click', () => { App.agendaViewMode = 'week';  renderView('weekly'); });
   $('agendaMonthBtn').addEventListener('click', () => { App.agendaViewMode = 'month'; renderView('weekly'); });
   $('agendaPrev')?.addEventListener('click', () => { App.agendaMonthOffset--; renderView('weekly'); });
@@ -3529,7 +3529,7 @@ async function renderWeeklyAgenda() {
   $('weeklyAddMeeting')?.addEventListener('click', showAddMeetingModal);
   $('weeklyAddSubmission')?.addEventListener('click', showAddSubmissionModal);
 
-  // ── Handlers de clic sobre eventos ─────────────────────
+  // -- Handlers de clic sobre eventos ---------------------
   const attachInspectors = (root) => {
     root.querySelectorAll('[data-inspect-project]').forEach(el =>
       el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
@@ -3542,7 +3542,7 @@ async function renderWeeklyAgenda() {
   };
   attachInspectors(mainContent);
 
-  // ── Clic en "+N más" — modal con todos los eventos del día ─
+  // -- Clic en "+N más" — modal con todos los eventos del día -
   mainContent.querySelectorAll('[data-month-day]').forEach(pill => {
     pill.addEventListener('click', () => {
       const iso = pill.dataset.monthDay;
@@ -3571,9 +3571,9 @@ async function renderWeeklyAgenda() {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: SUBMISSION TRACKER
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 const SUB_STATUSES = [
   { key: 'preparacion',       label: 'En preparación', color: 'var(--text-3)' },
   { key: 'enviado',           label: 'Enviado',        color: 'var(--accent)' },
@@ -3758,9 +3758,9 @@ async function inspectSubmission(id) {
   return inspectProject(id);
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: LOG DE REUNIONES
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderMeetings() {
   const [meetings, projects] = await Promise.all([
     db.meetings.orderBy('date').reverse().toArray(),
@@ -3878,7 +3878,7 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
 async function inspectMeeting(id) {
   const m    = await db.meetings.get(id);
   if (!m) return;
-  // Feature 16: resolver colaboradores para chips de participantes
+  // resolver colaboradores para chips de participantes
   const _meetCollabs = await db.collaborators.orderBy('name').toArray();
   const _meetCollabByName = Object.fromEntries(
     _meetCollabs.map(c => [c.name.toLowerCase().trim(), c])
@@ -4008,9 +4008,9 @@ async function inspectMeeting(id) {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: GESTOR DE REFERENCIAS / BibTeX
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderReferences() {
   const [refs, projects] = await Promise.all([
     db.references.orderBy('year').reverse().toArray(),
@@ -4310,9 +4310,9 @@ async function inspectReference(id) {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  COLLABORATOR HUB
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderCollaboratorHub() {
   const id = App.collaboratorHubId;
   if (!id) { navigate('collaborators'); return; }
@@ -4501,9 +4501,9 @@ async function renderCollaboratorHub() {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: COLABORADORES
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderCollaborators() {
   const [collabs, projects] = await Promise.all([
     db.collaborators.orderBy('name').toArray(),
@@ -4714,9 +4714,9 @@ async function inspectCollaborator(id) {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
-//  PAPER PIPELINE — barra de etapas unificada (Feature 10)
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
+//  PAPER PIPELINE — barra de etapas unificada
+// ==============================================================
 function _paperPipelineHTML(p, cols) {
   const colMap  = Object.fromEntries(cols.map(c => [c.id, c]));
   const curCol  = colMap[p.columnId];
@@ -4782,9 +4782,9 @@ function _paperPipelineHTML(p, cols) {
     </div>`;
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  PROJECT HUB — Vista unificada por proyecto
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderProjectHub() {
   const id = App.projectHubId;
   if (!id) { navigate('projects'); return; }
@@ -4797,7 +4797,7 @@ async function renderProjectHub() {
   ]);
   if (!p) { navigate('projects'); return; }
 
-  // Datos de tablas extendidas (pueden no existir si features anteriores no aplicadas)
+  // Datos de tablas extendidas
   const meetings   = typeof db.meetings   !== 'undefined'
     ? await db.meetings.where('projectId').equals(id).toArray()   : [];
   const references = typeof db.references !== 'undefined'
@@ -4818,7 +4818,7 @@ async function renderProjectHub() {
       <div class="hub-section-body" id="hubBody-${id}">${content}</div>
     </div>`;
 
-  // ── Deadline display con color de urgencia ──────────────
+  // -- Deadline display con color de urgencia --------------
   const today0 = new Date(); today0.setHours(0,0,0,0);
   const dlDiff = p.deadline
     ? Math.ceil((new Date(p.deadline + 'T00:00:00') - today0) / 86400000) : null;
@@ -4834,7 +4834,7 @@ async function renderProjectHub() {
 
   mainContent.innerHTML = `
     <div class="view hub-view">
-      <!-- ── Hub Header ──────────────────────────────────── -->
+      <!-- -- Hub Header ------------------------------------ -->
       <div class="hub-header">
 
         <!-- Fila 1: tipo + prioridad + flags -->
@@ -4870,7 +4870,7 @@ async function renderProjectHub() {
         <div class="hub-tags-row">
           ${(p.tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
         </div>` : ''}
-        <!-- Fila 3c: custom fields como chips (Feature 17) -->
+        <!-- Fila 3c: custom fields como chips -->
         ${await (async () => {
           const schemas = await _getTypeSchemas();
           const fields  = schemas?.[p.type] || [];
@@ -4920,7 +4920,7 @@ async function renderProjectHub() {
 
       </div>
 
-      <!-- Paper Pipeline unificado (Feature 10, solo para tipo Paper) -->
+      <!-- Paper Pipeline unificado -->
       ${p.type === 'Paper' ? _paperPipelineHTML(p, cols) : ''}
 
       <!-- Completeness bar -->
@@ -5170,9 +5170,9 @@ async function renderProjectHub() {
   $('hubAddSnipBtn').addEventListener('click',    () => showAddSnippetModal(p.id));
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  FOCUS FEED — "¿Qué hago ahora?"
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderFocusFeed() {
   const today = new Date(); today.setHours(0,0,0,0);
   const in7   = new Date(today); in7.setDate(today.getDate() + 7);
@@ -5314,9 +5314,9 @@ async function renderFocusFeed() {
     el.addEventListener('click', () => typeof inspectMeeting === 'function' && inspectMeeting(+el.dataset.inspectMeeting)));
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  ELEMENTOS HUÉRFANOS
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderOrphans() {
   const [ideas, snippets, projects, collections] = await Promise.all([
     db.ideas.toArray(),
@@ -5402,7 +5402,7 @@ async function renderOrphans() {
            </div>`}
     </div>`;
 
-  // ── Bulk checkbox handlers ──────────────────────────────
+  // -- Bulk checkbox handlers ------------------------------
   const bulkBar     = $('orphBulkBar');
   const bulkCount   = $('orphBulkCount');
 
@@ -5444,7 +5444,7 @@ async function renderOrphans() {
     updateBulkUI();
   });
 
-  // ── Bulk assign ─────────────────────────────────────────
+  // -- Bulk assign -----------------------------------------
   $('orphBulkAssign')?.addEventListener('click', async () => {
     if (!App.orphanBulkSelected.size) return;
     showModal('Asignar a proyecto', `
@@ -5490,7 +5490,7 @@ async function renderOrphans() {
     });
   });
 
-  // ── Bulk delete ─────────────────────────────────────────
+  // -- Bulk delete -----------------------------------------
   $('orphBulkDelete')?.addEventListener('click', async () => {
     if (!App.orphanBulkSelected.size) return;
     const n = App.orphanBulkSelected.size;
@@ -5511,7 +5511,7 @@ async function renderOrphans() {
     renderOrphans();
   });
 
-  // ── Assign individual ───────────────────────────────────
+  // -- Assign individual -----------------------------------
   const assignModal = async (entityType, entityId, currentTitle) => {
     showModal(`Asignar proyecto — "${currentTitle}"`, `
       <div class="modal-body">
@@ -5562,9 +5562,9 @@ async function renderOrphans() {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  IDEA TRIAGE — Revisión rápida con teclado
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderIdeaTriage() {
   const ideas = await db.ideas.filter(i => i.status === 'unread').toArray();
 
@@ -5713,9 +5713,9 @@ async function renderIdeaTriage() {
   document.addEventListener('keydown', onKey);
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: TUTORIAL & GUÍA DE USO
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderTutorial() {
   const tab = App._tutorialTab || 'quickstart';
 
@@ -5729,7 +5729,7 @@ async function renderTutorial() {
     { id: 'shortcuts',  icon: '⌨',  label: 'Atajos'        },
   ];
 
-  // ── Helpers de bloques HTML ────────────────────────────────
+  // -- Helpers de bloques HTML --------------------------------
   const step = (n, icon, title, desc, btnLabel = null, btnAttrs = '') => `
     <div class="tut-step-card">
       <div class="tut-step-head">
@@ -5783,10 +5783,10 @@ async function renderTutorial() {
       ${btnLabel ? `<button class="btn btn-ghost btn-sm tut-action" ${btnAttrs}>${btnLabel} →</button>` : ''}
     </div>`;
 
-  // ── Contenidos por pestaña ─────────────────────────────────
+  // -- Contenidos por pestaña ---------------------------------
   const CONTENT = {
 
-    // ─────────────────────────────────────────────── INICIO RÁPIDO
+    // ----------------------------------------------- INICIO RÁPIDO
     quickstart: `
       <div class="tut-section">
         <div class="tut-hero">
@@ -5828,7 +5828,7 @@ async function renderTutorial() {
         ${tip(`<strong>Tip de productividad:</strong> Presiona <kbd class="tut-kbd">Ctrl+K</kbd> (o <kbd class="tut-kbd">⌘K</kbd> en Mac) en cualquier momento para buscar en todos tus proyectos, ideas, snippets, reuniones y referencias a la vez — sin salir de la vista actual.`)}
       </div>`,
 
-    // ─────────────────────────────────────────────── INVESTIGACIÓN
+    // ----------------------------------------------- INVESTIGACIÓN
     research: `
       <div class="tut-section">
         <div class="section-title">Ciclo de vida de un paper</div>
@@ -5874,7 +5874,7 @@ async function renderTutorial() {
         ${tip('<strong>Flujo recomendado:</strong> Para un análisis complejo, crea un proyecto tipo "Análisis" con área asignada, vincula los snippets R/Python relevantes, agrega ideas con los pasos metodológicos como subtareas, y registra las reuniones de revisión con fechas y acuerdos.')}
       </div>`,
 
-    // ─────────────────────────────────────────────── DOCENCIA
+    // ----------------------------------------------- DOCENCIA
     teaching: `
       <div class="tut-section">
         <div class="tut-hero tut-hero-sm">
@@ -5912,7 +5912,7 @@ async function renderTutorial() {
         ${tip('<strong>Tip:</strong> Crea un Área "Docencia" y vincúlala a todos los proyectos de supervisión y cursos. Así puedes filtrar solo la carga docente en la vista Proyectos y separarla del trabajo de investigación puro.')}
       </div>`,
 
-    // ─────────────────────────────────────────────── FONDOS
+    // ----------------------------------------------- FONDOS
     grants: `
       <div class="tut-section">
         <div class="tut-hero tut-hero-sm">
@@ -5953,7 +5953,7 @@ async function renderTutorial() {
         ${tip('<strong>Tip:</strong> Usa las Ideas vinculadas al proyecto del grant para anotar los puntos débiles que los revisores podrían señalar — con subtareas para cada corrección necesaria. Así nada queda pendiente antes del envío oficial.')}
       </div>`,
 
-    // ─────────────────────────────────────────────── EQUIPO
+    // ----------------------------------------------- EQUIPO
     team: `
       <div class="tut-section">
         <div class="tut-hero tut-hero-sm">
@@ -5990,7 +5990,7 @@ async function renderTutorial() {
         ${tip('<strong>Tip:</strong> Usa la vista <strong>Proyectos Anidados</strong> para crear proyectos "paraguas" (ej: "Laboratorio Semestre 1/2026") con los proyectos de cada integrante del equipo como subproyectos anidados — la vista muestra el árbol completo con estados y deadlines.')}
       </div>`,
 
-    // ─────────────────────────────────────────── GOOGLE & DATOS
+    // ------------------------------------------- GOOGLE & DATOS
     google: `
       <div class="tut-section">
         <div class="tut-hero">
@@ -6028,7 +6028,7 @@ async function renderTutorial() {
         ${tip('<strong>Privacidad:</strong> El backup usa <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-family:var(--font-mono);font-size:.75rem">appDataFolder</code> — una carpeta especial de Google Drive que <strong>no es visible</strong> en la interfaz normal de Drive ni accesible para otras apps. Tus datos de investigación están protegidos.')}
       </div>`,
 
-    // ─────────────────────────────────────────────── ATAJOS
+    // ----------------------------------------------- ATAJOS
     shortcuts: `
       <div class="tut-section">
         <div class="section-title">Atajos de teclado globales</div>
@@ -6097,7 +6097,7 @@ async function renderTutorial() {
       </div>`,
   };
 
-  // ── Render ─────────────────────────────────────────────────
+  // -- Render -------------------------------------------------
   mainContent.innerHTML = `
     <div class="view tutorial-view">
       <div class="view-header">
@@ -6119,7 +6119,7 @@ async function renderTutorial() {
       </div>
     </div>`;
 
-  // ── Event handlers ─────────────────────────────────────────
+  // -- Event handlers -----------------------------------------
   mainContent.querySelectorAll('[data-ttab]').forEach(btn => {
     btn.addEventListener('click', () => {
       App._tutorialTab = btn.dataset.ttab;
@@ -6199,9 +6199,9 @@ async function renderStarred() {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
-//  SUBMISSION → KANBAN COLUMN SYNC (Feature 15)
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
+//  SUBMISSION → KANBAN COLUMN SYNC
+// ==============================================================
 async function _getSubColMapping() {
   const s = await db.settings.get('ros-sub-col-map');
   return s?.value ? JSON.parse(s.value) : {};
@@ -6231,9 +6231,9 @@ async function _syncPaperColumn(projectId, newStatus) {
   if (App.view === 'kanban') renderKanban();
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  VIEW: SETTINGS & EXPORT
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function renderSettings() {
   const [cp, ci, cs, cmeet, cref, ccol, settingsCols, _subColMap, _autoSyncRow] =
     await Promise.all([
@@ -6425,7 +6425,7 @@ async function renderSettings() {
     showToast('Backup exportado ✓', 'success');
   });
 
-  // ── Import con opción merge vs. reemplazar ─────────
+  // -- Import con opción merge vs. reemplazar ---------
   $('importJsonInput').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -6507,7 +6507,7 @@ async function renderSettings() {
     navigate('dashboard');
   });
 
-  // ── Listeners del toggle de notificaciones ─────────
+  // -- Listeners del toggle de notificaciones ---------
   $('notifToggle')?.addEventListener('change', async (e) => {
     const enabled = e.target.checked;
     localStorage.setItem('ros-notif-enabled', String(enabled));
@@ -6530,7 +6530,7 @@ async function renderSettings() {
     });
   });
 
-  // ── Feature 15: Paper Pipeline Sync section ──────────────
+  // -- Paper Pipeline Sync section --------------
   const _dangerZone = mainContent.querySelector('.settings-danger-zone');
   if (_dangerZone) {
     _dangerZone.insertAdjacentHTML('beforebegin', `
@@ -6575,7 +6575,6 @@ async function renderSettings() {
         </div>
       </div>`);
 
-    // Feature 15 listeners
     $('autoSyncPaperToggle')?.addEventListener('change', async e => {
       await db.settings.put({ key: 'ros-auto-sync-paper-col', value: String(e.target.checked) });
       const rows = $('subColMappingRows');
@@ -6596,7 +6595,7 @@ async function renderSettings() {
     });
   }
 
-  // ── Feature 17: Custom Fields settings section ───────────
+  // -- Custom Fields settings section -----------
   if (_dangerZone) {
     const _cfSchemas = await _getTypeSchemas();
     _dangerZone.insertAdjacentHTML('beforebegin', `
@@ -6731,7 +6730,7 @@ async function renderSettings() {
   }
 }
 
-// ── Renderiza (o refresca) el bloque Google Sync dentro de Settings ──
+// -- Renderiza (o refresca) el bloque Google Sync dentro de Settings --
 async function renderGoogleSyncSection() {
   const container = document.getElementById('googleSyncSection');
   if (!container) return;
@@ -6799,7 +6798,7 @@ async function renderGoogleSyncSection() {
     </div>
   `;
 
-  // ── Listeners ────────────────────────────────────────────
+  // -- Listeners --------------------------------------------
   document.getElementById('gSignInBtn')?.addEventListener('click', () => GoogleSync.signIn());
 
   document.getElementById('gSignOutBtn')?.addEventListener('click', () => GoogleSync.signOut());
@@ -6832,9 +6831,9 @@ async function renderGoogleSyncSection() {
   }
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  MODALS — Add / Edit
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 const PROJECT_TEMPLATES = {
   paper: {
     label: '📄 Paper', type: 'Paper', priority: 'Alta',
@@ -6864,9 +6863,9 @@ const PROJECT_TEMPLATES = {
   blank: { label: '⬡ En blanco', type: 'Proyecto', priority: 'Media', tags: [], description: '' },
 };
 
-// ══════════════════════════════════════════════════════════════
-//  CUSTOM FIELDS PER TYPE (Feature 17)
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
+//  CUSTOM FIELDS PER TYPE
+// ==============================================================
 const DEFAULT_TYPE_SCHEMAS = {
   Paper: [
     { key: 'targetJournal', label: 'Journal objetivo',  type: 'text',   placeholder: 'Nature, PLOS ONE, Ecology Letters…' },
@@ -6980,7 +6979,7 @@ function _customFieldsDisplayHTML(customFields, schemas, type) {
 }
 
 async function showAddProjectModal(defaultColId, defaultParentId = null) {
-  // ── Paso 0: elegir template ────────────────────────
+  // -- Paso 0: elegir template ------------------------
   if (!App._skipTemplateStep) {
     showModal('Nuevo Proyecto — Plantilla', `
       <div class="modal-body">
@@ -7085,7 +7084,7 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
     </div>`;
 
   showModal('Nuevo Proyecto', body);
-  // Feature 17: actualizar custom fields al cambiar tipo
+  // actualizar custom fields al cambiar tipo
   $('mp-type')?.addEventListener('change', e => {
     const cf = $('mpCFContainer');
     if (cf) cf.innerHTML = _customFieldsFormHTML(e.target.value, _addSchemas);
@@ -7102,7 +7101,7 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
     const title = $('mp-title').value.trim();
     if (!title) { showToast('El título es requerido', 'error'); return; }
 
-    // Feature 1: nombres canonizados + IDs
+    // nombres canonizados + IDs
     const responsibleId = _getPersonId($('mp-responsible'));
     const responsible   = await _resolveCanonicalName($('mp-responsible'));
     const coauthorNames = await _resolveCanonicalNames($('mp-coauthors'));
@@ -7114,9 +7113,9 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
       type:          $('mp-type').value,
       columnId:      +$('mp-col').value,
       responsible,
-      responsibleId: responsibleId || null,  // Feature 1
+      responsibleId: responsibleId || null,
       coauthors:     coauthorNames,
-      coauthorIds:   coauthorIds.length ? coauthorIds : [],  // Feature 1
+      coauthorIds:   coauthorIds.length ? coauthorIds : [],
       deadline:      $('mp-deadline').value || null,
       priority:      $('mp-priority').value,
       description:   $('mp-desc').value.trim(),
@@ -7365,9 +7364,9 @@ async function showAddSnippetModal(preProjectId = null) {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  INSPECTOR PANEL
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 function openInspector() {
   document.body.classList.remove('inspector-closed');
 }
@@ -7380,9 +7379,9 @@ function closeInspector() {
     </div>`;
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  IN-PLACE EDITING — helper reutilizable para el inspector
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 /**
  * Convierte cualquier elemento con [data-inplace] del inspectorBody
  * en campo editable al doble clic. onSave(field, value) recibe el
@@ -7599,7 +7598,7 @@ async function inspectProject(id) {
         const meets = await getMeetings(p.id);
         let html = '';
 
-        // ── Panel de submission inline (solo Paper) ──────────
+        // -- Panel de submission inline (solo Paper) ----------
         if (p.type === 'Paper') {
           const st = p.submissionStatus || 'preparacion';
           html += `
@@ -7690,14 +7689,14 @@ async function inspectProject(id) {
 
   openInspector();
 
-  // Feature 17: mostrar custom fields
+  // mostrar custom fields
   _getTypeSchemas().then(schemas => {
     const el = $('cfDisplay');
     if (!el) return;
     el.innerHTML = _customFieldsDisplayHTML(p.customFields || {}, schemas, p.type);
   });
 
-  // ── Enlace submission desde inspector de Paper ──────
+  // -- Enlace submission desde inspector de Paper ------
   $('insp-edit-sub-btn')?.addEventListener('click', () => showAddSubmissionModal(null, p.id));
 
   // In-place editing
@@ -7736,7 +7735,7 @@ async function inspectProject(id) {
     }, 300);
   });
 
-  // ── Listeners del editor Markdown ───────────────────
+  // -- Listeners del editor Markdown -------------------
   if (!App._mdEditing) App._mdEditing = false;
 
   $('mdEditToggle')?.addEventListener('click', () => {
@@ -8145,7 +8144,7 @@ async function showEditProjectModal(p) {
 
   showModal('Editar Proyecto', body);
 
-  // Feature 17: actualizar custom fields al cambiar tipo
+  // actualizar custom fields al cambiar tipo
   $('ep-type')?.addEventListener('change', e => {
     const cf = $('epCFContainer');
     if (cf) cf.innerHTML = _customFieldsFormHTML(e.target.value, _editSchemas, p.customFields || {});
@@ -8157,7 +8156,7 @@ async function showEditProjectModal(p) {
     _attachCollaboratorAutocomplete(respInput);
     _attachCollaboratorAutocomplete(coauthInput, { multi: true });
 
-    // Feature 1: restaurar IDs guardados previamente
+    // restaurar IDs guardados previamente
     if (p.responsibleId)
       respInput.dataset.selectedCollabId = String(p.responsibleId);
     if ((p.coauthorIds || []).length && (p.coauthors || []).length) {
@@ -8171,7 +8170,7 @@ async function showEditProjectModal(p) {
 
   $('epCancel').addEventListener('click', closeModal);
   $('epSave').addEventListener('click', async () => {
-    // Feature 1: nombres canonizados + IDs
+    // nombres canonizados + IDs
     const responsibleId = _getPersonId($('ep-responsible'));
     const responsible   = await _resolveCanonicalName($('ep-responsible'));
     const coauthorNames = await _resolveCanonicalNames($('ep-coauthors'));
@@ -8308,7 +8307,7 @@ async function inspectIdea(id) {
   inspectorBody.querySelectorAll('[data-del-st]').forEach(btn => {
     btn.addEventListener('click', () => deleteSubtask(id, +btn.dataset.delSt));
   });
-  // ── Listener restaurar snapshot de idea ─────────────
+  // -- Listener restaurar snapshot de idea -------------
   inspectorBody.querySelectorAll('.restore-idea-snap').forEach(btn => {
     btn.addEventListener('click', async () => {
       const iid    = +btn.dataset.ideaId;
@@ -8359,9 +8358,9 @@ async function inspectIdea(id) {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  MODAL SYSTEM
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 function showModal(title, bodyHTML) {
   modalTitle.textContent = title;
   modalContent.innerHTML = bodyHTML;
@@ -8372,9 +8371,9 @@ function closeModal() {
   modalContent.innerHTML = '';
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  TOAST NOTIFICATIONS
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 function showToast(message, type = 'info') {
   const icons = { success: '✓', error: '✕', info: 'ℹ' };
   const toast = document.createElement('div');
@@ -8384,9 +8383,9 @@ function showToast(message, type = 'info') {
   setTimeout(() => toast.remove(), 3200);
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  BADGES & COUNTERS
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function updateBadges() {
   const [unread, archived, starred] = await Promise.all([
     db.ideas.where('status').equals('unread').count(),
@@ -8422,9 +8421,9 @@ async function updateBadges() {
   await _renderResearchStatus();
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  UTILITIES
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 function esc(str) {
   if (!str) return '';
   return String(str)
@@ -8494,9 +8493,9 @@ function relativeDate(iso) {
   return formatDate(iso.split('T')[0]);
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  CSV IMPORT / EXPORT
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 const CSV_COLS = ['title','type','responsible','priority','deadline','description','tags','status','parentId'];
 
 function toCSVRow(vals) {
@@ -8635,9 +8634,9 @@ async function previewImportCSV(file) {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  EXPORT DE PROYECTO COMO DOCUMENTO MARKDOWN
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function exportProjectAsMarkdown(projectId) {
   const [p, cols, ideas, snippets] = await Promise.all([
     db.projects.get(projectId),
@@ -8746,9 +8745,9 @@ async function exportProjectAsMarkdown(projectId) {
   showToast('Documento exportado ✓', 'success');
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  WELCOME MODAL — se muestra sólo la primera vez
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 function _showWelcomeModal() {
   const sections = [
     { icon:'◈', title:'Dashboard',        desc:'Vista general: estadísticas, actividad reciente y accesos rápidos a Focus Feed, revisión de ideas y elementos huérfanos.' },
@@ -8843,9 +8842,9 @@ function _showWelcomeModal() {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  GOOGLE DRIVE SYNC
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 const GoogleSync = (() => {
   const CLIENT_ID  = '257501914353-5m71aadp4u4qr8qfq9g6d2nc6upm5hod.apps.googleusercontent.com';
   const SCOPE = 'https://www.googleapis.com/auth/drive.appdata openid email';
@@ -8862,7 +8861,7 @@ const GoogleSync = (() => {
 
   let _userEmail = null;
 
-  // ── Obtener perfil del usuario via Gmail API ──────────────
+  // -- Obtener perfil del usuario via Gmail API --------------
   async function getUserProfile() {
     if (_userEmail) return _userEmail;
     const saved = await loadSetting('google_user_email');
@@ -8870,11 +8869,11 @@ const GoogleSync = (() => {
     return null;
   }
 
-  // ── Helpers: reutilizan la tabla `settings` de Dexie ──────
+  // -- Helpers: reutilizan la tabla `settings` de Dexie ------
   const saveSetting = (k, v) => db.settings.put({ key: k, value: v });
   const loadSetting = async k => { const r = await db.settings.get(k); return r?.value ?? null; };
 
-  // ── Estado visual del indicador en sidebar ────────────────
+  // -- Estado visual del indicador en sidebar ----------------
   function setStatus(state) {
     const dot  = document.getElementById('syncDot');
     const text = document.getElementById('saveIndicatorText');
@@ -8890,7 +8889,7 @@ const GoogleSync = (() => {
     if (text) text.textContent = label;
   }
 
-  // ── Inicializar: restaurar token guardado ─────────────────
+  // -- Inicializar: restaurar token guardado -----------------
   async function init() {
     const token  = await loadSetting('google_access_token');
     const expiry = await loadSetting('google_token_expiry');
@@ -8960,7 +8959,7 @@ const GoogleSync = (() => {
     renderGoogleSyncSection();
   }
 
-  // ── Drive API: wrapper con manejo de token expirado ───────
+  // -- Drive API: wrapper con manejo de token expirado -------
   async function driveRequest(url, options = {}) {
     const res = await fetch(url, {
       ...options,
@@ -8987,7 +8986,7 @@ const GoogleSync = (() => {
     return fileId;
   }
 
-  // ── Push: sube datos locales → Drive (reutiliza exportAllData) ──
+  // -- Push: sube datos locales → Drive (reutiliza exportAllData) --
   async function push({ silent = false } = {}) {
     if (!accessToken) { showToast('Conecta tu cuenta Google primero', 'error'); return; }
     setStatus('syncing');
@@ -9024,7 +9023,7 @@ const GoogleSync = (() => {
     }
   }
 
-  // ── Pull: descarga Drive → local (reutiliza importAllData / mergeAllData) ──
+  // -- Pull: descarga Drive → local (reutiliza importAllData / mergeAllData) --
   async function pull({ mode = 'merge' } = {}) {
     if (!accessToken) { showToast('Conecta tu cuenta Google primero', 'error'); return; }
     setStatus('syncing');
@@ -9051,7 +9050,7 @@ const GoogleSync = (() => {
     }
   }
 
-  // ── Auto-save tras cambios: dispara push 60 s después del último dbWrite ──
+  // -- Auto-save tras cambios: dispara push 60 s después del último dbWrite --
   let _autoSaveTimer = null;
 
   async function scheduleAutoSave() {
@@ -9075,9 +9074,9 @@ const GoogleSync = (() => {
   };
 })();
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  PROJECT CHIP PICKER — selector multi-proyecto con chips
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 function _attachProjectPicker(containerId, projects, initialIds = []) {
   const container = document.getElementById(containerId);
   if (!container) return;
@@ -9162,11 +9161,11 @@ function _projectPickerHTML(id, placeholder = 'Buscar y añadir proyecto…') {
   </div>`;
 }
 
-// ══════════════════════════════════════════════════════════════
-//  PERSON ID HELPERS — Feature 1
+// ==============================================================
+//  PERSON ID HELPERS
 //  Leen los IDs de colaborador almacenados como data-attrs
 //  en los inputs de persona tras selección desde autocomplete.
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 
 /** Devuelve el collaborator.id del responsable seleccionado, o null. */
 function _getPersonId(inputEl) {
@@ -9211,9 +9210,9 @@ async function _resolveCanonicalNames(inputEl) {
   }));
 }
 
-// ══════════════════════════════════════════════════════════════
-//  PERSON CHIP (Feature 16) — chip visual con link a Hub
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
+//  PERSON CHIP — chip visual con link a Hub
+// ==============================================================
 function _personChipHTML(name, collabId = null, { small = false } = {}) {
   if (!name) return '<span style="color:var(--text-3)">—</span>';
   const sz      = small ? '.62rem' : '.72rem';
@@ -9238,9 +9237,9 @@ function _personChipHTML(name, collabId = null, { small = false } = {}) {
   </span>`;
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  AUTOCOMPLETE DE COLABORADORES — reutilizable en todos los modales
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function _attachCollaboratorAutocomplete(inputEl, { multi = false } = {}) {
   if (!inputEl) return;
   const collabs = await db.collaborators.orderBy('name').toArray();
@@ -9293,14 +9292,14 @@ async function _attachCollaboratorAutocomplete(inputEl, { multi = false } = {}) 
             parts.pop();
           if (!parts.includes(c.name)) {
             parts.push(c.name);
-            _idMap.set(c.name, c.id); // ← Feature 1: guardar ID canónico
+            _idMap.set(c.name, c.id); // guardar ID canónico
           }
           inputEl.value = parts.join(', ');
           // Serializar mapa actualizado
           inputEl.dataset.collabIdMap = JSON.stringify([..._idMap.entries()]);
         } else {
           inputEl.value = c.name;
-          inputEl.dataset.selectedCollabId = String(c.id); // ← Feature 1
+          inputEl.dataset.selectedCollabId = String(c.id);
         }
         removePopup();
         inputEl.focus();
@@ -9345,9 +9344,9 @@ async function _attachCollaboratorAutocomplete(inputEl, { multi = false } = {}) 
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  INIT
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function init() {
   // Seed database defaults
   await seedDefaults();
@@ -9355,7 +9354,7 @@ async function init() {
   // Google Drive Sync — restaurar sesión si hay token guardado
   await GoogleSync.init();
 
-  // ── Iniciar deadline reminders ─────────────────────
+  // -- Iniciar deadline reminders ---------------------
   const notifEnabled = localStorage.getItem('ros-notif-enabled') === 'true';
   if (notifEnabled) {
     DeadlineReminder.requestPermission().then(ok => {
@@ -9425,7 +9424,7 @@ async function init() {
 
   _initPalette();
 
-  // ── Bienvenida en primer uso ────────────────────────────
+  // -- Bienvenida en primer uso ----------------------------
   if (!localStorage.getItem('ros-welcomed')) {
     _showWelcomeModal();
   }
@@ -9435,7 +9434,7 @@ async function init() {
   // Initial view
   navigate('dashboard');
 
-  // Feature 16: delegación global para person-chip → collaborator hub
+  // delegación global para person-chip → collaborator hub
   document.addEventListener('click', e => {
     const chip = e.target.closest('[data-collab-hub]');
     if (!chip) return;
@@ -9446,9 +9445,9 @@ async function init() {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  ÁREAS DE INVESTIGACIÓN  (almacenadas en settings como JSON)
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function _getAreas() {
   const s = await db.settings.get('ros-areas');
   return s ? (JSON.parse(s.value) || []) : [];
@@ -9457,10 +9456,10 @@ async function _saveAreas(areas) {
   await db.settings.put({ key: 'ros-areas', value: JSON.stringify(areas) });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  COLUMN PRESETS — vistas nombradas del Kanban
 //  Almacenadas en settings['ros-col-presets'] como JSON
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function _getColPresets() {
   const s = await db.settings.get('ros-col-presets');
   if (s?.value) return JSON.parse(s.value);
@@ -9604,9 +9603,9 @@ function showAreaModal(area = null) {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  ESTADO DE INVESTIGACIÓN — Barra compacta en el sidebar
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function _renderResearchStatus() {
   const el = $('researchStatus');
   if (!el) return;
@@ -9635,9 +9634,9 @@ async function _renderResearchStatus() {
     btn.addEventListener('click', () => navigate(btn.dataset.rsNav)));
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  SISTEMA DE ALERTAS — Panel dismissable
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function _evalAlerts() {
   const today = new Date(); today.setHours(0,0,0,0);
   const now   = Date.now();
@@ -9716,9 +9715,9 @@ async function _renderAlertPanel(container) {
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  ÍNDICE DE BÚSQUEDA EN MEMORIA
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function _buildSearchIndex() {
   const [projects, ideas, snippets] = await Promise.all([
     db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray()
@@ -9756,9 +9755,9 @@ async function _buildSearchIndex() {
   App._searchIdx = idx;
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  COMMAND PALETTE
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 let _paletteActiveIdx = -1;
 let _paletteResults   = [];
 
@@ -9783,7 +9782,7 @@ function _paletteSetActive(idx) {
   });
 }
 
-// ── Relevance scorer para búsqueda unificada ─────────────
+// -- Relevance scorer para búsqueda unificada -------------
 function _scoreMatch(lq, fields) {
   // fields: array de { text, weight }  → retorna 0-100
   let score = 0;
@@ -9827,7 +9826,7 @@ async function _searchPalette(q) {
   ].filter(n => !lq || n.label.toLowerCase().includes(lq));
   if (navItems.length) groups.push({ label: 'Vistas', items: navItems });
 
-  // ── Pre-filtro via índice en memoria (queries ≥ 2 chars) ──
+  // -- Pre-filtro via índice en memoria (queries ≥ 2 chars) --
   if (lq.length >= 2 && App._searchIdx.size > 0) {
     const hits = { project: new Set(), idea: new Set(), snippet: new Set(),
                    ref: new Set(), meeting: new Set() };
@@ -9842,7 +9841,7 @@ async function _searchPalette(q) {
     meets    = meets.filter(m    => hits.meeting.has(m.id));
   }
 
-  // ── Cuando hay query: búsqueda unificada rankeada ──────
+  // -- Cuando hay query: búsqueda unificada rankeada ------
   if (lq) {
     const allItems = [
       ...projects.map(p => ({
@@ -9961,9 +9960,9 @@ function _initPalette() {
   overlay.addEventListener('click', e => { if (e.target === overlay) closePalette(); });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 //  SUBTASKS (Ideas)
-// ══════════════════════════════════════════════════════════════
+// ==============================================================
 async function toggleSubtask(ideaId, taskId) {
   const idea = await db.ideas.get(ideaId);
   const subtasks = (idea.subtasks || []).map(t =>

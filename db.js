@@ -6,7 +6,7 @@
 
 const db = new Dexie('ResearchOS_v2');   // ← nombre nuevo = BD limpia para todos
 
-// Schema final consolidado
+// Schema consolidado
 db.version(1).stores({
   projects:           '++id, title, type, status, columnId, responsible, deadline, priority, createdAt, updatedAt, archived, starred, parentId',
   ideas:              '++id, title, content, status, projectId, starred, createdAt, updatedAt',
@@ -55,7 +55,7 @@ db.version(4).upgrade(async tx => {
   }
 });
 
-// ── Seed defaults on first run ───────────────────────────────
+// -- Seed defaults on first run -------------------------------
 async function seedDefaults() {
   const colCount = await db.kanbanColumns.count();
   if (colCount === 0) {
@@ -70,7 +70,7 @@ async function seedDefaults() {
   }
 }
 
-// ── Query helpers ────────────────────────────────────────────
+// -- Query helpers --------------------------------------------
 
 async function getKanbanData() {
   const [cols, projects] = await Promise.all([
@@ -165,7 +165,7 @@ async function snapshotProject(projectId) {
   await db.projects.update(projectId, { _history: history });
 }
 
-// ── snapshotIdea ────────────────────────────────────
+// -- snapshotIdea ------------------------------------
 async function snapshotIdea(ideaId) {
   const idea = await db.ideas.get(ideaId);
   if (!idea) return;
@@ -215,7 +215,7 @@ async function getActivityHeatmap() {
   return map;
 }
 
-// ── Full export / import ─────────────────────────────────────
+// -- Full export / import -------------------------------------
 
 // Claves de Google Drive/auth que son device-specific y no deben exportarse
 const _SETTINGS_EXCLUDE = new Set([
@@ -302,7 +302,7 @@ async function importAllData(jsonString) {
   );
 }
 
-// ── Importar en modo merge (sin borrar datos actuales) ──
+// -- Importar en modo merge (sin borrar datos actuales) --
 async function mergeAllData(jsonString) {
   const data = JSON.parse(jsonString);
   await db.transaction('rw',
@@ -346,13 +346,13 @@ async function mergeAllData(jsonString) {
   );
 }
 
-// ── Meetings helpers ─────────────────────────────────────────
+// -- Meetings helpers -----------------------------------------
 async function getMeetings(projectId = null) {
   if (projectId) return db.meetings.where('projectId').equals(projectId).toArray();
   return db.meetings.orderBy('date').reverse().toArray();
 }
 
-// ── References helpers ───────────────────────────────────────
+// -- References helpers ---------------------------------------
 async function getReferences(projectId = null) {
   if (projectId) return db.references.where('projectId').equals(projectId).toArray();
   return db.references.orderBy('year').reverse().toArray();
@@ -366,7 +366,7 @@ async function exportBibtex(projectId = null) {
   }).join('\n\n');
 }
 
-// ── Snippet Collections helpers ──────────────────────────────
+// -- Snippet Collections helpers ------------------------------
 async function getCollections() {
   return db.snippetCollections.orderBy('name').toArray();
 }
