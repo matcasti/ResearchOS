@@ -3598,3 +3598,101 @@ body.sidebar-collapsed .save-indicator { justify-content: center; }
 }
 .sidebar-collapse-btn:hover { color: var(--text-1); background: var(--bg-hover); }
 body.sidebar-collapsed .sidebar-collapse-btn { margin-top: 6px; }
+
+/* ══════════════════════════════════════════════════════════════
+   DAILY BRIEFING CARD
+══════════════════════════════════════════════════════════════ */
+.daily-briefing-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  margin-bottom: 24px;
+  overflow: hidden;
+  transition: border-color 160ms var(--ease), box-shadow 160ms var(--ease);
+}
+.daily-briefing-card:hover { border-color: var(--border-str); }
+.db-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 13px 18px; user-select: none; cursor: pointer;
+  transition: background 120ms var(--ease);
+}
+.db-header:hover { background: var(--bg-hover); }
+.db-greeting { display: flex; align-items: center; gap: 8px; font-size: .83rem; color: var(--text-2); flex-shrink: 0; }
+.db-icon { font-size: 1.1rem; line-height: 1; }
+.db-title em { font-style: normal; color: var(--text-1); font-weight: 500; }
+.db-chips { display: flex; gap: 5px; flex-wrap: wrap; flex: 1; }
+.db-chip {
+  font-size: .68rem; font-family: var(--font-mono);
+  padding: 2px 9px; border-radius: 99px;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.db-chip-red    { color:var(--red);    background:rgba(248,113,113,.10); border-color:rgba(248,113,113,.25); }
+.db-chip-amber  { color:var(--amber);  background:rgba(251,191,36,.10);  border-color:rgba(251,191,36,.25); }
+.db-chip-orange { color:var(--orange); background:rgba(251,146,60,.10);  border-color:rgba(251,146,60,.25); }
+.db-chip-purple { color:var(--purple); background:rgba(167,139,250,.10); border-color:rgba(167,139,250,.25); }
+.db-chip-green  { color:var(--green);  background:rgba(52,211,153,.10);  border-color:rgba(52,211,153,.25); }
+.db-toggle-btn {
+  background: none; border: none; color: var(--text-3);
+  font-size: .75rem; cursor: pointer; padding: 3px 7px;
+  border-radius: var(--radius-sm); transition: all 120ms;
+  flex-shrink: 0; font-family: var(--font-mono);
+}
+.db-toggle-btn:hover { color: var(--text-1); background: var(--bg-elevated); }
+.db-details { border-top: 1px solid var(--border); }
+.db-details-hidden { display: none; }
+.db-section-label {
+  font-family: var(--font-mono); font-size: .6rem;
+  text-transform: uppercase; letter-spacing: .09em;
+  color: var(--text-3); padding: 10px 18px 4px;
+}
+.db-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 18px; border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: background 100ms var(--ease); font-size: .8rem;
+}
+.db-row:last-child { border-bottom: none; }
+.db-row:hover { background: var(--bg-hover); }
+.db-row-text  { flex: 1; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-row-meta  { font-family: var(--font-mono); font-size: .65rem; color: var(--text-3); flex-shrink: 0; }
+.db-row-arrow { color: var(--text-3); font-size: .85rem; flex-shrink: 0; }
+
+/* ── Tabla inline editing ───────────────────────────────────── */
+.tbl-editable { transition: background 100ms var(--ease); }
+.tbl-editable:hover { background: var(--bg-hover) !important; cursor: pointer; }
+.tbl-editable:hover::after {
+  content: ' ✎'; font-size: .55rem;
+  color: var(--text-3); vertical-align: middle;
+}
+
+/* ── Pipeline stage buttons ─────────────────────────────────── */
+.pipeline-stage-btn {
+  background: none; border: none; cursor: pointer;
+  padding: 0; font-family: inherit; text-align: center;
+  transition: transform 140ms var(--ease), filter 140ms;
+  border-radius: var(--radius-sm);
+}
+.pipeline-stage-btn:hover { transform: translateY(-2px); filter: brightness(1.18); }
+.pipeline-stage-btn:hover .pipeline-stage-inner {
+  border-color: var(--accent) !important;
+  background: var(--accent-d) !important;
+}
+.pipeline-stage-inner {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 6px 10px; border-radius: var(--radius-sm); min-width: 72px;
+  border: 1px solid transparent;
+  transition: background 130ms var(--ease), border-color 130ms var(--ease);
+}
+
+/* ── Timeline workload bar ──────────────────────────────────── */
+.tl-workload-track {
+  position: relative; height: 22px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.tl-workload-segment {
+  position: absolute; height: 100%;
+  transition: opacity 150ms;
+}
+.tl-workload-segment:hover { opacity: 1 !important; filter: brightness(1.25); cursor: help; }

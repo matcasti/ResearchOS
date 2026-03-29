@@ -346,79 +346,123 @@ async function renderView(view) {
   }
 }
 
-async function _renderEstadoDia() {
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-
+async function _renderDailyBriefing() {
+  const today   = new Date(); today.setHours(0,0,0,0);
   const [projects, unreadIdeas, meetings] = await Promise.all([
     db.projects.filter(p => !p.archived).toArray(),
     db.ideas.where('status').equals('unread').toArray(),
     db.meetings.toArray(),
   ]);
 
-  const overdue  = projects.filter(p =>
-    p.deadline && new Date(p.deadline + 'T00:00:00') < today);
-  const thisWeek = projects.filter(p => {
-    if (!p.deadline) return false;
-    const d = Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000);
-    return d >= 0 && d <= 7;
-  });
-  const pendingAIs = meetings.reduce((acc, m) =>
-    acc + (m.actionItems || []).filter(a => !a.done).length, 0);
-  const activeSubs = projects.filter(p =>
-    p.type === 'Paper' &&
-    ['enviado', 'en_revision', 'revision_solicitada'].includes(p.submissionStatus));
-  const unreadCount = unreadIdeas.length;
+  const overdue  = projects
+    .filter(p => p.deadline && new Date(p.deadline + 'T00:00:00') < today)
+    .sort((a,b) => a.deadline.localeCompare(b.deadline));
 
-  const hour     = new Date().getHours();
-  const greeting = hour < 12 ? 'Buenos días' : hour < 19 ? 'Buenas tardes' : 'Buenas noches';
-  const dayLabel = new Date().toLocaleDateString('es-CL', { weekday: 'long' });
+  const thisWeek = projects
+    .filter(p => {
+      if (!p.deadline) return false;
+      const d = Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000);
+      return d >= 0 && d <= 7;
+    })
+    .sort((a,b) => a.deadline.localeCompare(b.deadline));
 
-  if (!overdue.length && !thisWeek.length && !unreadCount && !pendingAIs && !activeSubs.length) {
-    return `
-      <div class="estado-dia-card">
-        <span class="estado-dia-icon" style="color:var(--green)">✓</span>
-        <div class="estado-dia-body">
-          <div class="estado-dia-title">Estado del día · ${dayLabel}</div>
-          <span class="estado-dia-allclear">${greeting}. Todo al día — sin deadlines urgentes, ideas pendientes ni acciones sin completar. Buen momento para capturar ideas nuevas.</span>
-        </div>
-      </div>`;
-  }
+  const pendingAIs = meetings.flatMap(m =>
+    (m.actionItems||[]).filter(a => !a.done)
+      .map(a => ({ ...a, meetingTitle: m.title, meetingId: m.id }))
+  );
+
+  const hour      = new Date().getHours();
+  const greeting  = hour < 12 ? 'Buenos días' : hour < 19 ? 'Buenas tardes' : 'Buenas noches';
+  const dayLabel  = new Date().toLocaleDateString('es-CL', { weekday: 'long' });
+  const icon      = hour < 12 ? '🌤' : hour < 19 ? '☀' : '🌙';
+  const allClear  = !overdue.length && !thisWeek.length && !pendingAIs.length && !unreadIdeas.length;
+  const isExpanded = localStorage.getItem('ros-briefing-expanded') !== 'false';
 
   const chips = [];
   if (overdue.length)
-    chips.push(`<span class="estado-dia-chip" data-estadodia-nav="focus"
-      style="color:var(--red);background:rgba(248,113,113,.1);border-color:rgba(248,113,113,.28)">
-      ⚠ ${overdue.length} vencido${overdue.length > 1 ? 's' : ''}</span>`);
+    chips.push(`<span class="db-chip db-chip-red">🔴 ${overdue.length} vencido${overdue.length>1?'s':''}</span>`);
   if (thisWeek.length)
-    chips.push(`<span class="estado-dia-chip" data-estadodia-nav="timeline"
-      style="color:var(--amber);background:rgba(251,191,36,.1);border-color:rgba(251,191,36,.28)">
-      ⏱ ${thisWeek.length} deadline${thisWeek.length > 1 ? 's' : ''} esta semana</span>`);
-  if (unreadCount)
-    chips.push(`<span class="estado-dia-chip" data-estadodia-nav="ideas"
-      style="color:var(--purple);background:rgba(167,139,250,.1);border-color:rgba(167,139,250,.28)">
-      ◎ ${unreadCount} idea${unreadCount > 1 ? 's' : ''} sin revisar</span>`);
-  if (pendingAIs)
-    chips.push(`<span class="estado-dia-chip" data-estadodia-nav="meetings"
-      style="color:var(--orange);background:rgba(251,146,60,.1);border-color:rgba(251,146,60,.28)">
-      ⚑ ${pendingAIs} acción${pendingAIs > 1 ? 'es pendientes' : ' pendiente'}</span>`);
-  if (activeSubs.length)
-    chips.push(`<span class="estado-dia-chip" data-estadodia-nav="submissions"
-      style="color:var(--accent);background:var(--accent-d);border-color:rgba(56,189,248,.28)">
-      📤 ${activeSubs.length} paper${activeSubs.length > 1 ? 's' : ''} en pipeline</span>`);
+    chips.push(`<span class="db-chip db-chip-amber">⏱ ${thisWeek.length} deadline${thisWeek.length>1?'s':''} esta semana</span>`);
+  if (pendingAIs.length)
+    chips.push(`<span class="db-chip db-chip-orange">⚑ ${pendingAIs.length} acción${pendingAIs.length>1?'es':''} pendiente${pendingAIs.length>1?'s':''}</span>`);
+  if (unreadIdeas.length)
+    chips.push(`<span class="db-chip db-chip-purple">◎ ${unreadIdeas.length} idea${unreadIdeas.length>1?'s':''} sin revisar</span>`);
 
-  const nearest     = [...thisWeek].sort((a, b) => a.deadline.localeCompare(b.deadline))[0];
-  const nearestNote = nearest
-    ? ` — próximo: <em style="color:var(--text-1)">${esc(nearest.title.slice(0, 35))}</em> en ${Math.ceil((new Date(nearest.deadline + 'T00:00:00') - today) / 86400000)}d`
-    : '';
+  const allDeadlines = [
+    ...overdue.map(p  => ({ ...p, _overdue: true })),
+    ...thisWeek
+  ];
 
   return `
-    <div class="estado-dia-card">
-      <span class="estado-dia-icon">☀</span>
-      <div class="estado-dia-body">
-        <div class="estado-dia-title">Estado del día · ${dayLabel}</div>
-        <div class="estado-dia-text">
-          ${greeting}. Hoy tienes: ${chips.join(' ')}${nearestNote}.
+    <div class="daily-briefing-card" id="dailyBriefing">
+      <div class="db-header" id="dbToggleHeader">
+        <span class="db-greeting">
+          <span class="db-icon">${icon}</span>
+          <span class="db-title">${esc(greeting)} · <em>${esc(dayLabel)}</em></span>
+        </span>
+        <div class="db-chips">
+          ${allClear
+            ? `<span class="db-chip db-chip-green">✓ Todo al día</span>`
+            : chips.join('')}
         </div>
+        <button class="db-toggle-btn" id="dbToggleBtn">${isExpanded ? '▴' : '▾'}</button>
+      </div>
+
+      <div class="db-details ${isExpanded ? '' : 'db-details-hidden'}" id="dbDetails">
+
+        ${allDeadlines.length ? `
+          <div class="db-section-label">📅 Deadlines${overdue.length ? ` · <span style="color:var(--red)">${overdue.length} vencido${overdue.length>1?'s':''}</span>` : ''}</div>
+          ${allDeadlines.slice(0, 6).map(p => {
+            const days  = Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000);
+            const color = p._overdue ? 'var(--red)' : days === 0 ? 'var(--amber)' : days <= 3 ? 'var(--orange)' : 'var(--text-2)';
+            const label = p._overdue
+              ? `Vencido hace ${Math.abs(days)}d`
+              : days === 0 ? '¡Hoy!'
+              : days === 1 ? 'Mañana'
+              : `en ${days}d`;
+            return `<div class="db-row" data-db-inspect-project="${p.id}">
+              <span style="width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;display:inline-block;margin-top:1px"></span>
+              <span class="db-row-text">${esc(p.title)}</span>
+              <span class="badge ${typeBadgeClass(p.type)}" style="font-size:.58rem;flex-shrink:0">${esc(p.type)}</span>
+              <span class="db-row-meta" style="color:${color}">${label}</span>
+              <span class="db-row-arrow">›</span>
+            </div>`;
+          }).join('')}
+        ` : ''}
+
+        ${pendingAIs.length ? `
+          <div class="db-section-label">⚑ Acciones pendientes de reuniones</div>
+          ${pendingAIs.slice(0, 5).map(ai => `
+            <div class="db-row" data-db-inspect-meeting="${ai.meetingId}">
+              <span style="color:var(--amber);flex-shrink:0">⚑</span>
+              <span class="db-row-text">${esc(ai.text)}</span>
+              <span class="db-row-meta">${esc(ai.meetingTitle.slice(0, 24))}</span>
+              <span class="db-row-arrow">›</span>
+            </div>`).join('')}
+        ` : ''}
+
+        ${unreadIdeas.length ? `
+          <div class="db-section-label">◎ Ideas sin revisar</div>
+          ${unreadIdeas.slice(0, 3).map(i => `
+            <div class="db-row" data-db-inspect-idea="${i.id}">
+              <span style="color:var(--purple);flex-shrink:0">◎</span>
+              <span class="db-row-text">${esc(i.title)}</span>
+              <span class="db-row-meta">${relativeDate(i.createdAt)}</span>
+              <span class="db-row-arrow">›</span>
+            </div>`).join('')}
+          ${unreadIdeas.length > 3 ? `
+            <div class="db-row" data-db-triage style="color:var(--accent)">
+              <span style="flex-shrink:0">◎</span>
+              <span class="db-row-text">Revisar ${unreadIdeas.length} ideas en modo rápido</span>
+              <span class="db-row-arrow">›</span>
+            </div>` : ''}
+        ` : ''}
+
+        ${allClear ? `
+          <div style="padding:16px 18px;text-align:center;color:var(--green);font-size:.82rem;font-family:var(--font-mono)">
+            ✓ Sin pendientes — buen momento para capturar ideas nuevas
+          </div>` : ''}
+
       </div>
     </div>`;
 }
@@ -428,11 +472,11 @@ async function _renderEstadoDia() {
 // ==============================================================
 async function renderDashboard() {
   const today = new Date(); today.setHours(0,0,0,0);
-  const [statsResult, cols, allProjects, estadoDiaHTML] = await Promise.all([
+  const [statsResult, cols, allProjects, briefingHTML] = await Promise.all([
     getDashboardStats(),
     db.kanbanColumns.orderBy('order').toArray(),
     db.projects.toArray(),
-    _renderEstadoDia()
+    _renderDailyBriefing()
   ]);
   const { projects, ideas, snippets, ideaUnread, recentProjects } = statsResult;
   const colMap = Object.fromEntries(cols.map(c => [c.id, c]));
@@ -470,7 +514,7 @@ async function renderDashboard() {
         <button class="btn btn-primary" id="dashAddProject">+ Nuevo Proyecto</button>
       </div>
 
-      ${estadoDiaHTML}
+      ${briefingHTML}
 
       <div class="stats-grid-v2">
         <div class="stat-card-v2">
@@ -636,9 +680,24 @@ async function renderDashboard() {
   $('qGoTriage')?.addEventListener('click',  () => navigate('triage'));
   $('qGoOrphans')?.addEventListener('click', () => navigate('orphans'));
   $('qGoFS').addEventListener('click', () => navigate('filesystem'));
-  mainContent.querySelectorAll('[data-estadodia-nav]').forEach(el => {
-    el.addEventListener('click', () => navigate(el.dataset.estadodiaNav));
+  // Daily Briefing — toggle expandir/colapsar
+  $('dbToggleHeader')?.addEventListener('click', () => {
+    const details = $('dbDetails');
+    const btn     = $('dbToggleBtn');
+    if (!details || !btn) return;
+    const nowHidden = details.classList.toggle('db-details-hidden');
+    btn.textContent = nowHidden ? '▾' : '▴';
+    localStorage.setItem('ros-briefing-expanded', String(!nowHidden));
   });
+  // Daily Briefing — navegación por filas
+  mainContent.querySelectorAll('[data-db-inspect-project]').forEach(el =>
+    el.addEventListener('click', () => inspectProject(+el.dataset.dbInspectProject)));
+  mainContent.querySelectorAll('[data-db-inspect-meeting]').forEach(el =>
+    el.addEventListener('click', () => inspectMeeting(+el.dataset.dbInspectMeeting)));
+  mainContent.querySelectorAll('[data-db-inspect-idea]').forEach(el =>
+    el.addEventListener('click', () => inspectIdea(+el.dataset.dbInspectIdea)));
+  mainContent.querySelectorAll('[data-db-triage]').forEach(el =>
+    el.addEventListener('click', () => { App.triageIdx = 0; navigate('triage'); }));
   mainContent.querySelectorAll('[data-inspect-project]').forEach(el => {
     el.addEventListener('click',      () => inspectProject(+el.dataset.inspectProject));
     el.addEventListener('mouseenter', () => HoverCard.show(+el.dataset.inspectProject, el));
@@ -1595,6 +1654,80 @@ function _currentSavedView(v) {
          App.filters.column === (v.column||'all');
 }
 
+// ── Inline editing para la vista tabla de Proyectos ─────────
+function _attachTableInlineEditing(tableEl) {
+  tableEl.querySelectorAll('.tbl-editable').forEach(cell => {
+    cell.addEventListener('click', async e => {
+      e.stopPropagation();
+      if (cell.querySelector('input, select')) return; // ya editando
+
+      const projId   = +cell.dataset.projId;
+      const cellType = cell.dataset.cellType;
+      const curVal   = cell.dataset.cellVal || '';
+      const orig     = cell.innerHTML;
+      let input;
+
+      if (cellType === 'priority') {
+        input = document.createElement('select');
+        input.style.cssText =
+          'font-size:.75rem;padding:3px 5px;background:var(--bg-elevated);' +
+          'border:1px solid var(--accent);border-radius:var(--radius-sm);' +
+          'color:var(--text-1);width:92px';
+        ['Alta','Media','Baja'].forEach(v => {
+          const o = document.createElement('option');
+          o.value = v; o.textContent = v;
+          if (v === curVal) o.selected = true;
+          input.appendChild(o);
+        });
+      } else if (cellType === 'deadline') {
+        input = document.createElement('input');
+        input.type  = 'date';
+        input.value = curVal;
+        input.style.cssText =
+          'font-size:.72rem;padding:3px 5px;background:var(--bg-elevated);' +
+          'border:1px solid var(--accent);border-radius:var(--radius-sm);' +
+          'color:var(--text-1);font-family:var(--font-mono);width:145px';
+      } else {
+        input = document.createElement('input');
+        input.type  = 'text';
+        input.value = curVal;
+        input.style.cssText =
+          'font-size:.75rem;padding:3px 5px;background:var(--bg-elevated);' +
+          'border:1px solid var(--accent);border-radius:var(--radius-sm);' +
+          'color:var(--text-1);width:128px';
+        setTimeout(() => _attachCollaboratorAutocomplete(input), 30);
+      }
+
+      cell.innerHTML = '';
+      cell.appendChild(input);
+      input.focus();
+      if (input.select && cellType !== 'deadline') input.select();
+
+      const commit = async () => {
+        const nv = input.value.trim();
+        // Para deadline: siempre guardar (puede ser vacío = borrar)
+        if (cellType !== 'deadline' && nv === curVal) { cell.innerHTML = orig; return; }
+        const upd = { updatedAt: new Date().toISOString() };
+        if (cellType === 'priority')    upd.priority      = nv || null;
+        if (cellType === 'deadline')    upd.deadline      = nv || null;
+        if (cellType === 'responsible') {
+          upd.responsible   = nv;
+          upd.responsibleId = _getPersonId(input) || null;
+        }
+        await dbWrite(() => db.projects.update(projId, upd));
+        showToast('Actualizado ✓', 'success');
+        renderView('projects');
+      };
+
+      input.addEventListener('blur',    commit);
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+        if (e.key === 'Escape') { e.stopPropagation(); cell.innerHTML = orig; }
+      });
+    });
+  });
+}
+
 // ==============================================================
 //  VIEW: PROJECTS
 // ==============================================================
@@ -1723,8 +1856,16 @@ async function renderProjects() {
     </div>`);
 
   $('projAddBtn').addEventListener('click', showAddProjectModal);
-  $('viewModeGrid')?.addEventListener('click', () => { App.projViewMode = 'grid'; renderView('projects'); });
-  $('viewModeList')?.addEventListener('click', () => { App.projViewMode = 'list'; renderView('projects'); });
+  $('viewModeGrid')?.addEventListener('click', () => {
+    App.projViewMode = 'grid';
+    localStorage.setItem('ros-proj-view-mode', 'grid');
+    renderView('projects');
+  });
+  $('viewModeList')?.addEventListener('click', () => {
+    App.projViewMode = 'list';
+    localStorage.setItem('ros-proj-view-mode', 'list');
+    renderView('projects');
+  });
   $('saveViewBtn')?.addEventListener('click', () => {
     const name = prompt('Nombre para esta vista (p.ej. "Papers Alta Prioridad"):');
     if (!name?.trim()) return;
@@ -1903,7 +2044,13 @@ async function renderProjects() {
               ${zombie ? `<span class="zombie-badge" style="vertical-align:middle;margin-left:4px">zombie</span>` : ''}
             </td>
             <td class="ptd"><span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span></td>
-            <td class="ptd"><span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority||'—')}</span></td>
+            <td class="ptd tbl-editable"
+                data-cell-type="priority"
+                data-proj-id="${p.id}"
+                data-cell-val="${esc(p.priority||'')}"
+                title="Clic para editar prioridad">
+              <span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority||'—')}</span>
+            </td>
             <td class="ptd" style="color:var(--text-2);font-size:.74rem">
               ${(() => {
                 if (p.type === 'Paper' && activeSubForTable[p.id]) {
@@ -1919,11 +2066,21 @@ async function renderProjects() {
                 return esc(col?.title || '—');
               })()}
             </td>
-            <td class="ptd" style="color:var(--text-2);font-size:.74rem">${esc(p.responsible||'—')}</td>
+            <td class="ptd tbl-editable"
+                data-cell-type="responsible"
+                data-proj-id="${p.id}"
+                data-cell-val="${esc(p.responsible||'')}"
+                title="Clic para editar responsable"
+                style="color:var(--text-2);font-size:.74rem">${esc(p.responsible||'—')}</td>
             ${area
               ? `<td class="ptd"><span class="area-chip" style="border-color:${area.color};color:${area.color}">⊡ ${esc(area.name)}</span></td>`
               : `<td class="ptd" style="color:var(--text-3);font-size:.72rem">—</td>`}
-            <td class="ptd" style="color:${dlColor};font-family:var(--font-mono);font-size:.72rem">
+            <td class="ptd tbl-editable"
+                data-cell-type="deadline"
+                data-proj-id="${p.id}"
+                data-cell-val="${p.deadline||''}"
+                title="Clic para editar deadline"
+                style="color:${dlColor};font-family:var(--font-mono);font-size:.72rem">
               ${p.deadline ? formatDate(p.deadline) : '—'}
               ${daysLeft !== null ? `<span style="font-size:.62rem">(${daysLeft < 0 ? 'vencido' : daysLeft+'d'})</span>` : ''}
             </td>
@@ -1967,6 +2124,8 @@ async function renderProjects() {
           renderView('projects');
         });
       });
+
+      _attachTableInlineEditing(container);
     } else if (App.groupBy === 'none') {
       const cards = await Promise.all(visible.map(renderCard));
       container.className = 'projects-grid';
@@ -3307,6 +3466,75 @@ async function renderTimeline() {
 
     const legendEntries = colorMode === 'priority' ? PRIO_COLORS : TYPE_COLORS;
 
+    // -- Cálculo de carga de trabajo por período ----------------------
+    const workloadPeriods = [];
+    if (zoomLevel === 'year') {
+      // Buckets mensuales — alinean con los tick labels
+      let _wCur = new Date(start.getFullYear(), start.getMonth(), 1);
+      while (_wCur <= end) {
+        const _wEnd = new Date(_wCur.getFullYear(), _wCur.getMonth() + 1, 1);
+        const count = allWithDL.filter(p => {
+          const d = new Date(p.deadline + 'T12:00:00');
+          return d >= _wCur && d < _wEnd && (showOverdue || d >= today);
+        }).length;
+        const xStart = Math.max(0, (_wCur - start) / totalMs * 100);
+        const xEnd   = Math.min(100, (_wEnd - start) / totalMs * 100);
+        if (xEnd > 0 && xStart < 100)
+          workloadPeriods.push({
+            x: xStart.toFixed(2), w: (xEnd - xStart).toFixed(2), count,
+            label: _wCur.toLocaleDateString('es-CL', { month: 'short', year: '2-digit' })
+          });
+        _wCur = new Date(_wCur.getFullYear(), _wCur.getMonth() + 1, 1);
+      }
+    } else {
+      const PERIOD_MS = zoomLevel === 'week' ? 86400000 : 7 * 86400000;
+      let _wCur = new Date(start);
+      while (_wCur < end) {
+        const _wEnd = new Date(Math.min(_wCur.getTime() + PERIOD_MS, end.getTime()));
+        const count = allWithDL.filter(p => {
+          const d = new Date(p.deadline + 'T12:00:00');
+          return d >= _wCur && d < _wEnd && (showOverdue || d >= today);
+        }).length;
+        workloadPeriods.push({
+          x: ((_wCur - start) / totalMs * 100).toFixed(2),
+          w: ((_wEnd  - _wCur) / totalMs * 100).toFixed(2),
+          count,
+          label: _wCur.toLocaleDateString('es-CL', { day: 'numeric', month: 'short' })
+        });
+        _wCur = new Date(_wCur.getTime() + PERIOD_MS);
+      }
+    }
+
+    const _maxLoad     = Math.max(...workloadPeriods.map(d => d.count), 1);
+    const _hasOverload = workloadPeriods.some(d => d.count >= 4);
+
+    const workloadHTML = workloadPeriods.some(d => d.count > 0) ? `
+      <div style="display:grid;grid-template-columns:220px 1fr;align-items:center;gap:0;margin-bottom:10px">
+        <div style="font-family:var(--font-mono);font-size:.6rem;text-transform:uppercase;
+                    letter-spacing:.08em;color:var(--text-3);padding-right:12px">
+          Carga · deadlines/período
+        </div>
+        <div class="tl-workload-track">
+          ${workloadPeriods.filter(d => d.count > 0).map(d => {
+            const pct   = d.count / _maxLoad;
+            const color = pct > 0.65 ? 'var(--red)' : pct > 0.33 ? 'var(--amber)' : 'var(--green)';
+            return `<div class="tl-workload-segment"
+                         style="left:${d.x}%;width:${d.w}%;background:${color};
+                                opacity:${(0.25 + pct * 0.65).toFixed(2)}"
+                         title="${d.label}: ${d.count} deadline${d.count > 1 ? 's' : ''}"></div>`;
+          }).join('')}
+          <div style="position:absolute;left:${todayX};top:0;bottom:0;width:1px;
+                      background:var(--accent);opacity:.7;z-index:2;pointer-events:none"></div>
+        </div>
+      </div>
+      ${_hasOverload ? `
+        <div style="display:grid;grid-template-columns:220px 1fr">
+          <div></div>
+          <div style="font-family:var(--font-mono);font-size:.62rem;color:var(--red);margin-bottom:8px">
+            ⚠ Período con alta carga detectado — máx. ${_maxLoad} deadline${_maxLoad > 1 ? 's' : ''} en un período
+          </div>
+        </div>` : ''}` : '';
+
     container.innerHTML = !allVisibleRoots.length ? `
       <div class="timeline-empty">
         Sin elementos con fechas en esta ventana.
@@ -3323,6 +3551,7 @@ async function renderTimeline() {
         <span class="timeline-legend-item"><span class="tl-dot" style="background:var(--purple)"></span>◎ Idea</span>
         <span class="timeline-legend-item"><span class="tl-dot" style="background:var(--teal)"></span>🗓 Reunión</span>
       </div>
+      ${workloadHTML}
       <div class="timeline-wrapper">
         <div class="timeline-grid">
           <div class="timeline-header-row">
@@ -4875,13 +5104,13 @@ function _paperPipelineHTML(p, cols) {
   const submissionStatus = p.submissionStatus || null;
 
   const STAGES = [
-    { key: 'draft',     label: 'Escritura',    icon: '✍',  match: s => !s,                         colKeywords: ['ideac','escritur','análisis','limpieza'] },
-    { key: 'internal',  label: 'Rev. interna', icon: '🔍', match: s => s === 'preparacion',          colKeywords: ['peer','review','revisión'] },
-    { key: 'submitted', label: 'Enviado',       icon: '📤', match: s => s === 'enviado',              colKeywords: [] },
-    { key: 'review',    label: 'En revisión',  icon: '⏳', match: s => s === 'en_revision',          colKeywords: [] },
-    { key: 'revision',  label: 'Rev. solicit.',icon: '✏',  match: s => s === 'revision_solicitada',  colKeywords: [] },
-    { key: 'accepted',  label: 'Aceptado ✓',  icon: '✅', match: s => s === 'aceptado',             colKeywords: ['completado','publicado'] },
-    { key: 'rejected',  label: 'Rechazado',    icon: '❌', match: s => s === 'rechazado',            colKeywords: [] },
+    { key: 'draft',     statusKey: null,                 label: 'Escritura',    icon: '✍',  match: s => !s,                        colKeywords: ['ideac','escritur','análisis','limpieza'] },
+    { key: 'internal',  statusKey: 'preparacion',         label: 'Rev. interna', icon: '🔍', match: s => s === 'preparacion',         colKeywords: ['peer','review','revisión'] },
+    { key: 'submitted', statusKey: 'enviado',             label: 'Enviado',      icon: '📤', match: s => s === 'enviado',             colKeywords: [] },
+    { key: 'review',    statusKey: 'en_revision',         label: 'En revisión',  icon: '⏳', match: s => s === 'en_revision',         colKeywords: [] },
+    { key: 'revision',  statusKey: 'revision_solicitada', label: 'Rev. solicit.',icon: '✏',  match: s => s === 'revision_solicitada', colKeywords: [] },
+    { key: 'accepted',  statusKey: 'aceptado',            label: 'Aceptado ✓',  icon: '✅', match: s => s === 'aceptado',            colKeywords: ['completado','publicado'] },
+    { key: 'rejected',  statusKey: 'rechazado',           label: 'Rechazado',    icon: '❌', match: s => s === 'rechazado',           colKeywords: [] },
   ];
 
   let activeIdx = 0;
@@ -4918,20 +5147,52 @@ function _paperPipelineHTML(p, cols) {
             : isPast ? 'var(--text-2)' : 'var(--text-3)';
           return `
             <div style="display:flex;align-items:center;gap:2px">
-              <div style="display:flex;flex-direction:column;align-items:center;gap:3px;
-                          padding:6px 10px;border-radius:var(--radius-sm);
-                          background:${isActive ? 'var(--accent-d)' : 'transparent'};
-                          border:1px solid ${isActive ? 'var(--accent)' : 'transparent'};
-                          min-width:72px">
-                <span style="font-size:.9rem;line-height:1;opacity:${isFuture ? '.35' : '1'}">${st.icon}</span>
-                <span style="font-size:.62rem;font-family:var(--font-mono);color:${color};
-                             white-space:nowrap;font-weight:${isActive ? '600' : '400'}">${st.label}</span>
-              </div>
+              <button class="pipeline-stage-btn"
+                      data-pipeline-proj="${p.id}"
+                      data-pipeline-status="${st.statusKey || ''}"
+                      title="${isActive ? 'Estado actual' : 'Mover a: ' + st.label}">
+                <div class="pipeline-stage-inner"
+                     style="background:${isActive ? 'var(--accent-d)' : 'transparent'};
+                            border-color:${isActive ? 'var(--accent)' : 'transparent'}">
+                  <span style="font-size:.9rem;line-height:1;opacity:${isFuture ? '.35' : '1'}">${st.icon}</span>
+                  <span style="font-size:.62rem;font-family:var(--font-mono);color:${color};
+                               white-space:nowrap;font-weight:${isActive ? '600' : '400'}">${st.label}</span>
+                </div>
+              </button>
               ${i < STAGES.length - 1 ? `<span style="color:var(--text-3);font-size:.7rem;flex-shrink:0;opacity:${i < activeIdx ? '1' : '.3'}">→</span>` : ''}
             </div>`;
         }).join('')}
       </div>
     </div>`;
+}
+
+async function _updatePipelineStage(projectId, newStatus) {
+  const p = await db.projects.get(projectId);
+  if (!p || p.type !== 'Paper') return;
+
+  const current = p.submissionStatus || null;
+  if (current === (newStatus || null)) return; // sin cambio
+
+  const now = new Date().toISOString();
+  const upd = { submissionStatus: newStatus || null, updatedAt: now };
+
+  // Auto-registrar fecha de envío al marcar como "enviado"
+  if (newStatus === 'enviado' && !p.submittedAt)
+    upd.submittedAt = now.split('T')[0];
+
+  await dbWrite(() => db.projects.update(projectId, upd));
+
+  if (newStatus) await _syncPaperColumn(projectId, newStatus);
+
+  const label = newStatus
+    ? (SUB_STATUSES.find(s => s.key === newStatus)?.label || newStatus)
+    : 'En preparación';
+  showToast(`Pipeline → ${label}`, 'success');
+
+  if (App.view === 'project-hub')  renderProjectHub();
+  if (App.view === 'submissions')  renderSubmissions();
+  if (App.inspectedType === 'project' && App.inspectedId === projectId)
+    setTimeout(() => inspectProject(projectId), 200);
 }
 
 // ==============================================================
@@ -5219,6 +5480,15 @@ async function renderProjectHub() {
       const hidden = body.style.display === 'none';
       body.style.display = hidden ? '' : 'none';
       if (chev) chev.textContent = hidden ? '▾' : '▸';
+    });
+  });
+
+  mainContent.querySelectorAll('.pipeline-stage-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const projId = +btn.dataset.pipelineProj;
+      const status = btn.dataset.pipelineStatus || null;
+      _updatePipelineStage(projId, status);
     });
   });
 
@@ -9767,7 +10037,7 @@ async function _checkSessionResume() {
   }
 
   const gapMs = Date.now() - Number(lastActive);
-  if (gapMs < 4 * 60 * 60 * 1000) return;   // < 4 horas → no mostrar
+  if (gapMs < 24 * 60 * 60 * 1000) return;  // < 24h → el Daily Briefing cubre el resumen diario
 
   const [projects, ideas, snippets, meetings] = await Promise.all([
     db.projects.orderBy('updatedAt').reverse().limit(10).toArray(),
@@ -9896,6 +10166,7 @@ async function init() {
   // Persistir preferencias del Kanban
   App.kanbanDensity  = localStorage.getItem('ros-kanban-density')  || 'detailed';
   App.kanbanGroupBy  = localStorage.getItem('ros-kanban-groupby')  || 'none';
+  App.projViewMode   = localStorage.getItem('ros-proj-view-mode')  || 'grid';
 
   // Theme persistence
   const savedTheme = localStorage.getItem('ros-theme') || 'dark';
