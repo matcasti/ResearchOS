@@ -5132,6 +5132,10 @@ async function renderProjectHub() {
             placeholder="Detalles, URL, referencia…"></textarea>
         </div>
         <div class="form-group">
+          <label class="form-label">Deadline (opcional)</label>
+          <input type="date" class="form-input" id="qi-deadline">
+        </div>
+        <div class="form-group">
           <label class="form-label">Etiquetas (separadas por coma)</label>
           <input class="form-input" id="qi-tags" placeholder="R, stats, review">
         </div>
@@ -5151,6 +5155,7 @@ async function renderProjectHub() {
         status:     'unread',
         projectId:  p.id,
         projectIds: [p.id],
+        deadline:   $('qi-deadline')?.value || null,
         tags:       $('qi-tags').value.split(',').map(s => s.trim()).filter(Boolean),
         subtasks:   [],
         createdAt:  now, updatedAt: now
@@ -7794,6 +7799,10 @@ async function inspectProject(id) {
                 <label class="form-label">Contenido / URL / Nota</label>
                 <textarea class="form-textarea" id="qi-content" placeholder="Detalles…"></textarea>
               </div>
+              <div class="form-group">
+                <label class="form-label">Deadline (opcional)</label>
+                <input type="date" class="form-input" id="qi-deadline">
+              </div>
             </div>
             <div class="modal-footer">
               <button class="btn btn-ghost" id="qiCancel">Cancelar</button>
@@ -7808,7 +7817,10 @@ async function inspectProject(id) {
             const now = new Date().toISOString();
             await dbWrite(() => db.ideas.add({
               title, content: $('qi-content').value.trim(),
-              status: 'unread', projectId: p.id, projectIds: [p.id],
+              status:    'unread',
+              projectId: p.id,
+              projectIds:[p.id],
+              deadline:  $('qi-deadline')?.value || null,
               tags: [], subtasks: [], createdAt: now, updatedAt: now
             }));
             closeModal(); showToast('Idea añadida ✓', 'success');
@@ -8076,6 +8088,44 @@ async function showEditSnippetModal(s) {
   });
 }
 
+function _epSubFieldsHTML(p) {
+  return `
+    <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+      <div style="font-family:var(--font-mono);font-size:.6rem;text-transform:uppercase;
+                  letter-spacing:.1em;color:var(--text-3);margin-bottom:8px">
+        Submission (Paper)
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="form-group" style="grid-column:1/-1">
+          <label class="form-label">Estado de Submission</label>
+          <select class="form-select" id="ep-sub-status">
+            ${SUB_STATUSES.map(s =>
+              `<option value="${s.key}" ${(p.submissionStatus||'preparacion')===s.key?'selected':''}>
+                ${s.label}
+              </option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group" style="grid-column:1/-1">
+          <label class="form-label">Venue / Journal / Fondo objetivo</label>
+          <input class="form-input" id="ep-sub-venue"
+                 value="${esc(p.targetVenue||'')}"
+                 placeholder="Nature, FONDECYT, ISMIR 2025…">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Fecha de envío efectivo</label>
+          <input class="form-input" type="date" id="ep-sub-submitted"
+                 value="${p.submittedAt||''}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notas de submission</label>
+          <input class="form-input" id="ep-sub-notes"
+                 value="${esc(p.submissionNotes||'')}"
+                 placeholder="Observaciones del editor…">
+        </div>
+      </div>
+    </div>`;
+}
+
 async function showEditProjectModal(p) {
   const [cols, _editSchemas] = await Promise.all([
     db.kanbanColumns.orderBy('order').toArray(),
@@ -8133,6 +8183,9 @@ async function showEditProjectModal(p) {
             `<option value="${a.id}" ${a.id === p.areaId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}
         </select>
       </div>
+      <div id="epSubSection">
+        ${p.type === 'Paper' ? _epSubFieldsHTML(p) : ''}
+      </div>
       <div id="epCFContainer">
         ${_customFieldsFormHTML(p.type, _editSchemas, p.customFields || {})}
       </div>
@@ -8146,8 +8199,11 @@ async function showEditProjectModal(p) {
 
   // actualizar custom fields al cambiar tipo
   $('ep-type')?.addEventListener('change', e => {
+    const t  = e.target.value;
     const cf = $('epCFContainer');
-    if (cf) cf.innerHTML = _customFieldsFormHTML(e.target.value, _editSchemas, p.customFields || {});
+    if (cf) cf.innerHTML = _customFieldsFormHTML(t, _editSchemas, p.customFields || {});
+    const ss = $('epSubSection');
+    if (ss) ss.innerHTML = t === 'Paper' ? _epSubFieldsHTML(p) : '';
   });
 
   setTimeout(() => {
@@ -8178,9 +8234,18 @@ async function showEditProjectModal(p) {
     const coauthorIds   = coauthorPairs.map(pr => pr.id).filter(Boolean);
 
     await snapshotProject(p.id);
+    const newType          = $('ep-type').value;
+    const subStatusEl      = $('ep-sub-status');
+    const subUpdates       = newType === 'Paper' && subStatusEl ? {
+      submissionStatus: subStatusEl.value,
+      targetVenue:      ($('ep-sub-venue')?.value  || '').trim() || null,
+      submittedAt:      $('ep-sub-submitted')?.value || null,
+      submissionNotes:  ($('ep-sub-notes')?.value   || '').trim(),
+    } : {};
+
     await dbWrite(() => db.projects.update(p.id, {
       title:         $('ep-title').value.trim(),
-      type:          $('ep-type').value,
+      type:          newType,
       columnId:      +$('ep-col').value,
       responsible,
       responsibleId: responsibleId || null,
@@ -8193,6 +8258,7 @@ async function showEditProjectModal(p) {
       areaId:        +$('ep-area').value || null,
       updatedAt:     new Date().toISOString(),
       customFields:  _readCustomFields() || p.customFields || {},
+      ...subUpdates,
     }));
     closeModal();
     showToast('Proyecto actualizado ✓', 'success');
