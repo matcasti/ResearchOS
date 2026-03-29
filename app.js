@@ -1177,6 +1177,12 @@ async function showManageColumnsModal() {
     });
 
     await dbWrite(async () => {
+      // Calcular qué columnas borrar ANTES de insertar las nuevas,
+      // para no incluir sus IDs autogenerados en la lista de borrado.
+      const retainedIds  = new Set(cols.filter(c => c.id).map(c => c.id));
+      const originalIds  = (await db.kanbanColumns.toArray()).map(c => c.id);
+      const toDelete     = originalIds.filter(id => !retainedIds.has(id));
+
       for (let i = 0; i < cols.length; i++) {
         const c = cols[i];
         c.order = i;
@@ -1186,10 +1192,6 @@ async function showManageColumnsModal() {
           await db.kanbanColumns.add({ title: c.title, color: c.color, order: c.order, wip: c.wip, isDefault: false });
         }
       }
-      // Eliminar columnas borradas
-      const existingIds = cols.filter(c => c.id).map(c => c.id);
-      const allIds = (await db.kanbanColumns.toArray()).map(c => c.id);
-      const toDelete = allIds.filter(id => !existingIds.includes(id));
       if (toDelete.length) await db.kanbanColumns.bulkDelete(toDelete);
     });
 
@@ -1300,16 +1302,8 @@ function kanbanCardHTML(p, unreadCount = 0, activeSub = null, pendingAIs = 0) {
       color:var(--red);background:rgba(248,113,113,.12);
       padding:1px 5px;border-radius:99px;border:1px solid rgba(248,113,113,.2)">⚑ ${pendingAIs}</span>`);
   if (activeSub) {
-    const SUB_COLORS = {
-      preparacion:'var(--text-3)', enviado:'var(--accent)', en_revision:'var(--amber)',
-      revision_solicitada:'var(--purple)', aceptado:'var(--green)', rechazado:'var(--red)'
-    };
-    const SUB_LABELS = {
-      preparacion:'En prep.', enviado:'Enviado', en_revision:'En revisión',
-      revision_solicitada:'Rev. solicit.', aceptado:'Aceptado ✓', rechazado:'Rechazado'
-    };
-    const sc = SUB_COLORS[activeSub.status] || 'var(--text-3)';
-    const sl = SUB_LABELS[activeSub.status] || activeSub.status;
+    const sc = SUB_COLOR_MAP[activeSub.status]   || 'var(--text-3)';
+    const sl = SUB_SHORT_LABEL[activeSub.status] || activeSub.status;
     healthBadges.push(`<span style="font-size:.58rem;font-family:var(--font-mono);
       color:${sc};background:color-mix(in srgb,${sc} 12%,transparent);
       padding:1px 5px;border-radius:99px;border:1px solid color-mix(in srgb,${sc} 28%,transparent)">
@@ -1746,19 +1740,13 @@ async function renderProjects() {
             <td class="ptd" style="color:var(--text-2);font-size:.74rem">
               ${(() => {
                 if (p.type === 'Paper' && activeSubForTable[p.id]) {
-                  const s = activeSubForTable[p.id];
-                  const SC = { preparacion:'var(--text-3)', enviado:'var(--accent)',
-                    en_revision:'var(--amber)', revision_solicitada:'var(--purple)',
-                    aceptado:'var(--green)', rechazado:'var(--red)' };
-                  const SL = { preparacion:'En prep.', enviado:'Enviado',
-                    en_revision:'En revisión', revision_solicitada:'Rev. solicit.',
-                    aceptado:'Aceptado ✓', rechazado:'Rechazado' };
-                  const sc = SC[s.status] || 'var(--text-3)';
+                  const s  = activeSubForTable[p.id];
+                  const sc = SUB_COLOR_MAP[s.status] || 'var(--text-3)';
                   return `<span style="font-family:var(--font-mono);font-size:.62rem;
                     color:${sc};background:color-mix(in srgb,${sc} 12%,transparent);
                     border:1px solid color-mix(in srgb,${sc} 28%,transparent);
                     padding:1px 6px;border-radius:99px">
-                    📤 ${SL[s.status] || s.status}
+                    📤 ${SUB_SHORT_LABEL[s.status] || s.status}
                   </span>`;
                 }
                 return esc(col?.title || '—');
@@ -3584,6 +3572,13 @@ const SUB_STATUSES = [
 ];
 const SUB_TYPES = ['Paper','Grant','Ponencia','Capítulo','Reporte','Otro'];
 
+// Mapas derivados de SUB_STATUSES — única fuente de verdad para color y etiqueta corta
+const SUB_COLOR_MAP   = Object.fromEntries(SUB_STATUSES.map(s => [s.key, s.color]));
+const SUB_SHORT_LABEL = {
+  preparacion:'En prep.', enviado:'Enviado', en_revision:'En revisión',
+  revision_solicitada:'Rev. solicit.', aceptado:'Aceptado ✓', rechazado:'Rechazado'
+};
+
 function subStatusBadge(status) {
   const s = SUB_STATUSES.find(s => s.key === status) || SUB_STATUSES[0];
   return `<span class="badge" style="background:color-mix(in srgb,${s.color} 18%,transparent);
@@ -3744,12 +3739,6 @@ async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
     App._skipTemplateStep = true;
     showAddProjectModal();
   }
-}
-
-// Delegado — mantenido por compatibilidad con posibles llamadas residuales
-async function showEditSubmissionModal(s) {
-  const projId = s?.projectId || s?.id;
-  if (projId) return showAddSubmissionModal(null, projId);
 }
 
 async function inspectSubmission(id) {
@@ -7425,6 +7414,7 @@ function _attachInplaceEditors(onSave) {
 async function inspectProject(id) {
   const p         = await db.projects.get(id);
   if (!p) return;
+  App._mdEditing  = false;   // resetear modo edición al cambiar de proyecto
   const cols      = await db.kanbanColumns.toArray();
   const colMap    = Object.fromEntries(cols.map(c => [c.id, c]));
   const relIdeas  = await getRelatedIdeas(id);

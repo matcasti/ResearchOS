@@ -346,12 +346,6 @@ async function mergeAllData(jsonString) {
   );
 }
 
-// ── Submission Tracker helpers ───────────────────────────────
-async function getSubmissions(projectId = null) {
-  if (projectId) return db.submissions.where('projectId').equals(projectId).toArray();
-  return db.submissions.orderBy('createdAt').reverse().toArray();
-}
-
 // ── Meetings helpers ─────────────────────────────────────────
 async function getMeetings(projectId = null) {
   if (projectId) return db.meetings.where('projectId').equals(projectId).toArray();
