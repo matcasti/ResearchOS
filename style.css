@@ -3375,3 +3375,131 @@ body.presentation-mode .kanban-col { width: 300px; }
 }
 
 
+/* ══════════════════════════════════════════════════════════════
+   ESTADO DEL DÍA
+══════════════════════════════════════════════════════════════ */
+.estado-dia-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  margin-bottom: 24px;
+  line-height: 1.65;
+}
+.estado-dia-icon  { font-size: 1.2rem; line-height: 1; flex-shrink: 0; margin-top: 2px; }
+.estado-dia-body  { flex: 1; min-width: 0; }
+.estado-dia-title {
+  font-family: var(--font-mono);
+  font-size: .6rem;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--text-3);
+  margin-bottom: 5px;
+}
+.estado-dia-text    { font-size: .84rem; color: var(--text-2); }
+.estado-dia-allclear{ font-size: .84rem; color: var(--green);  }
+.estado-dia-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: 99px;
+  border: 1px solid transparent;
+  font-size: .74rem;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  margin: 0 3px;
+  white-space: nowrap;
+  transition: filter 130ms var(--ease), transform 100ms var(--ease);
+  vertical-align: middle;
+}
+.estado-dia-chip:hover { filter: brightness(1.2); transform: translateY(-1px); }
+
+/* ══════════════════════════════════════════════════════════════
+   SESSION RESUME MODAL
+══════════════════════════════════════════════════════════════ */
+.sr-section-label {
+  font-family: var(--font-mono);
+  font-size: .6rem;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--text-3);
+  margin-bottom: 7px;
+}
+.sr-item, .sr-ai-item, .sr-urgent-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 120ms var(--ease);
+  font-size: .8rem;
+}
+.sr-item         { background: var(--bg-elevated); margin-bottom: 4px; }
+.sr-ai-item      {
+  background: rgba(251,191,36,.06);
+  border: 1px solid rgba(251,191,36,.2);
+  margin-bottom: 3px;
+}
+.sr-urgent-item  {
+  background: color-mix(in srgb, var(--red) 6%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--red) 22%, transparent);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+}
+.sr-item:hover, .sr-ai-item:hover, .sr-urgent-item:hover { background: var(--bg-hover); }
+.sr-item-label   { flex: 1; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-item-meta    { font-family: var(--font-mono); font-size: .62rem; color: var(--text-3); flex-shrink: 0; }
+.sr-urgent-title { font-size: .83rem; font-weight: 600; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-urgent-sub   { font-family: var(--font-mono); font-size: .68rem; margin-top: 2px; }
+
+/* ── Inspector Navigation Crumb ─────────────── */
+.inspector-crumb {
+  padding: 4px 14px 5px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 2px;
+  font-size: .63rem; font-family: var(--font-mono);
+  background: var(--bg-surface);
+}
+.inspector-crumb:empty { padding: 0; border-bottom: none; }
+.ic-sep  { color: var(--text-3); opacity: .5; margin: 0 1px; }
+.ic-item { color: var(--text-3); }
+.ic-item.link {
+  color: var(--text-2); cursor: pointer;
+  border-radius: 3px; padding: 1px 4px;
+  transition: color 120ms var(--ease), background 120ms var(--ease);
+}
+.ic-item.link:hover { color: var(--accent); background: var(--accent-d); }
+.ic-item.current    { color: var(--text-1); font-weight: 500; }
+
+/* ── Inline editable tags container (Feature 1) ──────────── */
+.insp-tags-field {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  padding: 5px 6px; min-height: 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: border-color 150ms var(--ease), background 150ms var(--ease);
+  margin-bottom: 10px;
+}
+.insp-tags-field:hover {
+  border-color: var(--border-str);
+  background: var(--bg-hover);
+}
+.insp-tags-field:hover::after {
+  content: ' ✎';
+  font-size: .6rem; color: var(--text-3);
+  align-self: center;
+}
+
+/* ── Inplace input wide variant (para tags) ──────────────── */
+.inplace-input.wide {
+  min-width: 160px;
+  max-width: 260px;
+}

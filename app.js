@@ -34,11 +34,15 @@ const App = {
   filterArea:        'all',    // filtro de área en vista Proyectos
   _tutorialTab:    'quickstart',
   activeColPreset:   'all',   // id del preset activo en Kanban
+  inspectedType:     null,    // 'project'|'idea'|'snippet'|'meeting'|'reference'|'collaborator'
+  inspectedId:       null,    // id del ítem actualmente en el inspector
+  inspectorHistory:  [],      // [{type, id, label}] – historial de navegación del inspector
   kanbanGroupBy:     'none',  // 'none' | 'type' | 'area'
   kanbanDensity:     'detailed', // 'detailed' | 'compact'
   projSortKey:       '',      // '' | 'title' | 'type' | 'priority' | 'column' | 'responsible' | 'area' | 'deadline'
   projSortDir:       'asc',   // 'asc' | 'desc'
-  collaboratorHubId: null,    //
+  collaboratorHubId: null,
+  _inspectedProjectId: null,  // proyecto activo en el inspector (para palette contextual)
   ideaBulkMode:        false,
   ideaBulkSelected:    new Set(),
   orphanBulkSelected:  new Map(),
@@ -152,6 +156,7 @@ async function dbWrite(fn) {
   try {
     const r = await fn();
     SaveIndicator.done();
+    localStorage.setItem('ros-last-active', String(Date.now()));
     GoogleSync.scheduleAutoSave();
     _scheduleSearchIndex();
     _renderResearchStatus().catch(() => {});
@@ -322,6 +327,83 @@ async function renderView(view) {
   await updateBadges();
 }
 
+async function _renderEstadoDia() {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+
+  const [projects, unreadIdeas, meetings] = await Promise.all([
+    db.projects.filter(p => !p.archived).toArray(),
+    db.ideas.where('status').equals('unread').toArray(),
+    db.meetings.toArray(),
+  ]);
+
+  const overdue  = projects.filter(p =>
+    p.deadline && new Date(p.deadline + 'T00:00:00') < today);
+  const thisWeek = projects.filter(p => {
+    if (!p.deadline) return false;
+    const d = Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000);
+    return d >= 0 && d <= 7;
+  });
+  const pendingAIs = meetings.reduce((acc, m) =>
+    acc + (m.actionItems || []).filter(a => !a.done).length, 0);
+  const activeSubs = projects.filter(p =>
+    p.type === 'Paper' &&
+    ['enviado', 'en_revision', 'revision_solicitada'].includes(p.submissionStatus));
+  const unreadCount = unreadIdeas.length;
+
+  const hour     = new Date().getHours();
+  const greeting = hour < 12 ? 'Buenos días' : hour < 19 ? 'Buenas tardes' : 'Buenas noches';
+  const dayLabel = new Date().toLocaleDateString('es-CL', { weekday: 'long' });
+
+  if (!overdue.length && !thisWeek.length && !unreadCount && !pendingAIs && !activeSubs.length) {
+    return `
+      <div class="estado-dia-card">
+        <span class="estado-dia-icon" style="color:var(--green)">✓</span>
+        <div class="estado-dia-body">
+          <div class="estado-dia-title">Estado del día · ${dayLabel}</div>
+          <span class="estado-dia-allclear">${greeting}. Todo al día — sin deadlines urgentes, ideas pendientes ni acciones sin completar. Buen momento para capturar ideas nuevas.</span>
+        </div>
+      </div>`;
+  }
+
+  const chips = [];
+  if (overdue.length)
+    chips.push(`<span class="estado-dia-chip" data-estadodia-nav="focus"
+      style="color:var(--red);background:rgba(248,113,113,.1);border-color:rgba(248,113,113,.28)">
+      ⚠ ${overdue.length} vencido${overdue.length > 1 ? 's' : ''}</span>`);
+  if (thisWeek.length)
+    chips.push(`<span class="estado-dia-chip" data-estadodia-nav="timeline"
+      style="color:var(--amber);background:rgba(251,191,36,.1);border-color:rgba(251,191,36,.28)">
+      ⏱ ${thisWeek.length} deadline${thisWeek.length > 1 ? 's' : ''} esta semana</span>`);
+  if (unreadCount)
+    chips.push(`<span class="estado-dia-chip" data-estadodia-nav="ideas"
+      style="color:var(--purple);background:rgba(167,139,250,.1);border-color:rgba(167,139,250,.28)">
+      ◎ ${unreadCount} idea${unreadCount > 1 ? 's' : ''} sin revisar</span>`);
+  if (pendingAIs)
+    chips.push(`<span class="estado-dia-chip" data-estadodia-nav="meetings"
+      style="color:var(--orange);background:rgba(251,146,60,.1);border-color:rgba(251,146,60,.28)">
+      ⚑ ${pendingAIs} acción${pendingAIs > 1 ? 'es pendientes' : ' pendiente'}</span>`);
+  if (activeSubs.length)
+    chips.push(`<span class="estado-dia-chip" data-estadodia-nav="submissions"
+      style="color:var(--accent);background:var(--accent-d);border-color:rgba(56,189,248,.28)">
+      📤 ${activeSubs.length} paper${activeSubs.length > 1 ? 's' : ''} en pipeline</span>`);
+
+  const nearest     = [...thisWeek].sort((a, b) => a.deadline.localeCompare(b.deadline))[0];
+  const nearestNote = nearest
+    ? ` — próximo: <em style="color:var(--text-1)">${esc(nearest.title.slice(0, 35))}</em> en ${Math.ceil((new Date(nearest.deadline + 'T00:00:00') - today) / 86400000)}d`
+    : '';
+
+  return `
+    <div class="estado-dia-card">
+      <span class="estado-dia-icon">☀</span>
+      <div class="estado-dia-body">
+        <div class="estado-dia-title">Estado del día · ${dayLabel}</div>
+        <div class="estado-dia-text">
+          ${greeting}. Hoy tienes: ${chips.join(' ')}${nearestNote}.
+        </div>
+      </div>
+    </div>`;
+}
+
 // ==============================================================
 //  VIEW: DASHBOARD
 // ==============================================================
@@ -356,6 +438,8 @@ async function renderDashboard() {
     return `<span class="deadline-urgency urgency-ok">${p.daysLeft}d</span>`;
   };
 
+  const estadoDiaHTML = await _renderEstadoDia();
+
   mainContent.innerHTML = `
     <div class="view">
       <div class="view-header">
@@ -365,6 +449,8 @@ async function renderDashboard() {
         </div>
         <button class="btn btn-primary" id="dashAddProject">+ Nuevo Proyecto</button>
       </div>
+
+      ${estadoDiaHTML}
 
       <div class="stats-grid-v2">
         <div class="stat-card-v2">
@@ -530,6 +616,9 @@ async function renderDashboard() {
   $('qGoTriage')?.addEventListener('click',  () => navigate('triage'));
   $('qGoOrphans')?.addEventListener('click', () => navigate('orphans'));
   $('qGoFS').addEventListener('click', () => navigate('filesystem'));
+  mainContent.querySelectorAll('[data-estadodia-nav]').forEach(el => {
+    el.addEventListener('click', () => navigate(el.dataset.estadodiaNav));
+  });
   mainContent.querySelectorAll('[data-inspect-project]').forEach(el => {
     el.addEventListener('click',      () => inspectProject(+el.dataset.inspectProject));
     el.addEventListener('mouseenter', () => HoverCard.show(+el.dataset.inspectProject, el));
@@ -3930,8 +4019,9 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
 }
 
 async function inspectMeeting(id) {
-  const m    = await db.meetings.get(id);
+  const m = await db.meetings.get(id);
   if (!m) return;
+  _pushInspectorHistory('meeting', id, m.title);
   // resolver colaboradores para chips de participantes
   const _meetCollabs = await db.collaborators.orderBy('name').toArray();
   const _meetCollabByName = Object.fromEntries(
@@ -4223,8 +4313,9 @@ async function showAddReferenceModal(preProjectId = null) {
 }
 
 async function inspectReference(id) {
-  const r    = await db.references.get(id);
+  const r = await db.references.get(id);
   if (!r) return;
+  _pushInspectorHistory('reference', id, r.title);
   const proj = r.projectId ? await db.projects.get(r.projectId) : null;
   const bibtexKey = `${(r.authors||'').split(',')[0].trim().split(' ').pop()}${r.year||'xxxx'}`;
   const bibtexStr = `@article{${bibtexKey},\n  author  = {${r.authors||''}},\n  title   = {${r.title}},\n  journal = {${r.journal||''}},\n  year    = {${r.year||''}},\n  doi     = {${r.doi||''}}\n}`;
@@ -4672,6 +4763,7 @@ async function showAddCollaboratorModal() {
 async function inspectCollaborator(id) {
   const c = await db.collaborators.get(id);
   if (!c) return;
+  _pushInspectorHistory('collaborator', id, c.name);
   const projects = await db.projects.toArray();
   const linked = projects.filter(p =>
     p.responsible === c.name || (p.coauthors||[]).includes(c.name)
@@ -7430,7 +7522,16 @@ function openInspector() {
   document.body.classList.remove('inspector-closed');
 }
 function closeInspector() {
+  App.inspectorHistory = [];
+  App.inspectedType    = null;
+  App.inspectedId      = null;
+  App._inspectedProjectId = null;
+
+  const crumb = $('inspectorCrumb');
+  if (crumb) crumb.innerHTML = '';
+
   document.body.classList.add('inspector-closed');
+
   inspectorBody.innerHTML = `
     <div class="inspector-empty">
       <span class="empty-icon">◈</span>
@@ -7462,13 +7563,32 @@ function _attachInplaceEditors(onSave) {
       if (type === 'select') {
         input = document.createElement('select');
         input.className = 'inplace-input';
-        const opts = (el.dataset.inplaceOpts || '').split('|');
-        opts.forEach(o => {
+        (el.dataset.inplaceOpts || '').split('|').forEach(o => {
           const opt = document.createElement('option');
           opt.value = o; opt.textContent = o;
           if (o === oldVal) opt.selected = true;
           input.appendChild(opt);
         });
+      } else if (type === 'id-select') {
+        // opciones codificadas como "id=Etiqueta|id2=Etiqueta2"
+        input = document.createElement('select');
+        input.className = 'inplace-input';
+        (el.dataset.inplaceMap || '').split('|').forEach(pair => {
+          const sep = pair.indexOf('=');
+          if (sep < 0) return;
+          const id    = pair.slice(0, sep);
+          const label = pair.slice(sep + 1);
+          const opt   = document.createElement('option');
+          opt.value = id; opt.textContent = label;
+          if (id === String(oldVal)) opt.selected = true;
+          input.appendChild(opt);
+        });
+      } else if (type === 'tags') {
+        input = document.createElement('input');
+        input.className = 'inplace-input wide';
+        input.type  = 'text';
+        input.value = oldVal;
+        input.placeholder = 'tag1, tag2, tag3…';
       } else {
         input = document.createElement('input');
         input.className = 'inplace-input';
@@ -7477,8 +7597,11 @@ function _attachInplaceEditors(onSave) {
       }
 
       const commit = async () => {
-        const newVal = input.value.trim();
-        if (newVal === oldVal) { el.style.display = ''; input.remove(); return; }
+        const newVal  = input.value.trim();
+        const sameVal = type === 'id-select'
+          ? String(newVal) === String(oldVal)
+          : newVal === oldVal;
+        if (sameVal) { el.style.display = ''; input.remove(); return; }
         await onSave(field, newVal);
       };
 
@@ -7496,15 +7619,103 @@ function _attachInplaceEditors(onSave) {
   });
 }
 
+// ── Inspector Navigation History ──────────────
+function _pushInspectorHistory(type, id, label) {
+  App.inspectedType = type;
+  App.inspectedId   = id;
+  const last = App.inspectorHistory[App.inspectorHistory.length - 1];
+  if (last && last.type === type && last.id === id) {
+    _renderInspectorCrumb(); return;
+  }
+  App.inspectorHistory.push({ type, id, label });
+  if (App.inspectorHistory.length > 6) App.inspectorHistory.shift();
+  _renderInspectorCrumb();
+}
+
+function _renderInspectorCrumb() {
+  const el = $('inspectorCrumb');
+  if (!el) return;
+  const items = App.inspectorHistory;
+  if (items.length <= 1) { el.innerHTML = ''; return; }
+  const ICONS = {
+    project:'◉', idea:'◎', snippet:'⟨/⟩',
+    meeting:'🗓', reference:'📚', collaborator:'👤'
+  };
+  el.innerHTML = items.map((item, i) => {
+    const isLast = i === items.length - 1;
+    const sep    = i > 0 ? '<span class="ic-sep">›</span>' : '';
+    const short  = item.label.length > 18 ? item.label.slice(0,16) + '…' : item.label;
+    return isLast
+      ? `${sep}<span class="ic-item current">${ICONS[item.type] || '·'} ${esc(short)}</span>`
+      : `${sep}<span class="ic-item link" data-ic-idx="${i}">${esc(short)}</span>`;
+  }).join('');
+  el.querySelectorAll('[data-ic-idx]').forEach(span => {
+    span.addEventListener('click', () => {
+      const idx  = +span.dataset.icIdx;
+      const item = items[idx];
+      App.inspectorHistory = items.slice(0, idx); // truncar antes de re-abrir
+      const INSPECT_FN = {
+        project:      inspectProject,
+        idea:         inspectIdea,
+        snippet:      async id => { const s = await db.snippets.get(id); if (s) inspectSnippet(s); },
+        meeting:      inspectMeeting,
+        reference:    inspectReference,
+        collaborator: inspectCollaborator,
+      };
+      INSPECT_FN[item.type]?.(item.id);
+    });
+  });
+}
+
+// ── Atajos contextuales de teclado ────────────
+function _contextualNew() {
+  const MAP = {
+    ideas:         showAddIdeaModal,
+    projects:      showAddProjectModal,
+    snippets:      showAddSnippetModal,
+    kanban:        showAddProjectModal,
+    meetings:      showAddMeetingModal,
+    references:    showAddReferenceModal,
+    collaborators: showAddCollaboratorModal,
+    submissions:   () => { App._projectTemplate = 'paper'; App._skipTemplateStep = true; showAddProjectModal(); },
+    weekly:        showAddMeetingModal,
+  };
+  (MAP[App.view] || showAddProjectModal)();
+}
+
+function _inspectorEdit() {
+  // Reutiliza el botón de edición ya renderizado en el inspector activo
+  const btn = inspectorBody.querySelector(
+    '#inspEditBtn, #ideaEditBtn, #snipEditBtn, #meetEditBtn, #refEditBtn, #collabEditBtn'
+  );
+  btn?.click();
+}
+
+function _inspectorStar() {
+  const btn = inspectorBody.querySelector(
+    '#inspStarBtn, #ideaStarInspBtn, #snipStarBtn'
+  );
+  btn?.click();
+}
+
 async function inspectProject(id) {
-  const p         = await db.projects.get(id);
+  const p = await db.projects.get(id);
   if (!p) return;
-  App._mdEditing  = false;   // resetear modo edición al cambiar de proyecto
-  const cols      = await db.kanbanColumns.toArray();
-  const colMap    = Object.fromEntries(cols.map(c => [c.id, c]));
-  const relIdeas  = await getRelatedIdeas(id);
-  const relSnips  = await getRelatedSnippets(id);
-  const col       = colMap[p.columnId];
+  App._mdEditing = false;
+  const [cols, areas] = await Promise.all([
+    db.kanbanColumns.toArray(),
+    _getAreas(),
+  ]);
+  const colMap     = Object.fromEntries(cols.map(c => [c.id, c]));
+  const relIdeas   = await getRelatedIdeas(id);
+  const relSnips   = await getRelatedSnippets(id);
+  const col        = cols.find(c => c.id === p.columnId);
+  const currentArea = areas.find(a => a.id === p.areaId) || null;
+  // Mapas codificados para inplace id-select: "id=Etiqueta|..."
+  const colMapStr  = cols.map(c => `${c.id}=${c.title.replace(/[|=]/g,'')}`).join('|');
+  const areaMapStr = ['=Sin área', ...areas.map(a => `${a.id}=${a.name.replace(/[|=]/g,'')}`)]
+    .join('|');
+  _pushInspectorHistory('project', id, p.title);
 
   inspectorBody.innerHTML = `
     <div>
@@ -7515,6 +7726,16 @@ async function inspectProject(id) {
       <div class="inspector-project-title">${esc(p.title)}</div>
 
       <div class="inspector-meta">
+        <div class="inspector-meta-row">
+          <span class="inspector-meta-key">Tipo</span>
+          <span class="inspector-meta-val"
+                data-inplace="type"
+                data-inplace-type="select"
+                data-inplace-opts="Proyecto|Grant|Paper|Análisis|Dataset|Presentación"
+                data-inplace-value="${esc(p.type || 'Proyecto')}">
+            <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
+          </span>
+        </div>
         <div class="inspector-meta-row">
           <span class="inspector-meta-key">Responsable</span>
           <span class="inspector-meta-val"
@@ -7548,23 +7769,26 @@ async function inspectProject(id) {
                 data-inplace-value="${esc(p.priority || 'Media')}">${esc(p.priority || '—')}</span>
         </div>
         <div class="inspector-meta-row">
-          <span class="inspector-meta-key">Estado</span>
-          <span class="inspector-meta-val" style="color:var(--text-1)">${esc(col?.title ?? '—')}</span>
+          <span class="inspector-meta-key">Columna</span>
+          <span class="inspector-meta-val"
+                data-inplace="columnId"
+                data-inplace-type="id-select"
+                data-inplace-value="${p.columnId}"
+                data-inplace-map="${colMapStr}"
+                style="color:var(--text-1)">${esc(col?.title ?? '—')}</span>
         </div>
-        ${await (async () => {
-          if (!p.areaId) return '';
-          const areas = await _getAreas();
-          const area  = areas.find(a => a.id === p.areaId);
-          if (!area) return '';
-          return `<div class="inspector-meta-row">
-            <span class="inspector-meta-key">Área</span>
-            <span class="inspector-meta-val">
-              <span class="area-chip" style="border-color:${area.color};color:${area.color}">
-                ⊡ ${esc(area.name)}
-              </span>
-            </span>
-          </div>`;
-        })()}
+        <div class="inspector-meta-row">
+          <span class="inspector-meta-key">Área</span>
+          <span class="inspector-meta-val"
+                data-inplace="areaId"
+                data-inplace-type="id-select"
+                data-inplace-value="${p.areaId ?? ''}"
+                data-inplace-map="${areaMapStr}">
+            ${currentArea
+              ? `<span class="area-chip" style="border-color:${currentArea.color};color:${currentArea.color}">⊡ ${esc(currentArea.name)}</span>`
+              : `<span style="color:var(--text-3);font-size:.74rem">— Sin área —</span>`}
+          </span>
+        </div>
         <div class="inspector-meta-row">
           <span class="inspector-meta-key">Creado</span>
           <span class="inspector-meta-val">${relativeDate(p.createdAt)}</span>
@@ -7601,11 +7825,15 @@ async function inspectProject(id) {
            </div>`
       }
 
-      ${(p.tags||[]).length ? `
-        <div class="inspector-related-title">Etiquetas</div>
-        <div style="display:flex;gap:4px;flex-wrap:wrap">
-          ${p.tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}
-        </div>` : ''}
+      <div class="inspector-related-title">Etiquetas</div>
+      <div class="insp-tags-field"
+           data-inplace="tags"
+           data-inplace-type="tags"
+           data-inplace-value="${esc((p.tags||[]).join(', '))}">
+        ${(p.tags||[]).length
+          ? p.tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')
+          : `<span style="color:var(--text-3);font-size:.73rem;font-style:italic">Sin etiquetas — doble clic para agregar</span>`}
+      </div>
       <div id="cfDisplay"></div>
 
       ${(p._history||[]).length ? (() => {
@@ -7735,17 +7963,6 @@ async function inspectProject(id) {
       </div>
     </div>`;
 
-  // Breadcrumb contextual en inspector
-  const bcInspector = inspectorBody.querySelector('.insp-bc');
-  if (!bcInspector) {
-    const bcEl = document.createElement('div');
-    bcEl.className = 'insp-bc';
-    bcEl.style.cssText = 'font-size:.65rem;font-family:var(--font-mono);color:var(--text-3);margin-bottom:10px;cursor:pointer;';
-    bcEl.textContent = `${VIEW_LABELS[App.view] || 'Vista'} › ${p.type}`;
-    bcEl.addEventListener('click', () => navigate(App.view));
-    inspectorBody.querySelector('div')?.prepend(bcEl);
-  }
-
   openInspector();
 
   // mostrar custom fields
@@ -7761,12 +7978,16 @@ async function inspectProject(id) {
   // In-place editing
   _attachInplaceEditors(async (field, newVal) => {
     await snapshotProject(id);
-    await dbWrite(() => db.projects.update(id, {
-      [field]: field === 'deadline' ? (newVal || null) : newVal,
-      updatedAt: new Date().toISOString()
-    }));
+    const upd = { updatedAt: new Date().toISOString() };
+    switch (field) {
+      case 'deadline':  upd.deadline = newVal || null; break;
+      case 'columnId':  upd.columnId = +newVal || null; break;
+      case 'areaId':    upd.areaId = newVal ? +newVal : null; break;
+      case 'tags':      upd.tags = newVal.split(',').map(s => s.trim()).filter(Boolean); break;
+      default:          upd[field] = newVal;
+    }
+    await dbWrite(() => db.projects.update(id, upd));
     showToast('Campo actualizado ✓', 'success');
-    // Re-render la vista activa y re-abrir el inspector para el mismo proyecto
     renderView(App.view);
     setTimeout(() => inspectProject(id), 80);
   });
@@ -7963,6 +8184,7 @@ async function inspectProject(id) {
 
 async function inspectSnippet(s) {
   const proj    = s.projectId ? await db.projects.get(s.projectId) : null;
+  _pushInspectorHistory('snippet', s.id, s.title);
   const colls   = await getCollections();
   const collMap = Object.fromEntries(colls.map(c => [c.id, c]));
   const snipCol = s.collectionId ? collMap[s.collectionId] : null;
@@ -8329,6 +8551,7 @@ async function inspectIdea(id) {
   const idea = await db.ideas.get(id);
   if (!idea) return;
   const proj = idea.projectId ? await db.projects.get(idea.projectId) : null;
+  _pushInspectorHistory('idea', id, idea.title);
 
   inspectorBody.innerHTML = `
     <div>
@@ -9479,6 +9702,126 @@ async function _attachCollaboratorAutocomplete(inputEl, { multi = false } = {}) 
   });
 }
 
+async function _checkSessionResume() {
+  // Solo una vez por sesión del navegador
+  if (sessionStorage.getItem('ros-session-checked')) return;
+  sessionStorage.setItem('ros-session-checked', '1');
+
+  const lastActive = localStorage.getItem('ros-last-active');
+  if (!lastActive) {
+    localStorage.setItem('ros-last-active', String(Date.now()));
+    return;
+  }
+
+  const gapMs = Date.now() - Number(lastActive);
+  if (gapMs < 4 * 60 * 60 * 1000) return;   // < 4 horas → no mostrar
+
+  const [projects, ideas, snippets, meetings] = await Promise.all([
+    db.projects.orderBy('updatedAt').reverse().limit(10).toArray(),
+    db.ideas.orderBy('updatedAt').reverse().limit(10).toArray(),
+    db.snippets.orderBy('updatedAt').reverse().limit(10).toArray(),
+    db.meetings.toArray(),
+  ]);
+
+  // Últimos 3 ítems editados (proyectos, ideas, snippets mezclados)
+  const recentItems = [
+    ...projects.map(p => ({ type:'project', icon:'◉',    label:p.title, sub:p.type,           ts:p.updatedAt, id:p.id })),
+    ...ideas.map(i    => ({ type:'idea',    icon:'◎',    label:i.title, sub:'Idea',             ts:i.updatedAt, id:i.id })),
+    ...snippets.map(s => ({ type:'snippet', icon:'⟨/⟩', label:s.title, sub:s.language||'Snippet', ts:s.updatedAt, id:s.id })),
+  ]
+  .filter(x => x.ts)
+  .sort((a, b) => b.ts.localeCompare(a.ts))
+  .slice(0, 3);
+
+  // Action items pendientes de reuniones
+  const pendingAIs = meetings
+    .flatMap(m => (m.actionItems || []).filter(a => !a.done)
+      .map(ai => ({ text: ai.text, meetingTitle: m.title, meetingId: m.id })))
+    .slice(0, 4);
+
+  // Proyecto más urgente con deadline próximo
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const urgentProj = projects
+    .filter(p => p.deadline && !p.archived)
+    .map(p => ({ ...p, daysLeft: Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000) }))
+    .filter(p => p.daysLeft >= 0)
+    .sort((a, b) => a.daysLeft - b.daysLeft)[0] || null;
+
+  if (!recentItems.length && !pendingAIs.length && !urgentProj) return;
+
+  const gapHours = Math.floor(gapMs / 3600000);
+  const gapLabel = gapHours < 24 ? `${gapHours}h` : `${Math.floor(gapHours / 24)}d`;
+
+  showModal('↩ Retomando tu sesión', `
+    <div class="modal-body">
+      <p style="font-size:.78rem;color:var(--text-3);font-family:var(--font-mono);margin-bottom:16px">
+        Última actividad hace <strong style="color:var(--text-2)">${gapLabel}</strong>
+      </p>
+
+      ${recentItems.length ? `
+        <div class="sr-section-label">Últimas ediciones</div>
+        <div style="margin-bottom:16px">
+          ${recentItems.map(item => `
+            <div class="sr-item" data-sr-type="${item.type}" data-sr-id="${item.id}">
+              <span style="font-size:.85rem;flex-shrink:0">${item.icon}</span>
+              <span class="sr-item-label">${esc(item.label)}</span>
+              <span class="sr-item-meta">${esc(item.sub)} · ${relativeDate(item.ts)}</span>
+            </div>`).join('')}
+        </div>` : ''}
+
+      ${pendingAIs.length ? `
+        <div class="sr-section-label">Acciones pendientes (${pendingAIs.length})</div>
+        <div style="margin-bottom:16px">
+          ${pendingAIs.map(ai => `
+            <div class="sr-ai-item" data-sr-meeting="${ai.meetingId}">
+              <span style="color:var(--amber);flex-shrink:0">⚑</span>
+              <span class="sr-item-label">${esc(ai.text)}</span>
+              <span class="sr-item-meta">${esc(ai.meetingTitle.slice(0, 24))}</span>
+            </div>`).join('')}
+        </div>` : ''}
+
+      ${urgentProj ? `
+        <div class="sr-section-label">Más urgente</div>
+        <div class="sr-urgent-item" data-sr-type="project" data-sr-id="${urgentProj.id}">
+          <span style="font-size:1rem;flex-shrink:0">⏱</span>
+          <div style="flex:1;min-width:0">
+            <div class="sr-urgent-title">${esc(urgentProj.title)}</div>
+            <div class="sr-urgent-sub"
+                 style="color:${urgentProj.daysLeft === 0 ? 'var(--red)' : urgentProj.daysLeft <= 3 ? 'var(--amber)' : 'var(--text-3)'}">
+              ${urgentProj.daysLeft === 0 ? '¡Vence hoy!' : `Deadline en ${urgentProj.daysLeft}d · ${formatDate(urgentProj.deadline)}`}
+            </div>
+          </div>
+        </div>` : ''}
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="srDismiss">Ignorar</button>
+      <button class="btn btn-primary" id="srContinue">Continuar →</button>
+    </div>`);
+
+  const navigateToItem = (type, id) => {
+    closeModal();
+    if      (type === 'project') { navigate('projects'); setTimeout(() => inspectProject(id), 120); }
+    else if (type === 'idea')    { navigate('ideas');    setTimeout(() => inspectIdea(id),    120); }
+    else if (type === 'snippet') {
+      navigate('snippets');
+      setTimeout(async () => { const s = await db.snippets.get(id); if (s) inspectSnippet(s); }, 120);
+    }
+  };
+
+  document.querySelectorAll('.sr-item, .sr-urgent-item').forEach(el => {
+    el.addEventListener('click', () => navigateToItem(el.dataset.srType, +el.dataset.srId));
+  });
+  document.querySelectorAll('.sr-ai-item').forEach(el => {
+    el.addEventListener('click', () => {
+      closeModal(); navigate('meetings'); setTimeout(() => inspectMeeting(+el.dataset.srMeeting), 120);
+    });
+  });
+  $('srDismiss').addEventListener('click', closeModal);
+  $('srContinue').addEventListener('click', closeModal);
+
+  localStorage.setItem('ros-last-active', String(Date.now()));
+}
+
 // ==============================================================
 //  INIT
 // ==============================================================
@@ -9559,10 +9902,17 @@ async function init() {
       $('paletteOverlay').classList.contains('open') ? closePalette() : openPalette();
     }
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'K') {
-      e.preventDefault(); navigate('kanban');   // ⌘⇧K → Kanban
+      e.preventDefault(); navigate('kanban');
     }
-    // if (e.altKey && e.key === 'ArrowLeft')  navBack();
-    // if (e.altKey && e.key === 'ArrowRight') navForward();
+    // Atajos contextuales sin modificador — solo si no hay foco en input/modal/paleta
+    const _noFocus   = !e.target.closest('input, textarea, select, [contenteditable]');
+    const _noModal   = !modalOverlay.classList.contains('visible');
+    const _noPalette = !$('paletteOverlay').classList.contains('open');
+    if (_noFocus && _noModal && _noPalette) {
+      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); _contextualNew(); }
+      if (e.key === 'e' || e.key === 'E') { e.preventDefault(); _inspectorEdit(); }
+      if (e.key === 's' || e.key === 'S') { e.preventDefault(); _inspectorStar(); }
+    }
   });
 
   _initPalette();
@@ -9576,6 +9926,8 @@ async function init() {
   _buildSearchIndex().catch(() => {});
   // Initial view
   navigate('dashboard');
+  // Resumen de sesión (se muestra si hubo ≥4h de inactividad)
+  setTimeout(() => _checkSessionResume().catch(() => {}), 800);
 
   // delegación global para person-chip → collaborator hub
   document.addEventListener('click', e => {
@@ -9968,6 +10320,38 @@ async function _searchPalette(q) {
     { icon:'👥', label:'Colaboradores', sub:'Vista', action: () => { closePalette(); navigate('collaborators'); } },
   ].filter(n => !lq || n.label.toLowerCase().includes(lq));
   if (navItems.length) groups.push({ label: 'Vistas', items: navItems });
+
+  // -- Sugerencias contextuales: proyecto abierto en el Inspector --
+  if (!lq && App._inspectedProjectId) {
+    const pid = App._inspectedProjectId;
+    const [ctxProj, ctxIdeas, ctxSnips, ctxMeets] = await Promise.all([
+      db.projects.get(pid),
+      db.ideas.where('projectId').equals(pid).toArray(),
+      db.snippets.where('projectId').equals(pid).toArray(),
+      db.meetings.where('projectId').equals(pid).toArray(),
+    ]);
+    if (ctxProj) {
+      const ctxItems = [];
+      ctxItems.push({
+        icon: '⬡', label: `Abrir Hub — ${ctxProj.title}`, sub: 'Project Hub',
+        action: () => { closePalette(); App.projectHubId = pid; navigate('project-hub'); }
+      });
+      ctxIdeas.slice(0, 3).forEach(i => ctxItems.push({
+        icon: '◎', label: i.title, sub: 'Idea vinculada',
+        action: () => { closePalette(); inspectIdea(i.id); }
+      }));
+      ctxSnips.slice(0, 2).forEach(s => ctxItems.push({
+        icon: '⟨/⟩', label: s.title, sub: s.language || 'Snippet',
+        action: () => { closePalette(); db.snippets.get(s.id).then(f => { if (f) inspectSnippet(f); }); }
+      }));
+      ctxMeets.slice(0, 2).forEach(m => ctxItems.push({
+        icon: '🗓', label: m.title, sub: formatDate(m.date),
+        action: () => { closePalette(); inspectMeeting(m.id); }
+      }));
+      if (ctxItems.length > 1)
+        groups.push({ label: `◉ Contexto: "${ctxProj.title.slice(0, 32)}"`, items: ctxItems });
+    }
+  }
 
   // -- Pre-filtro via índice en memoria (queries ≥ 2 chars) --
   if (lq.length >= 2 && App._searchIdx.size > 0) {
