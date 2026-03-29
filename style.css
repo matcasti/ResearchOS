@@ -50,6 +50,24 @@ html { font-size: 15px; }
   color-scheme  : dark;
 }
 
+/* ── Accent color variants ────────────────────────────────── */
+html[data-accent="green"] {
+  --accent  : #34d399;
+  --accent-d: rgba(52,211,153,.12);
+}
+html[data-accent="green"][data-theme="light"] {
+  --accent  : #059669;
+  --accent-d: rgba(5,150,105,.10);
+}
+html[data-accent="purple"] {
+  --accent  : #a78bfa;
+  --accent-d: rgba(167,139,250,.12);
+}
+html[data-accent="purple"][data-theme="light"] {
+  --accent  : #7c3aed;
+  --accent-d: rgba(124,58,237,.10);
+}
+
 /* ── Light theme ──────────────────────────────────────────── */
 [data-theme="light"] {
   --bg-base     : #edf2fa;
@@ -238,6 +256,56 @@ body.inspector-closed {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50%       { opacity: .4; }
+}
+
+/* ── Smooth theme transition ──────────────────────────────── */
+body.theme-transitioning,
+body.theme-transitioning * {
+  transition: background-color 300ms var(--ease),
+              color 300ms var(--ease),
+              border-color 300ms var(--ease) !important;
+}
+
+/* ── Accent picker ────────────────────────────────────────── */
+.accent-picker {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.accent-swatch {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 150ms var(--ease), border-color 150ms var(--ease);
+  flex-shrink: 0;
+}
+.accent-swatch:hover   { transform: scale(1.25); }
+.accent-swatch.active  { border-color: var(--text-1); transform: scale(1.15); }
+
+/* ── Kanban compact card ──────────────────────────────────── */
+.kanban-card.compact {
+  padding: 7px 10px;
+}
+.kanban-card.compact .kanban-compact-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.kanban-card.compact .kanban-card-title-text {
+  font-size: .76rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 0;
+  flex: 1;
+}
+
+/* ── SVG arc animation ────────────────────────────────────── */
+.anim-arc {
+  transition: stroke-dasharray 700ms cubic-bezier(.4,0,.2,1);
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -2704,11 +2772,6 @@ body.presentation-mode .kanban-col { width: 300px; }
 }
 .status-dot.sync-ok    { background: var(--green); }
 .status-dot.sync-error { background: var(--red);   }
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: .35; }
-}
 
 /* Fila de acciones push/pull */
 .gsync-actions {

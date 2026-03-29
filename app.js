@@ -35,6 +35,7 @@ const App = {
   _tutorialTab:    'quickstart',
   activeColPreset:   'all',   // id del preset activo en Kanban
   kanbanGroupBy:     'none',  // 'none' | 'type' | 'area'
+  kanbanDensity:     'detailed', // 'detailed' | 'compact'
   projSortKey:       '',      // '' | 'title' | 'type' | 'priority' | 'column' | 'responsible' | 'area' | 'deadline'
   projSortDir:       'asc',   // 'asc' | 'desc'
   collaboratorHubId: null,    //
@@ -374,8 +375,8 @@ async function renderDashboard() {
             <div class="stat-card-v2-label">Proyectos</div>
           </div>
           <svg class="stat-card-v2-arc" viewBox="0 0 40 40">
-            <circle cx="20" cy="20" r="16" fill="none" stroke="var(--accent)"
-                    stroke-width="2" stroke-dasharray="${Math.min(projects*10,100)} 100"
+            <circle class="anim-arc" cx="20" cy="20" r="16" fill="none" stroke="var(--accent)"
+                    stroke-width="2" stroke-dasharray="0 100" data-dash="${Math.min(projects*10,100)}"
                     stroke-linecap="round" transform="rotate(-90 20 20)" opacity=".35"/>
           </svg>
         </div>
@@ -387,8 +388,8 @@ async function renderDashboard() {
             <div class="stat-card-v2-label">Ideas</div>
           </div>
           <svg class="stat-card-v2-arc" viewBox="0 0 40 40">
-            <circle cx="20" cy="20" r="16" fill="none" stroke="#a78bfa"
-                    stroke-width="2" stroke-dasharray="${Math.min(ideas*8,100)} 100"
+            <circle class="anim-arc" cx="20" cy="20" r="16" fill="none" stroke="#a78bfa"
+                    stroke-width="2" stroke-dasharray="0 100" data-dash="${Math.min(ideas*8,100)}"
                     stroke-linecap="round" transform="rotate(-90 20 20)" opacity=".35"/>
           </svg>
         </div>
@@ -400,8 +401,8 @@ async function renderDashboard() {
             <div class="stat-card-v2-label">Sin revisar</div>
           </div>
           <svg class="stat-card-v2-arc" viewBox="0 0 40 40">
-            <circle cx="20" cy="20" r="16" fill="none" stroke="var(--amber)"
-                    stroke-width="2" stroke-dasharray="${Math.min(ideaUnread*20,100)} 100"
+            <circle class="anim-arc" cx="20" cy="20" r="16" fill="none" stroke="var(--amber)"
+                    stroke-width="2" stroke-dasharray="0 100" data-dash="${Math.min(ideaUnread*20,100)}"
                     stroke-linecap="round" transform="rotate(-90 20 20)" opacity=".35"/>
           </svg>
         </div>
@@ -413,8 +414,8 @@ async function renderDashboard() {
             <div class="stat-card-v2-label">Snippets</div>
           </div>
           <svg class="stat-card-v2-arc" viewBox="0 0 40 40">
-            <circle cx="20" cy="20" r="16" fill="none" stroke="var(--green)"
-                    stroke-width="2" stroke-dasharray="${Math.min(snippets*10,100)} 100"
+            <circle class="anim-arc" cx="20" cy="20" r="16" fill="none" stroke="var(--green)"
+                    stroke-width="2" stroke-dasharray="0 100" data-dash="${Math.min(snippets*10,100)}"
                     stroke-linecap="round" transform="rotate(-90 20 20)" opacity=".35"/>
           </svg>
         </div>
@@ -435,8 +436,8 @@ async function renderDashboard() {
                   <div class="dash-bar-row">
                     <span class="dash-bar-label">${esc(t)}</span>
                     <div class="dash-bar-track">
-                      <div class="dash-bar-fill" style="width:${(n/max*100).toFixed(1)}%;
-                           background:var(--accent)"></div>
+                      <div class="dash-bar-fill" data-w="${(n/max*100).toFixed(1)}"
+                           style="width:0;background:var(--accent)"></div>
                     </div>
                     <span class="dash-bar-val">${n}</span>
                   </div>`).join('') || '<span style="color:var(--text-3);font-size:.75rem">Sin datos</span>';
@@ -456,8 +457,8 @@ async function renderDashboard() {
                   <div class="dash-bar-row">
                     <span class="dash-bar-label">${esc(c.title)}</span>
                     <div class="dash-bar-track">
-                      <div class="dash-bar-fill" style="width:${((colCount[c.id]||0)/max*100).toFixed(1)}%;
-                           background:${c.color}"></div>
+                      <div class="dash-bar-fill" data-w="${((colCount[c.id]||0)/max*100).toFixed(1)}"
+                           style="width:0;background:${c.color}"></div>
                     </div>
                     <span class="dash-bar-val">${colCount[c.id]||0}</span>
                   </div>`).join('') || '<span style="color:var(--text-3);font-size:.75rem">Sin datos</span>';
@@ -509,6 +510,16 @@ async function renderDashboard() {
         <button class="btn btn-ghost" id="qGoFS">FS Bridge →</button>
       </div>
     </div>`;
+
+  // Trigger bar & arc animations after paint
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    mainContent.querySelectorAll('.dash-bar-fill[data-w]').forEach(el => {
+      el.style.width = el.dataset.w + '%';
+    });
+    mainContent.querySelectorAll('.anim-arc[data-dash]').forEach(el => {
+      el.setAttribute('stroke-dasharray', `${el.dataset.dash} 100`);
+    });
+  }));
 
   $('dashAddProject').addEventListener('click', showAddProjectModal);
   $('qAddIdea').addEventListener('click', showAddIdeaModal);
@@ -956,15 +967,22 @@ async function renderKanban() {
         <button class="btn btn-ghost btn-sm" id="kanbanPresBtn" title="Modo presentación (F5)">⛶</button>
         <button class="btn btn-ghost btn-sm" id="kanbanManageCols">⚙ Columnas</button>
         <!-- Swimlane toggle -->
-        <div class="tl-btn-group">
-          <button class="btn btn-ghost btn-sm ${App.kanbanGroupBy==='none'?'active':''}"
-                  data-swim="none" title="Vista board estándar">⊞</button>
-          <button class="btn btn-ghost btn-sm ${App.kanbanGroupBy==='type'?'active':''}"
-                  data-swim="type" title="Swimlanes por tipo">⊟ Tipo</button>
-          <button class="btn btn-ghost btn-sm ${App.kanbanGroupBy==='area'?'active':''}"
-                  data-swim="area" title="Swimlanes por área">⊡ Área</button>
-        </div>
-        <button class="btn btn-primary btn-sm" id="kanbanAddProject">+ Proyecto</button>
+          <div class="tl-btn-group">
+            <button class="btn btn-ghost btn-sm ${App.kanbanGroupBy==='none'?'active':''}"
+                    data-swim="none" title="Vista board estándar">⊞</button>
+            <button class="btn btn-ghost btn-sm ${App.kanbanGroupBy==='type'?'active':''}"
+                    data-swim="type" title="Swimlanes por tipo">⊟ Tipo</button>
+            <button class="btn btn-ghost btn-sm ${App.kanbanGroupBy==='area'?'active':''}"
+                    data-swim="area" title="Swimlanes por área">⊡ Área</button>
+          </div>
+          <!-- Density toggle -->
+          <div class="tl-btn-group">
+            <button class="btn btn-ghost btn-sm ${App.kanbanDensity==='detailed'?'active':''}"
+                    data-density="detailed" title="Vista detallada">☰</button>
+            <button class="btn btn-ghost btn-sm ${App.kanbanDensity==='compact'?'active':''}"
+                    data-density="compact"  title="Vista compacta">⊟</button>
+          </div>
+          <button class="btn btn-primary btn-sm" id="kanbanAddProject">+ Proyecto</button>
       </div>
     </div>
 
@@ -1004,6 +1022,14 @@ async function renderKanban() {
   mainContent.querySelectorAll('[data-swim]').forEach(btn => {
     btn.addEventListener('click', () => {
       App.kanbanGroupBy = btn.dataset.swim;
+      renderKanban();
+    });
+  });
+
+  // Density toggle
+  mainContent.querySelectorAll('[data-density]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      App.kanbanDensity = btn.dataset.density;
       renderKanban();
     });
   });
@@ -1292,6 +1318,34 @@ async function showManagePresetsModal() {
 }
 
 function kanbanCardHTML(p, unreadCount = 0, activeSub = null, pendingAIs = 0) {
+  // ── Compact mode ────────────────────────────────────────────
+  if ((App.kanbanDensity || 'detailed') === 'compact') {
+    const TYPE_EMOJI  = { Paper:'📄', Grant:'💰', Análisis:'📊', Dataset:'🗄', Proyecto:'◉', Presentación:'🎤' };
+    const PRIO_COLOR  = { Alta:'var(--red)', Media:'var(--amber)', Baja:'var(--green)' };
+    const prioColor   = PRIO_COLOR[p.priority] || 'var(--text-3)';
+    const daysSince   = p.updatedAt ? Math.floor((Date.now() - new Date(p.updatedAt)) / 86400000) : 0;
+    const staleClass  = daysSince > 14 ? ' kanban-card-stale' : '';
+    return `
+      <div class="kanban-card compact${staleClass}" draggable="true" data-project-id="${p.id}"
+           title="${esc(p.title)} · ${esc(p.type)} · ${esc(p.priority)}${p.deadline ? ' · ⏱ ' + formatDate(p.deadline) : ''}">
+        <div class="kanban-compact-row">
+          <span style="width:7px;height:7px;border-radius:50%;flex-shrink:0;background:${prioColor}"></span>
+          <span style="font-size:.82rem;flex-shrink:0;line-height:1">${TYPE_EMOJI[p.type] || '◉'}</span>
+          <span class="kanban-card-title-text"
+                data-inline-rename="${p.id}"
+                data-inline-rename-value="${esc(p.title)}">${esc(p.title)}</span>
+          ${unreadCount > 0
+            ? `<span style="font-size:.55rem;font-family:var(--font-mono);color:var(--amber);
+                           flex-shrink:0">◎${unreadCount}</span>` : ''}
+          ${pendingAIs > 0
+            ? `<span style="font-size:.55rem;color:var(--red);flex-shrink:0">⚑${pendingAIs}</span>` : ''}
+          ${activeSub
+            ? `<span style="font-size:.55rem;font-family:var(--font-mono);flex-shrink:0;
+                           color:${SUB_COLOR_MAP[activeSub.status]||'var(--text-3)'}">📤</span>` : ''}
+        </div>
+      </div>`;
+  }
+  // ── Detailed mode (existing) ─────────────────────────────────
   const deadline = p.deadline
     ? `<span class="kanban-card-date">⏱ ${formatDate(p.deadline)}</span>` : '';
   const tags = (p.tags || []).slice(0,3).map(t => `<span class="tag">${esc(t)}</span>`).join('');
@@ -8540,6 +8594,21 @@ function completenessBarHTML(pct) {
     </div>`;
 }
 
+// ==============================================================
+//  ACCENT COLOR HELPER
+// ==============================================================
+function _applyAccent(accent) {
+  if (accent === 'blue' || !accent) {
+    document.documentElement.removeAttribute('data-accent');
+  } else {
+    document.documentElement.setAttribute('data-accent', accent);
+  }
+  document.querySelectorAll('.accent-swatch').forEach(sw => {
+    sw.classList.toggle('active', sw.dataset.accent === (accent || 'blue'));
+  });
+  localStorage.setItem('ros-accent', accent || 'blue');
+}
+
 function formatDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso + 'T00:00:00');
@@ -9433,10 +9502,18 @@ async function init() {
   document.documentElement.setAttribute('data-theme', savedTheme);
 
   $('themeToggle').addEventListener('click', () => {
+    document.body.classList.add('theme-transitioning');
+    setTimeout(() => document.body.classList.remove('theme-transitioning'), 420);
     const current = document.documentElement.getAttribute('data-theme');
     const next    = current === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
     localStorage.setItem('ros-theme', next);
+  });
+
+  // Accent color init + handlers
+  _applyAccent(localStorage.getItem('ros-accent') || 'blue');
+  document.querySelectorAll('.accent-swatch').forEach(sw => {
+    sw.addEventListener('click', () => _applyAccent(sw.dataset.accent));
   });
 
   // Navigation history buttons
