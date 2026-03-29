@@ -223,12 +223,19 @@ function attachBreadcrumbHandlers() {
 //  ROUTER
 // ==============================================================
 function navigate(view, addToHistory = true) {
+  // Limpiar handler de teclado del Triage si existe
+  if (App._triageKeyHandler) {
+    document.removeEventListener('keydown', App._triageKeyHandler);
+    App._triageKeyHandler = null;
+  }
   // Persiste el inspector si el panel está abierto al momento de navegar
   if (!document.body.classList.contains('inspector-closed') &&
       App.inspectedType && App.inspectedId) {
     App._savedInspector = { type: App.inspectedType, id: App.inspectedId };
   }
   App.view = view;
+  // Resetear offset de agenda mensual al navegar explícitamente a la vista
+  if (view === 'weekly' && addToHistory) App.agendaMonthOffset = 0;
   if (addToHistory) {
     // Truncate forward stack when branching
     App.navHistory = App.navHistory.slice(0, App.navIndex + 1);
@@ -1122,6 +1129,7 @@ async function renderKanban() {
   mainContent.querySelectorAll('[data-swim]').forEach(btn => {
     btn.addEventListener('click', () => {
       App.kanbanGroupBy = btn.dataset.swim;
+      localStorage.setItem('ros-kanban-groupby', App.kanbanGroupBy);
       renderKanban();
     });
   });
@@ -1130,6 +1138,7 @@ async function renderKanban() {
   mainContent.querySelectorAll('[data-density]').forEach(btn => {
     btn.addEventListener('click', () => {
       App.kanbanDensity = btn.dataset.density;
+      localStorage.setItem('ros-kanban-density', App.kanbanDensity);
       renderKanban();
     });
   });
@@ -1752,13 +1761,13 @@ async function renderProjects() {
     renderView('projects');
   });
   mainContent.querySelectorAll('[data-ftype]').forEach(btn => {
-    btn.addEventListener('click', () => { App.filters.type = btn.dataset.ftype; renderView('projects'); });
+    btn.addEventListener('click', () => { App.filters.type = btn.dataset.ftype; App._projPage = 1; renderView('projects'); });
   });
   mainContent.querySelectorAll('[data-fprio]').forEach(btn => {
-    btn.addEventListener('click', () => { App.filters.priority = btn.dataset.fprio; renderView('projects'); });
+    btn.addEventListener('click', () => { App.filters.priority = btn.dataset.fprio; App._projPage = 1; renderView('projects'); });
   });
   mainContent.querySelectorAll('[data-fcol]').forEach(btn => {
-    btn.addEventListener('click', () => { App.filters.column = btn.dataset.fcol; renderView('projects'); });
+    btn.addEventListener('click', () => { App.filters.column = btn.dataset.fcol; App._projPage = 1; renderView('projects'); });
   });
   mainContent.querySelectorAll('[data-clear-filter]').forEach(pill => {
     pill.addEventListener('click', () => {
@@ -1848,7 +1857,7 @@ async function renderProjects() {
     const visible       = projects.slice(0, App._projPage * PAGE_SIZE);
 
     const renderCard = async p => {
-      const pct    = await projectCompleteness(p);
+      const pct    = projectCompleteness(p);
       const zombie = isZombie(p);
       const area   = p.areaId ? areaMap[p.areaId] : null;
       const rollup = getRollup(p.id);
@@ -1877,7 +1886,7 @@ async function renderProjects() {
 
       // -- VISTA TABLA --------------------------------------
       const rows = await Promise.all(visible.map(async p => {
-        const pct     = await projectCompleteness(p);
+        const pct     = projectCompleteness(p);
         const zombie  = isZombie(p);
         const area    = p.areaId ? areaMap[p.areaId] : null;
         const rollup  = getRollup(p.id);
@@ -3362,7 +3371,7 @@ async function renderTimeline() {
     container.querySelectorAll('[data-inspect-idea]').forEach(el =>
       el.addEventListener('click', () => inspectIdea(+el.dataset.inspectIdea)));
     container.querySelectorAll('[data-inspect-submission]').forEach(el =>
-      el.addEventListener('click', () => inspectSubmission(+el.dataset.inspectSubmission)));
+      el.addEventListener('click', () => inspectProject(+el.dataset.inspectSubmission)));
     container.querySelectorAll('[data-inspect-meeting]').forEach(el =>
       el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
   };
@@ -3690,7 +3699,7 @@ async function renderWeeklyAgenda() {
     root.querySelectorAll('[data-inspect-idea]').forEach(el =>
       el.addEventListener('click', () => inspectIdea(+el.dataset.inspectIdea)));
     root.querySelectorAll('[data-inspect-submission]').forEach(el =>
-      el.addEventListener('click', () => inspectSubmission(+el.dataset.inspectSubmission)));
+      el.addEventListener('click', () => inspectProject(+el.dataset.inspectSubmission)));
     root.querySelectorAll('[data-inspect-meeting]').forEach(el =>
       el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
   };
@@ -3729,21 +3738,17 @@ async function renderWeeklyAgenda() {
 //  VIEW: SUBMISSION TRACKER
 // ==============================================================
 const SUB_STATUSES = [
-  { key: 'preparacion',       label: 'En preparación', color: 'var(--text-3)' },
-  { key: 'enviado',           label: 'Enviado',        color: 'var(--accent)' },
-  { key: 'en_revision',       label: 'En revisión',    color: 'var(--amber)'  },
-  { key: 'revision_solicitada', label: 'Rev. solicitada', color: 'var(--purple)'},
-  { key: 'aceptado',          label: 'Aceptado ✓',    color: 'var(--green)'  },
-  { key: 'rechazado',         label: 'Rechazado',      color: 'var(--red)'    },
+  { key: 'preparacion',         label: 'En preparación',  shortLabel: 'En prep.',      color: 'var(--text-3)' },
+  { key: 'enviado',             label: 'Enviado',          shortLabel: 'Enviado',       color: 'var(--accent)' },
+  { key: 'en_revision',         label: 'En revisión',      shortLabel: 'En revisión',   color: 'var(--amber)'  },
+  { key: 'revision_solicitada', label: 'Rev. solicitada',  shortLabel: 'Rev. solicit.', color: 'var(--purple)' },
+  { key: 'aceptado',            label: 'Aceptado ✓',      shortLabel: 'Aceptado ✓',   color: 'var(--green)'  },
+  { key: 'rechazado',           label: 'Rechazado',        shortLabel: 'Rechazado',     color: 'var(--red)'    },
 ];
-const SUB_TYPES = ['Paper','Grant','Ponencia','Capítulo','Reporte','Otro'];
-
-// Mapas derivados de SUB_STATUSES — única fuente de verdad para color y etiqueta corta
+// Mapas derivados — fuente única de verdad
 const SUB_COLOR_MAP   = Object.fromEntries(SUB_STATUSES.map(s => [s.key, s.color]));
-const SUB_SHORT_LABEL = {
-  preparacion:'En prep.', enviado:'Enviado', en_revision:'En revisión',
-  revision_solicitada:'Rev. solicit.', aceptado:'Aceptado ✓', rechazado:'Rechazado'
-};
+const SUB_SHORT_LABEL = Object.fromEntries(SUB_STATUSES.map(s => [s.key, s.shortLabel]));
+const SUB_TYPES = ['Paper','Grant','Ponencia','Capítulo','Reporte','Otro'];
 
 function subStatusBadge(status) {
   const s = SUB_STATUSES.find(s => s.key === status) || SUB_STATUSES[0];
@@ -3905,11 +3910,6 @@ async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
     App._skipTemplateStep = true;
     showAddProjectModal();
   }
-}
-
-async function inspectSubmission(id) {
-  // Las submissions son ahora proyectos tipo Paper; delegar a inspectProject
-  return inspectProject(id);
 }
 
 // ==============================================================
@@ -4648,7 +4648,7 @@ async function renderCollaboratorHub() {
   mainContent.querySelectorAll('[data-inspect-meeting]').forEach(el =>
     el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
   mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
-    el.addEventListener('click', () => inspectSubmission(+el.dataset.inspectSubmission)));
+    el.addEventListener('click', () => inspectProject(+el.dataset.inspectSubmission)));
 
   $('chubBackBtn').addEventListener('click', () => navigate('collaborators'));
   $('chubEditBtn').addEventListener('click', () => {
@@ -5210,10 +5210,9 @@ async function renderProjectHub() {
     </div>`;
 
   // Completeness
-  projectCompleteness(p).then(pct => {
-    const el = $('hubCompleteness');
-    if (el) el.innerHTML = completenessBarHTML(pct);
-  });
+  const _hubPct = projectCompleteness(p);
+  const _hubCEl = $('hubCompleteness');
+  if (_hubCEl) _hubCEl.innerHTML = completenessBarHTML(_hubPct);
 
   // Section toggle
   mainContent.querySelectorAll('[data-hub-toggle]').forEach(header => {
@@ -5232,7 +5231,7 @@ async function renderProjectHub() {
   mainContent.querySelectorAll('[data-inspect-idea]').forEach(el =>
     el.addEventListener('click', () => inspectIdea(+el.dataset.inspectIdea)));
   mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
-    el.addEventListener('click', () => typeof inspectSubmission === 'function' && inspectSubmission(+el.dataset.inspectSubmission)));
+    el.addEventListener('click', () => typeof inspectSubmission === 'function' && inspectProject(+el.dataset.inspectSubmission)));
   mainContent.querySelectorAll('[data-inspect-meeting]').forEach(el =>
     el.addEventListener('click', () => typeof inspectMeeting === 'function' && inspectMeeting(+el.dataset.inspectMeeting)));
   mainContent.querySelectorAll('[data-inspect-ref]').forEach(el =>
@@ -5471,7 +5470,7 @@ async function renderFocusFeed() {
   mainContent.querySelectorAll('[data-inspect-idea]').forEach(el =>
     el.addEventListener('click', () => inspectIdea(+el.dataset.inspectIdea)));
   mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
-    el.addEventListener('click', () => typeof inspectSubmission === 'function' && inspectSubmission(+el.dataset.inspectSubmission)));
+    el.addEventListener('click', () => typeof inspectSubmission === 'function' && inspectProject(+el.dataset.inspectSubmission)));
   mainContent.querySelectorAll('[data-inspect-meeting]').forEach(el =>
     el.addEventListener('click', () => typeof inspectMeeting === 'function' && inspectMeeting(+el.dataset.inspectMeeting)));
 }
@@ -6308,11 +6307,15 @@ async function renderTutorial() {
 }
 
 async function renderStarred() {
-  const projects = (await db.projects.toArray()).filter(p => p.starred && !p.archived);
-  const cols     = await db.kanbanColumns.toArray();
+  const [allProjects, cols, ideas, snippets] = await Promise.all([
+    db.projects.toArray(),
+    db.kanbanColumns.toArray(),
+    db.ideas.filter(i => i.starred).toArray(),
+    db.snippets.filter(s => s.starred).toArray(),
+  ]);
+  const projects = allProjects.filter(p => p.starred && !p.archived);
   const colMap   = Object.fromEntries(cols.map(c => [c.id, c]));
-  const ideas    = (await db.ideas.toArray()).filter(i => i.starred);
-  const snippets = (await db.snippets.toArray()).filter(s => s.starred);
+  const projMap  = Object.fromEntries(allProjects.map(p => [p.id, p]));
 
   mainContent.innerHTML = `
     <div class="view">
@@ -6330,7 +6333,7 @@ async function renderStarred() {
       ${ideas.length ? `
         <div class="section-title mt-16">Ideas</div>
         <div class="ideas-list">
-          ${ideas.map(i => ideaItemHTML(i, {})).join('')}
+          ${ideas.map(i => ideaItemHTML(i, projMap)).join('')}
         </div>` : ''}
       ${snippets.length ? `
         <div class="section-title mt-16">Snippets</div>
@@ -7537,6 +7540,9 @@ function openInspector() {
  * Llamado internamente por renderView() en cada navegación.
  */
 function _softResetInspector() {
+  // Cancelar cualquier hover card pendiente
+  HoverCard.hide();
+  clearTimeout(HoverCard._timer);
   App.inspectorHistory    = [];
   App.inspectedType       = null;
   App.inspectedId         = null;
@@ -8083,8 +8089,9 @@ async function inspectProject(id) {
     inspectProject(p.id);
   });
 
-  // Async completeness in inspector
-  projectCompleteness(p).then(pct => {
+  // completeness in inspector
+  {
+    const pct = projectCompleteness(p);
     const el = $('completenessInspector');
     if (el) el.innerHTML = `
       <div class="inspector-related-title">Completitud del proyecto</div>
@@ -8097,7 +8104,7 @@ async function inspectProject(id) {
           !(p.tags||[]).length   && 'etiquetas',
         ].filter(Boolean).join(', ') : '✓ Proyecto completo'}
       </div>`;
-  });
+  }
 
   // Quick-Add contextual — abre el modal correspondiente con projectId pre-cargado
   inspectorBody.querySelectorAll('.insp-qa-btn').forEach(btn => {
@@ -8189,7 +8196,7 @@ async function inspectProject(id) {
   inspectorBody.querySelectorAll('[data-goto-sub]').forEach(el =>
     el.addEventListener('click', () => {
       //navigate('submissions');
-      setTimeout(() => inspectSubmission(+el.dataset.gotoSub), 150);
+      setTimeout(() => inspectProject(+el.dataset.gotoSub), 150);
     }));
   inspectorBody.querySelectorAll('[data-goto-ref]').forEach(el =>
     el.addEventListener('click', () => {
@@ -8838,7 +8845,7 @@ function prioBadgeClass(prio) {
  * Criteria: title(20) + description(15) + deadline(15) + responsible(10)
  *           + tags(10) + ideas(15) + snippets(15)
  */
-async function projectCompleteness(p) {
+function projectCompleteness(p) {
   let score = 0;
   if (p.title?.trim())       score += 20;
   if (p.description?.trim()) score += 20;
@@ -9048,7 +9055,6 @@ async function exportProjectAsMarkdown(projectId) {
 
   const refs  = typeof db.references  !== 'undefined' ? await db.references.where('projectId').equals(projectId).toArray()  : [];
   const meets = typeof db.meetings    !== 'undefined' ? await db.meetings.where('projectId').equals(projectId).toArray()     : [];
-  const subs  = typeof db.submissions !== 'undefined' ? await db.submissions.where('projectId').equals(projectId).toArray()  : [];
   const col   = cols.find(c => c.id === p.columnId);
 
   const hr  = '\n\n---\n\n';
@@ -9082,21 +9088,20 @@ async function exportProjectAsMarkdown(projectId) {
     });
   }
 
-  if (subs.length) {
-    md += `${hr}## Submissions (${subs.length})\n\n`;
-    subs.forEach(s => {
-      md += `### ${s.title}\n`;
-      md += `- **Estado:** ${s.status}\n`;
-      if (s.targetVenue) md += `- **Venue:** ${s.targetVenue}\n`;
-      if (s.deadlineAt)  md += `- **Deadline:** ${formatDate(s.deadlineAt)}\n`;
-      if (s.submittedAt) md += `- **Enviado:** ${formatDate(s.submittedAt)}\n`;
-      if (s.notes) md += `\n${s.notes}\n`;
-      if ((s.rounds||[]).length) {
-        md += `\n**Rondas:**\n`;
-        s.rounds.forEach(r => { md += `- ${r.date}: ${r.status} — ${r.notes||''}\n`; });
-      }
-      md += '\n';
-    });
+  if (p.type === 'Paper' && p.submissionStatus) {
+    const subStatus = SUB_STATUSES.find(s => s.key === p.submissionStatus);
+    md += `${hr}## Submission\n\n`;
+    md += `| Campo | Valor |\n|---|---|\n`;
+    md += `| **Estado** | ${subStatus?.label || p.submissionStatus} |\n`;
+    if (p.targetVenue)      md += `| **Venue** | ${p.targetVenue} |\n`;
+    if (p.deadline)         md += `| **Deadline** | ${formatDate(p.deadline)} |\n`;
+    if (p.submittedAt)      md += `| **Enviado** | ${formatDate(p.submittedAt)} |\n`;
+    if (p.submissionNotes)  md += `\n${p.submissionNotes}\n`;
+    if ((p.submissionRounds || []).length) {
+      md += `\n**Rondas:**\n`;
+      p.submissionRounds.forEach(r => { md += `- ${r.date}: ${r.status} — ${r.notes || ''}\n`; });
+    }
+    md += '\n';
   }
 
   if (meets.length) {
@@ -9881,6 +9886,10 @@ async function init() {
       if (ok) DeadlineReminder.start();
     });
   }
+
+  // Persistir preferencias del Kanban
+  App.kanbanDensity  = localStorage.getItem('ros-kanban-density')  || 'detailed';
+  App.kanbanGroupBy  = localStorage.getItem('ros-kanban-groupby')  || 'none';
 
   // Theme persistence
   const savedTheme = localStorage.getItem('ros-theme') || 'dark';
