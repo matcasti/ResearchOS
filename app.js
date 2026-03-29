@@ -22,6 +22,7 @@ const App = {
   savedViews:       null,
   triageIdx:        0,
   triageQueue:      [],
+  _latexOpen:       false,
   _refFilterProject:  'all',
   groupBy:            'none',   // 'none'|'type'|'priority'|'column'|'responsible'|'area'
   filterResponsible:  'all',
@@ -426,12 +427,15 @@ async function _renderEstadoDia() {
 //  VIEW: DASHBOARD
 // ==============================================================
 async function renderDashboard() {
-  const { projects, ideas, snippets, ideaUnread, recentProjects } =
-    await getDashboardStats();
-  const cols        = await db.kanbanColumns.orderBy('order').toArray();
-  const colMap      = Object.fromEntries(cols.map(c => [c.id, c]));
-  const allProjects = await db.projects.toArray();
-  const today       = new Date(); today.setHours(0,0,0,0);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const [statsResult, cols, allProjects, estadoDiaHTML] = await Promise.all([
+    getDashboardStats(),
+    db.kanbanColumns.orderBy('order').toArray(),
+    db.projects.toArray(),
+    _renderEstadoDia()
+  ]);
+  const { projects, ideas, snippets, ideaUnread, recentProjects } = statsResult;
+  const colMap = Object.fromEntries(cols.map(c => [c.id, c]));
 
   // Compute deadline urgency
   const withDeadlines = allProjects
@@ -455,8 +459,6 @@ async function renderDashboard() {
     if (p.daysLeft <= 7) return `<span class="deadline-urgency urgency-soon">${p.daysLeft}d</span>`;
     return `<span class="deadline-urgency urgency-ok">${p.daysLeft}d</span>`;
   };
-
-  const estadoDiaHTML = await _renderEstadoDia();
 
   mainContent.innerHTML = `
     <div class="view">
@@ -1006,18 +1008,14 @@ function _kanbanSwimlaneHTML(kanbanData, filterFn, unreadByProject, activeSubByP
 //  VIEW: KANBAN
 // ==============================================================
 async function renderKanban() {
-  const [kanbanData, colPresets, areas] = await Promise.all([
+  const [kanbanData, colPresets, areas, unreadIdeas, allKanbanMeets] = await Promise.all([
     getKanbanData(),
     _getColPresets(),
     _getAreas(),
-  ]);
-  const areaMap = Object.fromEntries(areas.map(a => [a.id, a]));
-
-  // Pre-cargar ideas no leídas, submissions activas y action items pendientes
-  const [unreadIdeas, allKanbanMeets] = await Promise.all([
     db.ideas.where('status').equals('unread').toArray(),
     db.meetings.toArray(),
   ]);
+  const areaMap = Object.fromEntries(areas.map(a => [a.id, a]));
   const unreadByProject = {};
   unreadIdeas.forEach(i => {
     if (i.projectId) unreadByProject[i.projectId] = (unreadByProject[i.projectId] || 0) + 1;
@@ -1523,8 +1521,7 @@ function kanbanDragOver(e) {
   t?.classList.add('drag-over');
 }
 function kanbanDragLeave(e) {
-  // Determinar la columna contenedora real (puede ser el propio elemento o un ancestro)
-  const col = e.currentTarget.classList?.contains('kanban-col')
+  const col = e.currentTarget.classList.contains('kanban-col')
     ? e.currentTarget
     : e.currentTarget.closest('[data-swim-col]') || e.currentTarget.closest('.kanban-col');
   // Solo quitar la clase si el puntero salió completamente de la columna
@@ -2476,9 +2473,6 @@ async function renderIdeas() {
 
   _attachProjectPicker('quickCaptureProjs', projects);
 
-  // -- Listeners del panel LaTeX ----------------------
-  if (!App._latexOpen) App._latexOpen = false;
-
   $('latexToggleBtn')?.addEventListener('click', () => {
     App._latexOpen = !App._latexOpen;
     renderView('ideas');
@@ -2616,6 +2610,7 @@ async function saveQuickIdea() {
   sessionStorage.removeItem('ros-idea-draft-title');
   sessionStorage.removeItem('ros-idea-draft-content');
   renderIdeas();
+  updateBadges(); // sincroniza badge de sidebar
 }
 
 // ==============================================================
@@ -3831,14 +3826,16 @@ async function renderSubmissions() {
       </div>
     </div>`;
 
-  $('addSubmissionBtn').addEventListener('click', () => {
-    App._projectTemplate  = 'paper';
-    App._skipTemplateStep = true;
-    showAddProjectModal();
-  });
+  $('addSubmissionBtn').addEventListener('click', _openNewPaperModal);
 
   mainContent.querySelectorAll('[data-inspect-project]').forEach(el =>
     el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+}
+
+function _openNewPaperModal() {
+  App._projectTemplate  = 'paper';
+  App._skipTemplateStep = true;
+  showAddProjectModal();
 }
 
 async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
@@ -3906,9 +3903,7 @@ async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
     });
   } else {
     // Crear nuevo proyecto tipo Paper
-    App._projectTemplate  = 'paper';
-    App._skipTemplateStep = true;
-    showAddProjectModal();
+    _openNewPaperModal();
   }
 }
 
@@ -7143,6 +7138,20 @@ function _customFieldsDisplayHTML(customFields, schemas, type) {
     </div>`;
 }
 
+// Helper: resuelve todos los campos de persona de un formulario de proyecto en paralelo
+async function _collectProjectPersonFields(respInputId, coauthInputId) {
+  const [responsible, coauthorNames] = await Promise.all([
+    _resolveCanonicalName($(respInputId)),
+    _resolveCanonicalNames($(coauthInputId))
+  ]);
+  return {
+    responsible,
+    responsibleId:  _getPersonId($(respInputId)) ?? null,
+    coauthors:      coauthorNames,
+    coauthorIds:    _getPersonIds($(coauthInputId)).map(p => p.id).filter(Boolean)
+  };
+}
+
 async function showAddProjectModal(defaultColId, defaultParentId = null) {
   // -- Paso 0: elegir template ------------------------
   if (!App._skipTemplateStep) {
@@ -7267,11 +7276,8 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
     if (!title) { showToast('El título es requerido', 'error'); return; }
 
     // nombres canonizados + IDs
-    const responsibleId = _getPersonId($('mp-responsible'));
-    const responsible   = await _resolveCanonicalName($('mp-responsible'));
-    const coauthorNames = await _resolveCanonicalNames($('mp-coauthors'));
-    const coauthorPairs = _getPersonIds($('mp-coauthors'));
-    const coauthorIds   = coauthorPairs.map(p => p.id).filter(Boolean);
+    const { responsible, responsibleId, coauthors: coauthorNames, coauthorIds } =
+      await _collectProjectPersonFields('mp-responsible', 'mp-coauthors');
 
     await dbWrite(() => db.projects.add({
       title,
@@ -7749,7 +7755,10 @@ function _inspectorStar() {
 async function inspectProject(id) {
   const p = await db.projects.get(id);
   if (!p) return;
-  App._mdEditing = false;
+  // Preservar estado del editor si se re-renderiza el mismo proyecto;
+  // resetear solo al cambiar de proyecto.
+  if (App.inspectedId !== id) App._mdEditing = false;
+  App._inspectedProjectId = id; // activa sugerencias contextuales en Command Palette
   const [cols, areas] = await Promise.all([
     db.kanbanColumns.toArray(),
     _getAreas(),
@@ -8552,11 +8561,8 @@ async function showEditProjectModal(p) {
   $('epCancel').addEventListener('click', closeModal);
   $('epSave').addEventListener('click', async () => {
     // nombres canonizados + IDs
-    const responsibleId = _getPersonId($('ep-responsible'));
-    const responsible   = await _resolveCanonicalName($('ep-responsible'));
-    const coauthorNames = await _resolveCanonicalNames($('ep-coauthors'));
-    const coauthorPairs = _getPersonIds($('ep-coauthors'));
-    const coauthorIds   = coauthorPairs.map(pr => pr.id).filter(Boolean);
+    const { responsible, responsibleId, coauthors: coauthorNames, coauthorIds } =
+      await _collectProjectPersonFields('ep-responsible', 'ep-coauthors');
 
     await snapshotProject(p.id);
     const newType          = $('ep-type').value;
@@ -9034,10 +9040,10 @@ async function previewImportCSV(file) {
     const cols = await db.kanbanColumns.orderBy('order').toArray();
     const defaultColId = cols[0]?.id ?? 1;
     const withCol = toImport.map(p => ({ ...p, columnId: defaultColId }));
-    await db.projects.bulkAdd(withCol);
+    await dbWrite(() => db.projects.bulkAdd(withCol));
     preview.innerHTML = '';
     showToast(`${withCol.length} proyectos importados ✓`, 'success');
-    await updateBadges();
+    renderView(App.view);
   });
 }
 
