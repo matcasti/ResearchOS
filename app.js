@@ -2995,17 +2995,28 @@ async function renderTimeline() {
       return (showOverdue || d >= today) && d >= start && d <= end;
     };
 
+    // Helper recursivo: verdadero si el proyecto o cualquier descendiente
+    // tiene una fecha (deadline de idea/reunión o deadline propio de subproyecto)
+    // que cae dentro de la ventana actual.
+    const hasVisibleDescendant = (projId) => {
+      if ((ideasByProject[projId]  || []).some(i => inWindow(i.deadline))) return true;
+      if ((meetsByProject[projId]  || []).some(m => inWindow(m.date)))      return true;
+      const children = childProjMap[projId] || [];
+      return children.some(c => inWindow(c.deadline) || hasVisibleDescendant(c.id));
+    };
+
     const visibleRoots = rootWithDL.filter(p => {
       const pd = new Date(p.deadline + 'T12:00:00');
       if (!showOverdue && pd < today) return false;
       return pd >= start && pd <= end;
     });
-    // Incluir raíces que solo tienen sub-ítems en la ventana (sin su propio deadline visible)
-    const rootsWithVisibleChildren = rootWithDL.filter(p => {
+    // Incluir raíces que solo tienen sub-ítems en la ventana (sin su propio deadline visible).
+    // Parte de TODOS los proyectos raíz (no solo los que tienen deadline propio) y usa
+    // hasVisibleDescendant para buscar recursivamente en toda la jerarquía.
+    const allRoots = projects.filter(p => !p.parentId);
+    const rootsWithVisibleChildren = allRoots.filter(p => {
       if (visibleRoots.includes(p)) return false;
-      return (childProjMap[p.id]||[]).some(c => inWindow(c.deadline)) ||
-             (ideasByProject[p.id]||[]).some(i => inWindow(i.deadline)) ||
-             (meetsByProject[p.id]||[]).some(m => inWindow(m.date));
+      return hasVisibleDescendant(p.id);
     });
     const allVisibleRoots = [...visibleRoots, ...rootsWithVisibleChildren];
 
