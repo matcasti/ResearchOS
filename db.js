@@ -75,11 +75,11 @@ async function seedDefaults() {
 async function getKanbanData() {
   const [cols, projects] = await Promise.all([
     db.kanbanColumns.orderBy('order').toArray(),
-    db.projects.toArray()
+    db.projects.filter(p => !p.archived).toArray()
   ]);
   return cols.map(col => ({
     ...col,
-    cards: projects.filter(p => p.columnId === col.id && !p.archived)
+    cards: projects.filter(p => p.columnId === col.id)
   }));
 }
 

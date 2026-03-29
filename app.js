@@ -137,6 +137,12 @@ const DeadlineReminder = {
   stop() { clearInterval(this._interval); }
 };
 
+let _searchIdxTimer = null;
+function _scheduleSearchIndex() {
+  clearTimeout(_searchIdxTimer);
+  _searchIdxTimer = setTimeout(() => _buildSearchIndex().catch(() => {}), 1500);
+}
+
 /** Wraps any IndexedDB write: shows saving → saved indicator. */
 async function dbWrite(fn) {
   SaveIndicator.show();
@@ -144,14 +150,13 @@ async function dbWrite(fn) {
     const r = await fn();
     SaveIndicator.done();
     GoogleSync.scheduleAutoSave();
-    _buildSearchIndex().catch(() => {});
+    _scheduleSearchIndex();
     _renderResearchStatus().catch(() => {});
     return r;
   } catch(e) {
     SaveIndicator.error();
     throw e;
   }
-
 }
 
 // ── Breadcrumbs ──────────────────────────────────────────────
@@ -2907,7 +2912,6 @@ async function renderTimeline() {
 
   // ── Reuniones con fecha ────────────────────────────────
   const allMeetsWithDate = await db.meetings.filter(m => !!m.date).toArray();
-  const subsByProject    = {}; // mantenido vacío; submissions ahora son proyectos Paper
   const meetsByProject = {};
   allMeetsWithDate.forEach(m => {
     const key = m.projectId || '_orphan';
@@ -2936,7 +2940,7 @@ async function renderTimeline() {
   const getDateRange = () => {
     const start = new Date(today);
     const end   = new Date(today);
-    if (zoomLevel === 'week')  { start.setDate(today.getDate() - 1); end.setDate(today.getDate() + 7); }
+    if (zoomLevel === 'week')  { start.setDate(today.getDate() - 2); end.setDate(today.getDate() + 7); }
     if (zoomLevel === 'month') { start.setDate(today.getDate() - 3); end.setMonth(today.getMonth() + 1); end.setDate(end.getDate() + 3); }
     if (zoomLevel === 'year')  { start.setMonth(today.getMonth() - 1); end.setFullYear(today.getFullYear() + 1); }
     return { start, end };
@@ -3018,8 +3022,7 @@ async function renderTimeline() {
 
       (childProjMap[projId] || [])
         .filter(cp => inWindow(cp.deadline) ||
-          (subsByProject[cp.id]||[]).some(s => inWindow(s.deadlineAt)) ||
-          (ideasByProject[cp.id]||[]).some(i => inWindow(i.deadline))    ||
+          (ideasByProject[cp.id]||[]).some(i => inWindow(i.deadline)) ||
           (meetsByProject[cp.id]||[]).some(m => inWindow(m.date)))
         .forEach(cp => {
           const cpHasDl = !!cp.deadline && inWindow(cp.deadline);
@@ -8152,7 +8155,7 @@ async function showEditProjectModal(p) {
     const coauthorIds   = coauthorPairs.map(pr => pr.id).filter(Boolean);
 
     await snapshotProject(p.id);
-    await db.projects.update(p.id, {
+    await dbWrite(() => db.projects.update(p.id, {
       title:         $('ep-title').value.trim(),
       type:          $('ep-type').value,
       columnId:      +$('ep-col').value,
@@ -8167,11 +8170,15 @@ async function showEditProjectModal(p) {
       areaId:        +$('ep-area').value || null,
       updatedAt:     new Date().toISOString(),
       customFields:  _readCustomFields() || p.customFields || {},
-    });
+    }));
     closeModal();
     showToast('Proyecto actualizado ✓', 'success');
-    await inspectProject(p.id);
-    renderView(App.view);
+    if (App.view === 'project-hub') {
+      renderProjectHub();
+    } else {
+      renderView(App.view);
+      setTimeout(() => inspectProject(p.id), 150);
+    }
   });
 }
 
