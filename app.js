@@ -38,9 +38,11 @@ const App = {
   projSortKey:       '',      // '' | 'title' | 'type' | 'priority' | 'column' | 'responsible' | 'area' | 'deadline'
   projSortDir:       'asc',   // 'asc' | 'desc'
   collaboratorHubId: null,    //
-  ideaBulkMode:      false,    // Feature 11
-  ideaBulkSelected:  new Set(), // Feature 11
-  orphanBulkSelected: new Map(), // Feature 11: Map<`${type}-${id}` → {type,id,title}>
+  ideaBulkMode:        false,
+  ideaBulkSelected:    new Set(),
+  orphanBulkSelected:  new Map(),
+  _triageKeyHandler:   null,
+  _hubMenuClickHandler: null,
 };
 
 // ── DOM refs ─────────────────────────────────────────────────
@@ -2323,6 +2325,7 @@ async function renderIdeas() {
   const latexPreview = $('latexPreview');
 
   latexInput?.addEventListener('input', () => {
+    if (!latexPreview) return;
     const val = latexInput.value.trim();
     latexPreview.innerHTML = val
       ? `\\[${val.replace(/^\$\$?|\$\$?$/g, '')}\\]`
@@ -2960,9 +2963,9 @@ async function renderTimeline() {
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
           <!-- Zoom -->
           <div class="tl-btn-group">
-            <button class="btn btn-ghost btn-sm tl-zoom active" data-zoom="week">Semana</button>
-            <button class="btn btn-ghost btn-sm tl-zoom"        data-zoom="month">Mes</button>
-            <button class="btn btn-ghost btn-sm tl-zoom"        data-zoom="year">Año</button>
+            <button class="btn btn-ghost btn-sm tl-zoom ${zoomLevel==='week' ?'active':''}" data-zoom="week">Semana</button>
+            <button class="btn btn-ghost btn-sm tl-zoom ${zoomLevel==='month'?'active':''}" data-zoom="month">Mes</button>
+            <button class="btn btn-ghost btn-sm tl-zoom ${zoomLevel==='year' ?'active':''}" data-zoom="year">Año</button>
           </div>
           <!-- Color -->
           <div class="tl-btn-group">
@@ -3211,11 +3214,6 @@ async function renderTimeline() {
   };
 
   // ── Evento inicial: zoom = año por defecto ──────────────
-  // Seleccionar el btn activo de zoom correcto
-  mainContent.querySelectorAll('.tl-zoom').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.zoom === zoomLevel);
-  });
-
   rebuild();
 
   // ── Listeners de controles ──────────────────────────────
@@ -5096,13 +5094,18 @@ async function renderProjectHub() {
     const open = addDropdown.classList.toggle('open');
     addTrigger.classList.toggle('active', open);
   });
-  document.addEventListener('click', function closeHubMenu(e) {
+  if (App._hubMenuClickHandler) {
+    document.removeEventListener('click', App._hubMenuClickHandler);
+  }
+  App._hubMenuClickHandler = function closeHubMenu(e) {
     if (!$('hubAddMenuWrap')?.contains(e.target)) {
       addDropdown?.classList.remove('open');
       addTrigger?.classList.remove('active');
-      document.removeEventListener('click', closeHubMenu);
+      document.removeEventListener('click', App._hubMenuClickHandler);
+      App._hubMenuClickHandler = null;
     }
-  });
+  };
+  document.addEventListener('click', App._hubMenuClickHandler);
   // Cerrar dropdown al elegir una opción
   addDropdown?.querySelectorAll('.hub-add-item').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -5687,6 +5690,7 @@ async function renderIdeaTriage() {
   const onKey = (e) => {
     if (!mainContent.querySelector('.triage-view')) {
       document.removeEventListener('keydown', onKey);
+      App._triageKeyHandler = null;
       return;
     }
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -5694,8 +5698,18 @@ async function renderIdeaTriage() {
     else if (e.key === 'a' || e.key === 'A') $('triageBtnArchive')?.click();
     else if (e.key === 'p' || e.key === 'P') $('triageBtnProject')?.click();
     else if (e.key === 'e' || e.key === 'E') $('triageBtnEdit')?.click();
-    else if (e.key === 'Escape') { document.removeEventListener('keydown', onKey); navigate('ideas'); }
+    else if (e.key === 'Escape') {
+      document.removeEventListener('keydown', onKey);
+      App._triageKeyHandler = null;
+      navigate('ideas');
+    }
   };
+  // Limpiar handler previo si existe
+  if (App._triageKeyHandler) {
+    document.removeEventListener('keydown', App._triageKeyHandler);
+    App._triageKeyHandler = null;
+  }
+  App._triageKeyHandler = onKey;
   document.addEventListener('keydown', onKey);
 }
 
@@ -6583,10 +6597,9 @@ async function renderSettings() {
   }
 
   // ── Feature 17: Custom Fields settings section ───────────
-  const _cfDangerZone = mainContent.querySelector('.settings-danger-zone');
-  if (_cfDangerZone) {
+  if (_dangerZone) {
     const _cfSchemas = await _getTypeSchemas();
-    _cfDangerZone.insertAdjacentHTML('beforebegin', `
+    _dangerZone.insertAdjacentHTML('beforebegin', `
       <div class="settings-section" id="cfSettingsSection">
         <div class="settings-section-title">🗂 Campos personalizados por tipo</div>
         <div class="settings-body">
@@ -6703,7 +6716,7 @@ async function renderSettings() {
           await _saveTypeSchemas(fresh);
           closeModal();
           showToast(`Campos de ${type} guardados ✓`, 'success');
-          renderSettings(); // refrescar la vista
+          renderView('settings'); // refrescar la vista
         });
       });
     });
@@ -6713,7 +6726,7 @@ async function renderSettings() {
       if (!confirm('¿Restaurar los schemas por defecto? Los campos personalizados se perderán.')) return;
       await _saveTypeSchemas({ ...DEFAULT_TYPE_SCHEMAS });
       showToast('Schemas restaurados ✓', 'success');
-      renderSettings();
+      renderView('settings');
     });
   }
 }
@@ -8318,7 +8331,11 @@ async function inspectIdea(id) {
 
   const stInput  = $(`stInput-${id}`);
   const stAddBtn = $(`stAddBtn-${id}`);
-  stAddBtn?.addEventListener('click', () => { addSubtask(id, stInput.value); stInput.value = ''; });
+  stAddBtn?.addEventListener('click', () => {
+    if (!stInput) return;
+    addSubtask(id, stInput.value);
+    stInput.value = '';
+  });
   stInput?.addEventListener('keydown', e => {
     if (e.key === 'Enter') { addSubtask(id, stInput.value); stInput.value = ''; }
   });
@@ -9303,7 +9320,16 @@ async function _attachCollaboratorAutocomplete(inputEl, { multi = false } = {}) 
 
   // Al escribir manualmente (no desde dropdown), invalidar el ID almacenado
   inputEl.addEventListener('input', () => {
-    if (!multi) delete inputEl.dataset.selectedCollabId;
+    if (!multi) {
+      delete inputEl.dataset.selectedCollabId;
+    } else {
+      // Limpiar IDs de nombres que ya no están en el texto
+      const currentNames = inputEl.value.split(',').map(s => s.trim()).filter(Boolean);
+      for (const [name] of [..._idMap.entries()]) {
+        if (!currentNames.includes(name)) _idMap.delete(name);
+      }
+      inputEl.dataset.collabIdMap = JSON.stringify([..._idMap.entries()]);
+    }
     showPopup(getQuery());
   });
   inputEl.addEventListener('focus',  () => showPopup(getQuery()));
