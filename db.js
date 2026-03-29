@@ -31,6 +31,30 @@ db.version(3).stores({
   projects:           '++id, title, type, status, columnId, responsible, responsibleId, deadline, priority, createdAt, updatedAt, archived, starred, parentId'
 });
 
+// Version 4: los campos de submission se integran en proyectos tipo Paper.
+// La tabla submissions se mantiene por retrocompatibilidad pero deja de escribirse.
+db.version(4).upgrade(async tx => {
+  const subs = await tx.table('submissions').toArray();
+  for (const sub of subs) {
+    if (!sub.projectId) continue;
+    const proj = await tx.table('projects').get(sub.projectId);
+    if (!proj) continue;
+    const upd = {};
+    if (!proj.submissionStatus)
+      upd.submissionStatus  = sub.status      || 'preparacion';
+    if (!proj.targetVenue    && sub.targetVenue)
+      upd.targetVenue       = sub.targetVenue;
+    if (!proj.submittedAt    && sub.submittedAt)
+      upd.submittedAt       = sub.submittedAt;
+    if (!proj.submissionNotes && sub.notes)
+      upd.submissionNotes   = sub.notes;
+    if (!(proj.submissionRounds || []).length && (sub.rounds || []).length)
+      upd.submissionRounds  = sub.rounds;
+    if (Object.keys(upd).length)
+      await tx.table('projects').update(sub.projectId, upd);
+  }
+});
+
 // ── Seed defaults on first run ───────────────────────────────
 async function seedDefaults() {
   const colCount = await db.kanbanColumns.count();
@@ -193,9 +217,16 @@ async function getActivityHeatmap() {
 
 // ── Full export / import ─────────────────────────────────────
 
+// Claves de Google Drive/auth que son device-specific y no deben exportarse
+const _SETTINGS_EXCLUDE = new Set([
+  'google_access_token', 'google_token_expiry',
+  'google_drive_file_id', 'google_user_email',
+]);
+
 async function exportAllData() {
   const [projects, ideas, snippets, resources, collaborators,
-         kanbanColumns, snippetCollections, submissions, meetings, references] =
+         kanbanColumns, snippetCollections, submissions, meetings, references,
+         allSettings] =
     await Promise.all([
       db.projects.toArray(),
       db.ideas.toArray(),
@@ -206,30 +237,54 @@ async function exportAllData() {
       db.snippetCollections.toArray(),
       db.submissions.toArray(),
       db.meetings.toArray(),
-      db.references.toArray()
+      db.references.toArray(),
+      db.settings.toArray(),
     ]);
+
+  // Excluir credenciales y tokens device-specific
+  const settings = allSettings.filter(s => !_SETTINGS_EXCLUDE.has(s.key));
+
   return JSON.stringify(
     { _version: 3, exportedAt: new Date().toISOString(),
       projects, ideas, snippets, resources, collaborators,
       kanbanColumns, snippetCollections,
-      submissions, meetings, references },
+      submissions, meetings, references, settings },
     null, 2
   );
 }
+
+// Claves device-specific que se preservan aunque se haga un reemplazo total
+const _SETTINGS_PRESERVE = new Set([
+  'google_access_token', 'google_token_expiry', 'google_drive_file_id',
+  'google_user_email',   'google_sync_last',    'google_auto_sync',
+  'google_auto_save_on_change',
+]);
 
 async function importAllData(jsonString) {
   const data = JSON.parse(jsonString);
   await db.transaction('rw',
     [db.projects, db.ideas, db.snippets, db.resources, db.collaborators,
-     db.kanbanColumns, db.snippetCollections, db.submissions, db.meetings, db.references],
+     db.kanbanColumns, db.snippetCollections, db.submissions, db.meetings,
+     db.references, db.settings],
     async () => {
+      // Rescatar settings device-specific antes de limpiar
+      const preserved = await db.settings
+        .filter(s => _SETTINGS_PRESERVE.has(s.key))
+        .toArray();
+
       await Promise.all([
-        db.projects.clear(),          db.ideas.clear(),
-        db.snippets.clear(),          db.resources.clear(),
-        db.collaborators.clear(),     db.kanbanColumns.clear(),
+        db.projects.clear(),           db.ideas.clear(),
+        db.snippets.clear(),           db.resources.clear(),
+        db.collaborators.clear(),      db.kanbanColumns.clear(),
         db.snippetCollections.clear(), db.submissions.clear(),
-        db.meetings.clear(),          db.references.clear()
+        db.meetings.clear(),           db.references.clear(),
+        db.settings.clear(),
       ]);
+
+      // Settings del backup (sin credenciales) + settings device-specific preservadas
+      const importedSettings = (data.settings || [])
+        .filter(s => !_SETTINGS_PRESERVE.has(s.key));
+
       await Promise.all([
         db.projects.bulkAdd(data.projects || []),
         db.ideas.bulkAdd(data.ideas || []),
@@ -240,7 +295,8 @@ async function importAllData(jsonString) {
         db.snippetCollections.bulkAdd(data.snippetCollections || []),
         db.submissions.bulkAdd(data.submissions || []),
         db.meetings.bulkAdd(data.meetings || []),
-        db.references.bulkAdd(data.references || [])
+        db.references.bulkAdd(data.references || []),
+        db.settings.bulkPut([...importedSettings, ...preserved]),
       ]);
     }
   );
@@ -252,14 +308,26 @@ async function mergeAllData(jsonString) {
   await db.transaction('rw',
     [db.projects, db.ideas, db.snippets, db.resources,
      db.collaborators, db.kanbanColumns, db.snippetCollections,
-     db.submissions, db.meetings, db.references],
+     db.submissions, db.meetings, db.references, db.settings],
     async () => {
+      // Helper para tablas con PK autoincremental: solo añade registros cuyo id no existe
       const addNew = async (table, items = []) => {
         const existing = new Set((await table.toArray()).map(r => r.id));
         const fresh = items.filter(r => !existing.has(r.id));
         if (fresh.length) await table.bulkAdd(fresh);
         return fresh.length;
       };
+
+      // Helper para settings (PK = key): solo añade claves que no existen localmente
+      // y nunca toca las credenciales device-specific
+      const mergeSettings = async (incoming = []) => {
+        const safe = incoming.filter(s => !_SETTINGS_PRESERVE.has(s.key));
+        const existing = new Set((await db.settings.toArray()).map(s => s.key));
+        const fresh = safe.filter(s => !existing.has(s.key));
+        if (fresh.length) await db.settings.bulkAdd(fresh);
+        return fresh.length;
+      };
+
       const counts = await Promise.all([
         addNew(db.projects,           data.projects           || []),
         addNew(db.ideas,              data.ideas              || []),
@@ -271,8 +339,9 @@ async function mergeAllData(jsonString) {
         addNew(db.submissions,        data.submissions        || []),
         addNew(db.meetings,           data.meetings           || []),
         addNew(db.references,         data.references         || []),
+        mergeSettings(data.settings  || []),
       ]);
-      return counts.reduce((a,b) => a+b, 0);
+      return counts.reduce((a, b) => a + b, 0);
     }
   );
 }

@@ -889,9 +889,8 @@ async function renderKanban() {
   const areaMap = Object.fromEntries(areas.map(a => [a.id, a]));
 
   // Pre-cargar ideas no leídas, submissions activas y action items pendientes
-  const [unreadIdeas, allKanbanSubs, allKanbanMeets] = await Promise.all([
+  const [unreadIdeas, allKanbanMeets] = await Promise.all([
     db.ideas.where('status').equals('unread').toArray(),
-    db.submissions.toArray(),
     db.meetings.toArray(),
   ]);
   const unreadByProject = {};
@@ -899,13 +898,15 @@ async function renderKanban() {
     if (i.projectId) unreadByProject[i.projectId] = (unreadByProject[i.projectId] || 0) + 1;
   });
 
-  // Submission activa más reciente por proyecto (Feature 2)
+  // Estado de submission derivado directamente del proyecto Paper
   const activeSubByProject = {};
-  allKanbanSubs.forEach(s => {
-    if (!s.projectId) return;
-    const ex = activeSubByProject[s.projectId];
-    if (!ex || (s.updatedAt || '') > (ex.updatedAt || ''))
-      activeSubByProject[s.projectId] = s;
+  kanbanData.flatMap(c => c.cards).forEach(p => {
+    if (p.submissionStatus)
+      activeSubByProject[p.id] = {
+        status:      p.submissionStatus,
+        targetVenue: p.targetVenue || '',
+        updatedAt:   p.updatedAt,
+      };
   });
 
   // Action items pendientes por proyecto (Feature 5)
@@ -1642,18 +1643,19 @@ async function renderProjects() {
     }
 
     // ── Datos auxiliares: unread, áreas, hijos (rollup) ───
-    const [unreadIdeas, areas, allSubsForTable] = await Promise.all([
+    const [unreadIdeas, areas] = await Promise.all([
       db.ideas.where('status').equals('unread').toArray(),
       _getAreas(),
-      db.submissions.toArray()
     ]);
-    // Submission más reciente por proyecto (para columna "Etapa" en Papers)
+    // Estado de submission derivado directamente del proyecto (Papers)
     const activeSubForTable = {};
-    allSubsForTable.forEach(s => {
-      if (!s.projectId) return;
-      const ex = activeSubForTable[s.projectId];
-      if (!ex || (s.updatedAt || '') > (ex.updatedAt || ''))
-        activeSubForTable[s.projectId] = s;
+    projects.forEach(p => {
+      if (p.submissionStatus)
+        activeSubForTable[p.id] = {
+          status:      p.submissionStatus,
+          targetVenue: p.targetVenue || '',
+          updatedAt:   p.updatedAt,
+        };
     });
     const areaMap   = Object.fromEntries(areas.map(a => [a.id, a]));
     const unreadMap = {};
@@ -2915,17 +2917,9 @@ async function renderTimeline() {
     });
   });
 
-  // ── Submissions y Reuniones con fecha ──────────────────
-  const [allSubsWithDL, allMeetsWithDate] = await Promise.all([
-    db.submissions.filter(s => !!s.deadlineAt).toArray(),
-    db.meetings.filter(m => !!m.date).toArray(),
-  ]);
-  const subsByProject  = {};
-  allSubsWithDL.forEach(s => {
-    const key = s.projectId || '_orphan';
-    if (!subsByProject[key]) subsByProject[key] = [];
-    subsByProject[key].push(s);
-  });
+  // ── Reuniones con fecha ────────────────────────────────
+  const allMeetsWithDate = await db.meetings.filter(m => !!m.date).toArray();
+  const subsByProject    = {}; // mantenido vacío; submissions ahora son proyectos Paper
   const meetsByProject = {};
   allMeetsWithDate.forEach(m => {
     const key = m.projectId || '_orphan';
@@ -3019,7 +3013,6 @@ async function renderTimeline() {
       if (visibleRoots.includes(p)) return false;
       return (childProjMap[p.id]||[]).some(c => inWindow(c.deadline)) ||
              (ideasByProject[p.id]||[]).some(i => inWindow(i.deadline)) ||
-             (subsByProject[p.id]||[]).some(s => inWindow(s.deadlineAt)) ||
              (meetsByProject[p.id]||[]).some(m => inWindow(m.date));
     });
     const allVisibleRoots = [...visibleRoots, ...rootsWithVisibleChildren];
@@ -3085,46 +3078,6 @@ async function renderTimeline() {
           </div>`);
       });
 
-      (subsByProject[projId] || []).filter(s => inWindow(s.deadlineAt)).forEach(s => {
-        const sc = new Date(s.deadlineAt+'T12:00:00') < today ? 'var(--red)'
-          : (new Date(s.deadlineAt+'T12:00:00') - today) < 7*86400000 ? 'var(--amber)' : 'var(--accent)';
-
-        // Rondas de revisión (Feature 12) — dots adicionales en la misma pista
-        const ROUND_COLORS = {
-          preparacion:'var(--text-3)', enviado:'var(--accent)',
-          en_revision:'var(--amber)', revision_solicitada:'var(--purple)',
-          aceptado:'var(--green)', rechazado:'var(--red)'
-        };
-        const roundDots = (s.rounds || [])
-          .filter(r => r.date && inWindow(r.date))
-          .map(r => {
-            const rc = ROUND_COLORS[r.status] || 'var(--text-2)';
-            return `
-              <div class="timeline-deadline-dot"
-                   style="left:${toX(r.date)};background:${rc};
-                          width:6px;height:6px;border:1.5px solid var(--bg-base)"
-                   title="Ronda: ${esc(r.status)}${r.notes ? ' — ' + r.notes.slice(0,40) : ''} · ${formatDate(r.date)}"></div>
-              <span class="timeline-deadline-label"
-                    style="left:${toX(r.date)};font-size:.55rem;opacity:.7">${formatDate(r.date)}</span>`;
-          }).join('');
-
-        rows.push(`
-          <div class="timeline-row timeline-idea-subrow tl-sub-sub">
-            <div class="timeline-row-label timeline-idea-label"
-                 data-inspect-submission="${s.id}" style="padding-left:${pad}"
-                 title="${esc(s.title)}">📤 ${esc(s.title)}</div>
-            <div class="timeline-track">
-              <div class="timeline-today-line" style="left:${todayX}"></div>
-              ${roundDots}
-              <div class="timeline-deadline-dot"
-                   data-inspect-submission="${s.id}"
-                   style="left:${toX(s.deadlineAt)};background:${sc};width:9px;height:9px"
-                   title="${esc(s.title)} — ${formatDate(s.deadlineAt)}"></div>
-              <span class="timeline-deadline-label" style="left:${toX(s.deadlineAt)}">${formatDate(s.deadlineAt)}</span>
-            </div>
-          </div>`);
-      });
-
       (meetsByProject[projId] || []).filter(m => inWindow(m.date)).forEach(m => {
         const mc = new Date(m.date+'T12:00:00') < today ? 'var(--text-3)' : 'var(--teal)';
         rows.push(`
@@ -3149,9 +3102,8 @@ async function renderTimeline() {
     // ── Huérfanos (sin proyecto) ───────────────────────────
     const orphanSections = () => {
       const oIdeas = (ideasByProject['_orphan']||[]).filter(i => inWindow(i.deadline));
-      const oSubs  = (subsByProject['_orphan'] ||[]).filter(s => inWindow(s.deadlineAt));
       const oMeets = (meetsByProject['_orphan']||[]).filter(m => inWindow(m.date));
-      if (!oIdeas.length && !oSubs.length && !oMeets.length) return '';
+      if (!oIdeas.length && !oMeets.length) return '';
       return `
         <div class="timeline-header-row" style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px">
           <div style="font-family:var(--font-mono);font-size:.67rem;color:var(--text-3)">Sin proyecto asociado</div>
@@ -3207,7 +3159,6 @@ async function renderTimeline() {
         </span>
         <span class="timeline-legend-item"><span class="tl-dot" style="background:var(--purple)"></span>◎ Idea</span>
         <span class="timeline-legend-item"><span class="tl-dot" style="background:var(--teal)"></span>🗓 Reunión</span>
-        <span class="timeline-legend-item"><span class="tl-dot" style="background:var(--accent)"></span>📤 Submission</span>
       </div>
       <div class="timeline-wrapper">
         <div class="timeline-grid">
@@ -3426,9 +3377,8 @@ async function renderWeeklyAgenda() {
   const viewMode = App.agendaViewMode || 'week';
 
   // ── Cargar todos los elementos con fecha ────────────────
-  const [projects, submissions, meetings, ideas] = await Promise.all([
+  const [projects, meetings, ideas] = await Promise.all([
     db.projects.filter(p => !p.archived).toArray(),
-    db.submissions.toArray(),
     db.meetings.toArray(),
     db.ideas.filter(i => !!i.deadline).toArray(),
   ]);
@@ -3448,12 +3398,9 @@ async function renderWeeklyAgenda() {
       evs.push({ color:'var(--red)', label:`⏱ ${p.title}`, kind:'project', id:p.id }));
     ideas.filter(i => i.deadline === iso).forEach(i =>
       evs.push({ color:'var(--purple)', label:`◎ ${i.title}`, kind:'idea', id:i.id }));
-    submissions.forEach(s => {
-      if (s.deadlineAt === iso)
-        evs.push({ color:'var(--amber)', label:`📤 ${s.title}`, kind:'submission', id:s.id });
-      if (s.submittedAt === iso)
-        evs.push({ color:'var(--green)', label:`✓ ${s.title}`, kind:'submission', id:s.id });
-    });
+    // Fecha de envío efectivo de Papers (el deadline ya aparece vía projects)
+    projects.filter(p => p.type === 'Paper' && p.submittedAt === iso).forEach(p =>
+      evs.push({ color:'var(--green)', label:`✓ Enviado: ${p.title}`, kind:'project', id:p.id }));
     meetings.filter(m => m.date === iso).forEach(m =>
       evs.push({ color:'var(--teal)', label:`🗓 ${m.title}`, kind:'meeting', id:m.id }));
     return evs;
@@ -3462,7 +3409,6 @@ async function renderWeeklyAgenda() {
   const actionAttr = ev => {
     if (ev.kind === 'project')    return `data-inspect-project="${ev.id}"`;
     if (ev.kind === 'idea')       return `data-inspect-idea="${ev.id}"`;
-    if (ev.kind === 'submission') return `data-inspect-submission="${ev.id}"`;
     if (ev.kind === 'meeting')    return `data-inspect-meeting="${ev.id}"`;
     return '';
   };
@@ -3645,29 +3591,31 @@ function subStatusBadge(status) {
 }
 
 async function renderSubmissions() {
-  const [subs, projects, cols] = await Promise.all([
-    db.submissions.orderBy('createdAt').reverse().toArray(),
-    db.projects.toArray(),
-    db.kanbanColumns.toArray()
+  const [paperProjects, cols] = await Promise.all([
+    db.projects.filter(p => p.type === 'Paper' && !p.archived).toArray(),
+    db.kanbanColumns.toArray(),
   ]);
-  const projMap   = Object.fromEntries(projects.map(p => [p.id, p]));
-  const colMapSub = Object.fromEntries(cols.map(c => [c.id, c]));
+  const colMap = Object.fromEntries(cols.map(c => [c.id, c]));
+  paperProjects.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 
-  // Pipeline counts
+  // Contar por estado desde el campo del proyecto
   const counts = {};
-  SUB_STATUSES.forEach(s => { counts[s.key] = subs.filter(sub => sub.status === s.key).length; });
+  SUB_STATUSES.forEach(s => { counts[s.key] = 0; });
+  paperProjects.forEach(p => {
+    const st = p.submissionStatus || 'preparacion';
+    if (counts[st] !== undefined) counts[st]++;
+  });
 
   mainContent.innerHTML = `
     <div class="view">
       <div class="view-header">
         <div>
           <div class="view-title">📤 Submission Tracker</div>
-          <div class="view-subtitle">${subs.length} envío(s) registrado(s)</div>
+          <div class="view-subtitle">${paperProjects.length} paper(s) en seguimiento</div>
         </div>
-        <button class="btn btn-primary" id="addSubmissionBtn">+ Nuevo envío</button>
+        <button class="btn btn-primary" id="addSubmissionBtn">+ Nuevo Paper</button>
       </div>
 
-      <!-- Pipeline overview -->
       <div class="sub-pipeline">
         ${SUB_STATUSES.map(s => `
           <div class="sub-pipeline-stage">
@@ -3676,410 +3624,137 @@ async function renderSubmissions() {
           </div>`).join('')}
       </div>
 
-      <!-- Submissions list -->
       <div class="sub-list">
-        ${subs.length ? subs.map(s => {
-          const proj = s.projectId ? projMap[s.projectId] : null;
-          const today = new Date(); today.setHours(0,0,0,0);
-          const daysToDeadline = s.deadlineAt
-            ? Math.ceil((new Date(s.deadlineAt + 'T00:00:00') - today) / 86400000) : null;
+        ${paperProjects.length ? paperProjects.map(p => {
+          const status = p.submissionStatus || 'preparacion';
+          const col    = colMap[p.columnId];
+          const today  = new Date(); today.setHours(0,0,0,0);
+          const daysToDeadline = p.deadline
+            ? Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000) : null;
           return `
-            <div class="sub-card" data-inspect-submission="${s.id}">
+            <div class="sub-card" data-inspect-project="${p.id}">
               <div class="sub-card-top">
-                <div class="sub-card-title">${esc(s.title)}</div>
-                ${subStatusBadge(s.status)}
+                <div class="sub-card-title">${esc(p.title)}</div>
+                ${subStatusBadge(status)}
               </div>
               <div class="sub-card-meta">
-                <span class="badge" style="background:var(--bg-elevated);color:var(--text-2)">
-                  ${esc(s.type || 'Paper')}
-                </span>
-                ${s.targetVenue ? `<span style="color:var(--text-2);font-size:.75rem">→ ${esc(s.targetVenue)}</span>` : ''}
-                ${proj ? `<span style="color:var(--accent);font-size:.72rem;cursor:pointer"
-                  data-inspect-project="${proj.id}">⬡ ${esc(proj.title)}</span>` : ''}
-                ${proj && colMapSub[proj.columnId] ? (() => {
-                  const c = colMapSub[proj.columnId];
-                  return `<span style="font-family:var(--font-mono);font-size:.6rem;
-                    background:color-mix(in srgb,${c.color} 14%,transparent);
-                    color:${c.color};border:1px solid color-mix(in srgb,${c.color} 28%,transparent);
-                    padding:1px 6px;border-radius:99px">⊞ ${esc(c.title)}</span>`;
-                })() : ''}
+                ${p.targetVenue ? `<span style="color:var(--text-2);font-size:.75rem">→ ${esc(p.targetVenue)}</span>` : ''}
+                ${col ? `<span style="font-family:var(--font-mono);font-size:.6rem;
+                    background:color-mix(in srgb,${col.color} 14%,transparent);
+                    color:${col.color};border:1px solid color-mix(in srgb,${col.color} 28%,transparent);
+                    padding:1px 6px;border-radius:99px">⊞ ${esc(col.title)}</span>` : ''}
+                ${p.responsible ? `<span style="font-size:.72rem;color:var(--text-3)">👤 ${esc(p.responsible)}</span>` : ''}
               </div>
               <div class="sub-card-dates">
-                ${s.deadlineAt ? `<span style="font-size:.72rem;font-family:var(--font-mono);
-                  color:${daysToDeadline !== null && daysToDeadline <= 7 ? 'var(--red)' : 'var(--text-3)'}">
-                  ⏱ Deadline: ${formatDate(s.deadlineAt)}
-                  ${daysToDeadline !== null && daysToDeadline >= 0 && daysToDeadline <= 30 ? `(${daysToDeadline}d)` : ''}
-                </span>` : ''}
-                ${s.submittedAt ? `<span style="font-size:.72rem;font-family:var(--font-mono);color:var(--text-3)">
-                  ✓ Enviado: ${formatDate(s.submittedAt)}
-                </span>` : ''}
+                ${p.deadline ? `<span style="font-size:.72rem;font-family:var(--font-mono);
+                    color:${daysToDeadline !== null && daysToDeadline <= 7 ? 'var(--red)' : 'var(--text-3)'}">
+                    ⏱ Deadline: ${formatDate(p.deadline)}
+                    ${daysToDeadline !== null && daysToDeadline >= 0 && daysToDeadline <= 30 ? `(${daysToDeadline}d)` : ''}
+                  </span>` : ''}
+                ${p.submittedAt ? `<span style="font-size:.72rem;font-family:var(--font-mono);color:var(--text-3)">
+                    ✓ Enviado: ${formatDate(p.submittedAt)}
+                  </span>` : ''}
               </div>
             </div>`;
         }).join('')
         : `<div class="empty-state">
              <span class="empty-state-icon">📤</span>
-             <h3>Sin envíos registrados</h3>
-             <p>Registra papers, grants y ponencias para hacer seguimiento</p>
+             <h3>Sin papers en seguimiento</h3>
+             <p>Crea un proyecto tipo Paper para hacer seguimiento de su proceso de publicación</p>
            </div>`}
       </div>
     </div>`;
 
-  $('addSubmissionBtn').addEventListener('click', showAddSubmissionModal);
+  $('addSubmissionBtn').addEventListener('click', () => {
+    App._projectTemplate  = 'paper';
+    App._skipTemplateStep = true;
+    showAddProjectModal();
+  });
 
-  // ── Papers sin submission: visibilidad cruzada ──────────
-  const paperProjects = projects.filter(p =>
-    p.type === 'Paper' && !p.archived &&
-    !subs.some(s => s.projectId === p.id)
-  );
-  if (paperProjects.length) {
-    const pendingSection = document.createElement('div');
-    pendingSection.innerHTML = `
-      <div class="inspector-related-title" style="margin-top:16px;display:flex;align-items:center;justify-content:space-between">
-        <span>◉ Papers sin submission registrada (${paperProjects.length})</span>
-      </div>
-      <div class="sub-list">
-        ${paperProjects.map(p => `
-          <div class="sub-card sub-card-paper-pending" style="opacity:.8">
-            <div class="sub-card-top">
-              <div class="sub-card-title">◉ ${esc(p.title)}</div>
-              <span class="badge" style="background:var(--bg-elevated);color:var(--text-3)">Sin envío</span>
-            </div>
-            <div class="sub-card-meta">
-              ${p.deadline ? `<span style="font-size:.72rem;font-family:var(--font-mono);color:var(--text-3)">⏱ ${formatDate(p.deadline)}</span>` : ''}
-              <button class="btn btn-ghost btn-sm" data-create-sub-for="${p.id}"
-                      style="font-size:.68rem;margin-left:auto">+ Crear submission</button>
-            </div>
-          </div>`).join('')}
-      </div>`;
-    mainContent.querySelector('.view').appendChild(pendingSection);
-
-    pendingSection.querySelectorAll('[data-create-sub-for]').forEach(btn => {
-      const proj = paperProjects.find(p => p.id === +btn.dataset.createSubFor);
-      btn.addEventListener('click', () =>
-        showAddSubmissionModal(proj?.deadline || null, proj?.id || null));
-    });
-  }
-
-  mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
-    el.addEventListener('click', (e) => {
-      if (e.target.closest('[data-inspect-project]')) return;
-      inspectSubmission(+el.dataset.inspectSubmission);
-    }));
   mainContent.querySelectorAll('[data-inspect-project]').forEach(el =>
-    el.addEventListener('click', (e) => {
-      e.stopPropagation();
-      inspectProject(+el.dataset.inspectProject);
-    }));
+    el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
 }
 
 async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
-  const projects = await db.projects.toArray();
-  showModal('📤 Nuevo Envío', `
-    <div class="modal-body">
-      <div class="form-group">
-        <label class="form-label">Título *</label>
-        <input class="form-input" id="asub-title" placeholder="Título del paper, grant o ponencia…">
+  if (preProjectId) {
+    // Editar campos de submission sobre un proyecto existente
+    const p = await db.projects.get(preProjectId);
+    if (!p) return;
+    if (p.type !== 'Paper') {
+      showToast('El seguimiento de submission aplica solo a proyectos tipo Paper', 'info');
+      return;
+    }
+    showModal(`📤 Submission — ${p.title}`, `
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Estado</label>
+          <select class="form-select" id="asub-status">
+            ${SUB_STATUSES.map(s =>
+              `<option value="${s.key}" ${(p.submissionStatus||'preparacion')===s.key?'selected':''}>${s.label}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Venue / Journal / Fondo objetivo</label>
+          <input class="form-input" id="asub-venue" value="${esc(p.targetVenue||'')}"
+                 placeholder="Nature, FONDECYT, ISMIR 2025…">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Deadline de envío</label>
+          <input class="form-input" type="date" id="asub-deadline"
+                 value="${prefillDate || p.deadline || ''}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Fecha de envío efectivo</label>
+          <input class="form-input" type="date" id="asub-submitted" value="${p.submittedAt||''}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notas de submission</label>
+          <textarea class="form-textarea" id="asub-notes" rows="2">${esc(p.submissionNotes||'')}</textarea>
+        </div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Tipo</label>
-        <select class="form-select" id="asub-type">
-          ${SUB_TYPES.map(t => `<option>${t}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Venue / Journal / Fondo objetivo</label>
-        <input class="form-input" id="asub-venue" placeholder="Nature, FONDECYT, ISMIR 2025…">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Estado inicial</label>
-        <select class="form-select" id="asub-status">
-          ${SUB_STATUSES.map(s => `<option value="${s.key}">${s.label}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Deadline de envío</label>
-        <input class="form-input" type="date" id="asub-deadline" value="${prefillDate || ''}">
-        <label style="display:flex;align-items:center;gap:7px;margin-top:5px;
-                      font-size:.74rem;color:var(--text-2);cursor:pointer">
-          <input type="checkbox" id="asub-sync-dl" ${preProjectId ? 'checked' : ''}>
-          Sincronizar este deadline con el proyecto vinculado
-        </label>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Fecha de envío efectivo</label>
-        <input class="form-input" type="date" id="asub-submitted">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Vincular a proyecto</label>
-        <select class="form-select" id="asub-project">
-          <option value="">Sin proyecto</option>
-          ${projects.map(p => `<option value="${p.id}" ${p.id === preProjectId ? 'selected' : ''}>${esc(p.title)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Notas</label>
-        <textarea class="form-textarea" id="asub-notes" rows="2" placeholder="Factor de impacto, contexto, ronda…"></textarea>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" id="asubCancel">Cancelar</button>
-      <button class="btn btn-primary" id="asubSave">Guardar</button>
-    </div>`);
-  setTimeout(() => $('asub-title')?.focus(), 60);
-  $('asubCancel').addEventListener('click', closeModal);
-  $('asubSave').addEventListener('click', async () => {
-    const title = $('asub-title').value.trim();
-    if (!title) { showToast('El título es requerido', 'error'); return; }
-    const now          = new Date().toISOString();
-    const subProjId    = +$('asub-project').value || null;
-    const subDeadline  = $('asub-deadline').value || null;
-    const syncDl       = $('asub-sync-dl')?.checked && subProjId && subDeadline;
-    await dbWrite(async () => {
-      await db.submissions.add({
-        title,
-        type:        $('asub-type').value,
-        targetVenue: $('asub-venue').value.trim(),
-        status:      $('asub-status').value,
-        deadlineAt:  subDeadline,
-        submittedAt: $('asub-submitted').value || null,
-        projectId:   subProjId,
-        notes:       $('asub-notes').value.trim(),
-        rounds:      [],
-        createdAt:   now, updatedAt: now
-      });
-      if (syncDl)
-        await db.projects.update(subProjId, { deadline: subDeadline, updatedAt: now });
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="asubCancel">Cancelar</button>
+        <button class="btn btn-primary" id="asubSave">Guardar</button>
+      </div>`);
+    setTimeout(() => $('asub-status')?.focus(), 60);
+    $('asubCancel').addEventListener('click', closeModal);
+    $('asubSave').addEventListener('click', async () => {
+      const newStatus = $('asub-status').value;
+      const now = new Date().toISOString();
+      await dbWrite(() => db.projects.update(preProjectId, {
+        submissionStatus: newStatus,
+        targetVenue:      $('asub-venue').value.trim(),
+        deadline:         $('asub-deadline').value || p.deadline || null,
+        submittedAt:      $('asub-submitted').value || null,
+        submissionNotes:  $('asub-notes').value.trim(),
+        updatedAt:        now,
+      }));
+      await _syncPaperColumn(preProjectId, newStatus);
+      closeModal();
+      showToast('Submission actualizada ✓', 'success');
+      if (App.view === 'submissions')  renderSubmissions();
+      if (App.view === 'project-hub')  renderProjectHub();
+      if (['projects','kanban'].includes(App.view)) renderView(App.view);
+      updateBadges();
     });
-    closeModal();
-    showToast('Envío registrado ✓', 'success');
-    if (App.view === 'submissions')  renderSubmissions();
-    if (App.view === 'project-hub')  renderProjectHub();
-    updateBadges();
-  });
+  } else {
+    // Crear nuevo proyecto tipo Paper
+    App._projectTemplate  = 'paper';
+    App._skipTemplateStep = true;
+    showAddProjectModal();
+  }
+}
+
+// Delegado — mantenido por compatibilidad con posibles llamadas residuales
+async function showEditSubmissionModal(s) {
+  const projId = s?.projectId || s?.id;
+  if (projId) return showAddSubmissionModal(null, projId);
 }
 
 async function inspectSubmission(id) {
-  const s = await db.submissions.get(id);
-  if (!s) return;
-  const proj = s.projectId ? await db.projects.get(s.projectId) : null;
-
-  inspectorBody.innerHTML = `
-    <div>
-      <div style="margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        ${subStatusBadge(s.status)}
-        <span class="badge" style="background:var(--bg-elevated);color:var(--text-2)">${esc(s.type||'Paper')}</span>
-      </div>
-      <div class="inspector-project-title">${esc(s.title)}</div>
-      <div class="inspector-meta">
-        ${s.targetVenue ? `<div class="inspector-meta-row">
-          <span class="inspector-meta-key">Venue</span>
-          <span class="inspector-meta-val">${esc(s.targetVenue)}</span>
-        </div>` : ''}
-        ${proj ? `<div class="inspector-meta-row">
-          <span class="inspector-meta-key">Proyecto</span>
-          <span class="inspector-meta-val" style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
-            <span style="cursor:pointer;color:var(--accent)" id="subNavProj">${esc(proj.title)}</span>
-            <button class="btn btn-ghost btn-sm" id="subNavHub"
-                    style="font-size:.6rem;padding:2px 7px;line-height:1.4">⬡ Hub →</button>
-          </span>
-        </div>` : ''}
-        <div class="inspector-meta-row">
-          <span class="inspector-meta-key">Deadline</span>
-          <span class="inspector-meta-val">
-            ${s.deadlineAt ? formatDate(s.deadlineAt) : '—'}
-            ${s.deadlineAt && proj?.type === 'Paper' ? `
-              <button class="btn btn-ghost btn-sm" id="subSyncDlBtn"
-                      style="font-size:.6rem;padding:1px 7px;margin-left:6px;
-                             color:var(--amber);border-color:rgba(251,191,36,.3)">
-                ↑ Usar en proyecto
-              </button>` : ''}
-          </span>
-        </div>
-        <div class="inspector-meta-row">
-          <span class="inspector-meta-key">Enviado</span>
-          <span class="inspector-meta-val">${s.submittedAt ? formatDate(s.submittedAt) : '—'}</span>
-        </div>
-        <div class="inspector-meta-row">
-          <span class="inspector-meta-key">Creado</span>
-          <span class="inspector-meta-val">${relativeDate(s.createdAt)}</span>
-        </div>
-      </div>
-      ${s.notes ? `<div class="inspector-desc">${esc(s.notes)}</div>` : ''}
-
-      <div class="inspector-related-title">Cambiar estado</div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
-        ${SUB_STATUSES.map(st => `
-          <button class="btn btn-ghost btn-sm sub-status-btn ${s.status === st.key ? 'active' : ''}"
-                  data-status="${st.key}"
-                  style="${s.status === st.key ? `border-color:${st.color};color:${st.color}` : ''}">
-            ${st.label}
-          </button>`).join('')}
-      </div>
-
-      <!-- Rondas de revisión -->
-      <div class="inspector-related-title">
-        Rondas de revisión (${(s.rounds||[]).length})
-      </div>
-      <div class="sub-rounds-list">
-        ${(s.rounds||[]).map((r, i) => `
-          <div class="sub-round-item">
-            <span class="history-ts">${formatDate(r.date)}</span>
-            <span class="badge" style="font-size:.65rem">${esc(r.status)}</span>
-            <span style="font-size:.75rem;color:var(--text-2)">${esc(r.notes||'')}</span>
-          </div>`).join('')}
-      </div>
-      <div class="subtask-add-row" style="margin-top:6px">
-        <input class="subtask-add-input" id="roundNotes" placeholder="Notas de nueva ronda…">
-        <select class="form-select" id="roundStatus" style="width:130px;padding:4px 6px;font-size:.75rem">
-          ${SUB_STATUSES.map(st => `<option value="${st.key}">${st.label}</option>`).join('')}
-        </select>
-        <button class="btn btn-ghost btn-sm" id="addRoundBtn">+</button>
-      </div>
-
-      <div class="inspector-actions" style="margin-top:14px">
-        <button class="btn btn-ghost btn-sm" id="subEditBtn">✎ Editar</button>
-        <button class="btn btn-danger btn-sm" id="subDeleteBtn">✕ Eliminar</button>
-      </div>
-    </div>`;
-
-  openInspector();
-
-  $('subSyncDlBtn')?.addEventListener('click', async () => {
-    if (!s.deadlineAt || !s.projectId) return;
-    await dbWrite(() => db.projects.update(s.projectId, {
-      deadline: s.deadlineAt, updatedAt: new Date().toISOString()
-    }));
-    showToast(`Deadline del proyecto → ${formatDate(s.deadlineAt)} ✓`, 'success');
-    if (App.view === 'kanban')   renderKanban();
-    if (App.view === 'timeline') renderView('timeline');
-  });
-
-  $('subNavProj')?.addEventListener('click', () => {
-    navigate('projects'); setTimeout(() => inspectProject(proj.id), 120);
-  });
-  $('subNavHub')?.addEventListener('click', () => {
-    App.projectHubId = proj.id;
-    navigate('project-hub');
-  });
-
-  inspectorBody.querySelectorAll('.sub-status-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const newStatus = btn.dataset.status;
-      await dbWrite(() => db.submissions.update(id, {
-        status: newStatus, updatedAt: new Date().toISOString()
-      }));
-      await _syncPaperColumn(id, newStatus); // Feature 15
-      showToast('Estado actualizado ✓', 'success');
-      inspectSubmission(id);
-      if (App.view === 'submissions') renderSubmissions();
-      updateBadges();
-    });
-  });
-
-  $('addRoundBtn').addEventListener('click', async () => {
-    const notes  = $('roundNotes').value.trim();
-    const status = $('roundStatus').value;
-    const rounds = [...(s.rounds||[]), {
-      date: new Date().toISOString().split('T')[0], status, notes
-    }];
-    await dbWrite(() => db.submissions.update(id, { rounds, updatedAt: new Date().toISOString() }));
-    showToast('Ronda registrada ✓', 'success');
-    inspectSubmission(id);
-  });
-
-  $('subEditBtn').addEventListener('click', () => showEditSubmissionModal(s));
-  $('subDeleteBtn').addEventListener('click', async () => {
-    if (!confirm(`¿Eliminar "${s.title}"?`)) return;
-    await db.submissions.delete(id);
-    closeInspector();
-    showToast('Envío eliminado', 'info');
-    if (App.view === 'submissions') renderSubmissions();
-    updateBadges();
-  });
-}
-
-async function showEditSubmissionModal(s) {
-  const projects = await db.projects.toArray();
-  showModal('✎ Editar Envío', `
-    <div class="modal-body">
-      <div class="form-group">
-        <label class="form-label">Título *</label>
-        <input class="form-input" id="esub-title" value="${esc(s.title)}">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Tipo</label>
-        <select class="form-select" id="esub-type">
-          ${SUB_TYPES.map(t => `<option ${t===s.type?'selected':''}>${t}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Venue / Journal / Fondo</label>
-        <input class="form-input" id="esub-venue" value="${esc(s.targetVenue||'')}">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Estado</label>
-        <select class="form-select" id="esub-status">
-          ${SUB_STATUSES.map(st => `<option value="${st.key}" ${st.key===s.status?'selected':''}>${st.label}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Deadline</label>
-        <input class="form-input" type="date" id="esub-deadline" value="${s.deadlineAt||''}">
-        <label style="display:flex;align-items:center;gap:7px;margin-top:5px;
-                      font-size:.74rem;color:var(--text-2);cursor:pointer">
-          <input type="checkbox" id="esub-sync-dl" ${s.projectId ? 'checked' : ''}>
-          Sincronizar deadline con el proyecto vinculado
-        </label>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Fecha de envío</label>
-        <input class="form-input" type="date" id="esub-submitted" value="${s.submittedAt||''}">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Proyecto</label>
-        <select class="form-select" id="esub-project">
-          <option value="">Sin proyecto</option>
-          ${projects.map(p => `<option value="${p.id}" ${p.id===s.projectId?'selected':''}>${esc(p.title)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Notas</label>
-        <textarea class="form-textarea" id="esub-notes" rows="2">${esc(s.notes||'')}</textarea>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" id="esubCancel">Cancelar</button>
-      <button class="btn btn-primary" id="esubSave">Guardar</button>
-    </div>`);
-  $('esubCancel').addEventListener('click', closeModal);
-  $('esubSave').addEventListener('click', async () => {
-    const title = $('esub-title').value.trim();
-    if (!title) { showToast('Título requerido', 'error'); return; }
-    const eSubProjId   = +$('esub-project').value || null;
-    const eSubDeadline = $('esub-deadline').value || null;
-    const eSyncDl      = $('esub-sync-dl')?.checked && eSubProjId && eSubDeadline;
-    const eNow         = new Date().toISOString();
-    const _editStatus = $('esub-status').value;
-    await dbWrite(async () => {
-      await db.submissions.update(s.id, {
-        title, type: $('esub-type').value,
-        targetVenue: $('esub-venue').value.trim(),
-        status:      $('esub-status').value,
-        deadlineAt:  eSubDeadline,
-        submittedAt: $('esub-submitted').value || null,
-        projectId:   eSubProjId,
-        notes:       $('esub-notes').value.trim(),
-        updatedAt:   eNow
-      });
-      if (eSyncDl)
-        await db.projects.update(eSubProjId, { deadline: eSubDeadline, updatedAt: eNow });
-    });
-    await _syncPaperColumn(s.id, _editStatus); // Feature 15
-    closeModal();
-    showToast('Envío actualizado ✓', 'success');
-    inspectSubmission(s.id);
-    if (App.view === 'submissions') renderSubmissions();
-  });
+  // Las submissions son ahora proyectos tipo Paper; delegar a inspectProject
+  return inspectProject(id);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -4641,11 +4316,10 @@ async function renderCollaboratorHub() {
   const id = App.collaboratorHubId;
   if (!id) { navigate('collaborators'); return; }
 
-  const [c, projects, meetings, submissions, cols] = await Promise.all([
+  const [c, projects, meetings, cols] = await Promise.all([
     db.collaborators.get(id),
     db.projects.filter(p => !p.archived).toArray(),
     db.meetings.toArray(),
-    db.submissions.toArray(),
     db.kanbanColumns.toArray(),
   ]);
   if (!c) { navigate('collaborators'); return; }
@@ -4664,7 +4338,7 @@ async function renderCollaboratorHub() {
       .some(n => n.toLowerCase() === c.name.toLowerCase()) ||
     (m.projectId && linkedIds.has(m.projectId))
   );
-  const linkedSubs   = submissions.filter(s => s.projectId && linkedIds.has(s.projectId));
+  const linkedPapers = allLinked.filter(p => p.type === 'Paper' && p.submissionStatus);
   const pendingAIs   = linkedMeets.flatMap(m => (m.actionItems || []).filter(a => !a.done));
 
   // Estadísticas rápidas de actividad
@@ -4775,15 +4449,15 @@ async function renderCollaboratorHub() {
         : `<div class="hub-empty-hint">Sin reuniones registradas con este colaborador.</div>`
       )}
 
-      <!-- Submissions -->
-      ${linkedSubs.length ? hubSection('ch-subs',
-        `📤 Submissions vinculadas (${linkedSubs.length})`, linkedSubs.length,
-        linkedSubs.map(s => `
-          <div class="hub-list-item" data-inspect-submission="${s.id}">
+      <!-- Papers en submission vinculados al colaborador -->
+      ${linkedPapers.length ? hubSection('ch-subs',
+        `📤 Papers en submission (${linkedPapers.length})`, linkedPapers.length,
+        linkedPapers.map(p => `
+          <div class="hub-list-item" data-inspect-project="${p.id}">
             <span class="hub-item-dot"></span>
-            <span class="hub-item-text">${esc(s.title)}</span>
-            ${subStatusBadge(s.status)}
-            ${s.targetVenue ? `<span style="font-size:.7rem;color:var(--text-3)">${esc(s.targetVenue)}</span>` : ''}
+            <span class="hub-item-text">${esc(p.title)}</span>
+            ${subStatusBadge(p.submissionStatus)}
+            ${p.targetVenue ? `<span style="font-size:.7rem;color:var(--text-3)">${esc(p.targetVenue)}</span>` : ''}
           </div>`).join('')
       ) : ''}
 
@@ -5042,40 +4716,35 @@ async function inspectCollaborator(id) {
 // ══════════════════════════════════════════════════════════════
 //  PAPER PIPELINE — barra de etapas unificada (Feature 10)
 // ══════════════════════════════════════════════════════════════
-function _paperPipelineHTML(p, submissions, cols) {
-  const colMap = Object.fromEntries(cols.map(c => [c.id, c]));
+function _paperPipelineHTML(p, cols) {
+  const colMap  = Object.fromEntries(cols.map(c => [c.id, c]));
   const curCol  = colMap[p.columnId];
-
-  // Etapa activa derivada: submission gana sobre columna Kanban
-  const activeSub = submissions
-    .filter(s => s.projectId === p.id)
-    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0] || null;
+  const submissionStatus = p.submissionStatus || null;
 
   const STAGES = [
-    { key: 'draft',     label: 'Escritura',     icon: '✍',  match: s => !s, colKeywords: ['ideac','escritur','análisis','limpieza'] },
-    { key: 'internal',  label: 'Rev. interna',  icon: '🔍', match: s => s?.status === 'preparacion', colKeywords: ['peer','review','revisión'] },
-    { key: 'submitted', label: 'Enviado',        icon: '📤', match: s => s?.status === 'enviado',     colKeywords: [] },
-    { key: 'review',    label: 'En revisión',   icon: '⏳', match: s => s?.status === 'en_revision', colKeywords: [] },
-    { key: 'revision',  label: 'Rev. solicit.', icon: '✏',  match: s => s?.status === 'revision_solicitada', colKeywords: [] },
-    { key: 'accepted',  label: 'Aceptado ✓',   icon: '✅', match: s => s?.status === 'aceptado',    colKeywords: ['completado','publicado'] },
-    { key: 'rejected',  label: 'Rechazado',     icon: '❌', match: s => s?.status === 'rechazado',   colKeywords: [] },
+    { key: 'draft',     label: 'Escritura',    icon: '✍',  match: s => !s,                         colKeywords: ['ideac','escritur','análisis','limpieza'] },
+    { key: 'internal',  label: 'Rev. interna', icon: '🔍', match: s => s === 'preparacion',          colKeywords: ['peer','review','revisión'] },
+    { key: 'submitted', label: 'Enviado',       icon: '📤', match: s => s === 'enviado',              colKeywords: [] },
+    { key: 'review',    label: 'En revisión',  icon: '⏳', match: s => s === 'en_revision',          colKeywords: [] },
+    { key: 'revision',  label: 'Rev. solicit.',icon: '✏',  match: s => s === 'revision_solicitada',  colKeywords: [] },
+    { key: 'accepted',  label: 'Aceptado ✓',  icon: '✅', match: s => s === 'aceptado',             colKeywords: ['completado','publicado'] },
+    { key: 'rejected',  label: 'Rechazado',    icon: '❌', match: s => s === 'rechazado',            colKeywords: [] },
   ];
 
-  // Determinar índice activo
   let activeIdx = 0;
-  if (activeSub) {
-    const idx = STAGES.findIndex(st => st.key !== 'draft' && st.key !== 'internal' && st.match(activeSub));
+  if (submissionStatus) {
+    const idx = STAGES.findIndex(st => st.key !== 'draft' && st.key !== 'internal' && st.match(submissionStatus));
     if (idx >= 0) activeIdx = idx;
-    else if (activeSub.status === 'preparacion') activeIdx = 1;
+    else if (submissionStatus === 'preparacion') activeIdx = 1;
   } else if (curCol) {
     const colTitle = (curCol.title || '').toLowerCase();
     const idx = STAGES.findIndex(st => st.colKeywords.some(kw => colTitle.includes(kw)));
     if (idx >= 0) activeIdx = idx;
   }
 
-  const deadlineLabel = activeSub?.deadlineAt
-    ? `<span style="font-family:var(--font-mono);font-size:.62rem;color:var(--amber)">⏱ ${formatDate(activeSub.deadlineAt)}</span>`
-    : (p.deadline ? `<span style="font-family:var(--font-mono);font-size:.62rem;color:var(--text-3)">⏱ ${formatDate(p.deadline)}</span>` : '');
+  const deadlineLabel = p.deadline
+    ? `<span style="font-family:var(--font-mono);font-size:.62rem;color:var(--amber)">⏱ ${formatDate(p.deadline)}</span>`
+    : '';
 
   return `
     <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);
@@ -5128,12 +4797,10 @@ async function renderProjectHub() {
   if (!p) { navigate('projects'); return; }
 
   // Datos de tablas extendidas (pueden no existir si features anteriores no aplicadas)
-  const submissions = typeof db.submissions !== 'undefined'
-    ? await db.submissions.where('projectId').equals(id).toArray() : [];
-  const meetings    = typeof db.meetings    !== 'undefined'
-    ? await db.meetings.where('projectId').equals(id).toArray()    : [];
-  const references  = typeof db.references  !== 'undefined'
-    ? await db.references.where('projectId').equals(id).toArray()  : [];
+  const meetings   = typeof db.meetings   !== 'undefined'
+    ? await db.meetings.where('projectId').equals(id).toArray()   : [];
+  const references = typeof db.references !== 'undefined'
+    ? await db.references.where('projectId').equals(id).toArray() : [];
 
   const col     = cols.find(c => c.id === p.columnId);
   const colMap  = Object.fromEntries(cols.map(c => [c.id, c]));
@@ -5244,7 +4911,7 @@ async function renderProjectHub() {
               <button class="hub-add-item" id="hubAddIdeaBtn">◎ Idea</button>
               <button class="hub-add-item" id="hubAddMeetingBtn">🗓 Reunión</button>
               <button class="hub-add-item" id="hubAddRefBtn">📚 Referencia</button>
-              <button class="hub-add-item" id="hubAddSubBtn">📤 Submission</button>
+              ${p.type === 'Paper' ? `<button class="hub-add-item" id="hubAddSubBtn">📤 Submission</button>` : ''}
               <button class="hub-add-item" id="hubAddSnipBtn">⟨/⟩ Snippet</button>
             </div>
           </div>
@@ -5253,7 +4920,7 @@ async function renderProjectHub() {
       </div>
 
       <!-- Paper Pipeline unificado (Feature 10, solo para tipo Paper) -->
-      ${p.type === 'Paper' ? _paperPipelineHTML(p, submissions, cols) : ''}
+      ${p.type === 'Paper' ? _paperPipelineHTML(p, cols) : ''}
 
       <!-- Completeness bar -->
       <div id="hubCompleteness" style="margin-bottom:16px"></div>
@@ -5285,10 +4952,9 @@ async function renderProjectHub() {
           icon: '🗓', label: `Reunión: "${m.title.slice(0,35)}"`, color: 'var(--teal)'
         }));
         // Submissions
-        submissions.slice(0, 2).forEach(s => events.push({
-          ts: s.submittedAt || s.createdAt, icon: '📤',
-          label: `Submission: "${s.title.slice(0,30)}"`, color: 'var(--purple)'
-        }));
+        if (p.type === 'Paper' && p.submittedAt)
+          events.push({ ts: p.submittedAt, icon: '📤',
+            label: `Enviado: "${p.title.slice(0,30)}"`, color: 'var(--purple)' });
 
         if (!events.length) return '';
         const sorted = events
@@ -5322,16 +4988,19 @@ async function renderProjectHub() {
         : `<div class="hub-empty-hint">Sin ideas — agrega la primera con + Idea arriba.</div>`
       )}
 
-      <!-- Submissions -->
-      ${submissions.length || true ? sectionToggle('subs', '📤 Submissions', submissions.length,
-        submissions.length ? submissions.map(s => `
-          <div class="hub-list-item" data-inspect-submission="${s.id}">
-            <span class="hub-item-dot"></span>
-            <span class="hub-item-text">${esc(s.title)}</span>
-            ${typeof subStatusBadge === 'function' ? subStatusBadge(s.status) : ''}
-            ${s.targetVenue ? `<span style="font-size:.7rem;color:var(--text-3)">${esc(s.targetVenue)}</span>` : ''}
-          </div>`).join('')
-        : `<div class="hub-empty-hint">Sin submissions registradas.</div>`
+      <!-- Submission inline (solo Paper) -->
+      ${p.type === 'Paper' ? sectionToggle('subs', '📤 Submission', 0,
+        `<div style="padding:10px 14px;display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            ${subStatusBadge(p.submissionStatus || 'preparacion')}
+            ${p.targetVenue ? `<span style="font-size:.75rem;color:var(--text-2)">→ ${esc(p.targetVenue)}</span>` : ''}
+          </div>
+          ${p.deadline    ? `<div style="font-size:.74rem;font-family:var(--font-mono);color:var(--text-3)">⏱ Deadline: ${formatDate(p.deadline)}</div>` : ''}
+          ${p.submittedAt ? `<div style="font-size:.74rem;font-family:var(--font-mono);color:var(--green)">✓ Enviado: ${formatDate(p.submittedAt)}</div>` : ''}
+          ${(p.submissionRounds||[]).length ? `<div style="font-size:.72rem;color:var(--text-3)">${p.submissionRounds.length} ronda(s) de revisión</div>` : ''}
+          <button class="btn btn-ghost btn-sm hub-sub-edit-btn"
+                  style="align-self:flex-start;margin-top:4px">✎ Editar submission</button>
+        </div>`
       ) : ''}
 
       <!-- Reuniones -->
@@ -5489,7 +5158,9 @@ async function renderProjectHub() {
 
   $('hubAddMeetingBtn').addEventListener('click', () => showAddMeetingModal(null, p.id));
   $('hubAddRefBtn').addEventListener('click',     () => showAddReferenceModal(p.id));
-  $('hubAddSubBtn').addEventListener('click',     () => showAddSubmissionModal(null, p.id));
+  $('hubAddSubBtn')?.addEventListener('click',    () => showAddSubmissionModal(null, p.id));
+  mainContent.querySelector('.hub-sub-edit-btn')?.addEventListener('click', () =>
+    showAddSubmissionModal(null, p.id));
   $('hubAddSnipBtn').addEventListener('click',    () => showAddSnippetModal(p.id));
 }
 
@@ -5500,39 +5171,33 @@ async function renderFocusFeed() {
   const today = new Date(); today.setHours(0,0,0,0);
   const in7   = new Date(today); in7.setDate(today.getDate() + 7);
 
-  const [projects, ideas, meetings, submissions] = await Promise.all([
+  const [projects, ideas, meetings] = await Promise.all([
     db.projects.filter(p => !p.archived).toArray(),
     db.ideas.filter(i => i.status === 'unread').toArray(),
     typeof db.meetings !== 'undefined' ? db.meetings.toArray() : Promise.resolve([]),
-    typeof db.submissions !== 'undefined' ? db.submissions.toArray() : Promise.resolve([]),
   ]);
 
   const items = [];
 
-  // 0. Papers en pipeline activo — revisiones que necesitan acción
-  const allFocusSubs = typeof db.submissions !== 'undefined'
-    ? await db.submissions.toArray() : [];
-  const paperIds = new Set(projects.filter(p => p.type === 'Paper').map(p => p.id));
-  allFocusSubs
-    .filter(s => s.projectId && paperIds.has(s.projectId) &&
-      ['enviado','en_revision','revision_solicitada'].includes(s.status))
-    .forEach(s => {
-      const proj = projects.find(p => p.id === s.projectId);
-      if (!proj) return;
-      const SCORE = { enviado: 72, en_revision: 80, revision_solicitada: 88 };
-      const ICON  = { enviado: '📤', en_revision: '⏳', revision_solicitada: '✏' };
-      const LABEL = {
-        enviado:              'Enviado — esperando respuesta editorial',
-        en_revision:          'En revisión — seguimiento activo',
-        revision_solicitada:  '¡Revisión solicitada — requiere acción inmediata!',
-      };
+  // 0. Papers en pipeline activo — derivado del proyecto directamente
+  const FOCUS_SUB_SCORE = { enviado: 72, en_revision: 80, revision_solicitada: 88 };
+  const FOCUS_SUB_ICON  = { enviado: '📤', en_revision: '⏳', revision_solicitada: '✏' };
+  const FOCUS_SUB_LABEL = {
+    enviado:             'Enviado — esperando respuesta editorial',
+    en_revision:         'En revisión — seguimiento activo',
+    revision_solicitada: '¡Revisión solicitada — requiere acción inmediata!',
+  };
+  projects
+    .filter(p => p.type === 'Paper' &&
+      ['enviado','en_revision','revision_solicitada'].includes(p.submissionStatus))
+    .forEach(p => {
       items.push({
-        score:   SCORE[s.status] || 72,
-        icon:    ICON[s.status]  || '📤',
-        label:   LABEL[s.status] || 'En pipeline activo',
-        text:    `${proj.title}${s.targetVenue ? ` → ${s.targetVenue}` : ''}`,
-        type:    'paper-pipeline',
-        ref:     s,
+        score: FOCUS_SUB_SCORE[p.submissionStatus] || 72,
+        icon:  FOCUS_SUB_ICON[p.submissionStatus]  || '📤',
+        label: FOCUS_SUB_LABEL[p.submissionStatus] || 'En pipeline activo',
+        text:  `${p.title}${p.targetVenue ? ` → ${p.targetVenue}` : ''}`,
+        type:  'project',
+        ref:   p,
       });
     });
 
@@ -5552,20 +5217,6 @@ async function renderFocusFeed() {
     });
 
   // 2. Submissions que requieren acción
-  submissions
-    .filter(s => s.status === 'revision_solicitada')
-    .forEach(s => items.push({ score: 85, icon:'📤', label:'Revisión solicitada — requiere respuesta',
-      text: s.title, type:'submission', ref: s }));
-
-  submissions
-    .filter(s => s.deadlineAt)
-    .forEach(s => {
-      const d = new Date(s.deadlineAt + 'T00:00:00');
-      const daysLeft = Math.ceil((d - today) / 86400000);
-      if (daysLeft >= 0 && daysLeft <= 7)
-        items.push({ score: 80 - daysLeft * 4, icon:'📤', label:`Submission deadline en ${daysLeft}d`,
-          text: s.title, type:'submission-deadline', ref: s });
-    });
 
   // 3. Action items pendientes de reuniones
   meetings.forEach(m => {
@@ -5605,14 +5256,10 @@ async function renderFocusFeed() {
   const itemHTML = (item) => {
     const scoreColor = item.score >= 85 ? 'var(--red)' : item.score >= 70 ? 'var(--amber)' : 'var(--text-3)';
     let actionAttr = '';
-    if (item.type === 'deadline' || item.type === 'deadline-overdue' || item.type === 'stale')
+    if (['deadline','deadline-overdue','stale','project'].includes(item.type))
       actionAttr = `data-inspect-project="${item.ref.id}"`;
-    else if (item.type === 'paper-pipeline')
-      actionAttr = `data-inspect-submission="${item.ref.id}"`;
     else if (item.type === 'idea')
       actionAttr = `data-inspect-idea="${item.ref.id}"`;
-    else if (item.type === 'submission' || item.type === 'submission-deadline')
-      actionAttr = `data-inspect-submission="${item.ref.id}"`;
     else if (item.type === 'action-item')
       actionAttr = `data-inspect-meeting="${item.meetingId}"`;
 
@@ -6550,12 +6197,10 @@ async function _saveSubColMapping(map) {
  * Cuando cambia el estado de una submission vinculada a un Paper,
  * mueve el proyecto a la columna Kanban mapeada (si el toggle está activo).
  */
-async function _syncPaperColumn(subId, newStatus) {
+async function _syncPaperColumn(projectId, newStatus) {
   const toggle = await db.settings.get('ros-auto-sync-paper-col');
   if (toggle?.value !== 'true') return;
-  const sub = await db.submissions.get(subId);
-  if (!sub?.projectId) return;
-  const proj = await db.projects.get(sub.projectId);
+  const proj = await db.projects.get(projectId);
   if (!proj || proj.type !== 'Paper') return;
   const mapping = await _getSubColMapping();
   const colId   = mapping[newStatus] ? +mapping[newStatus] : null;
@@ -6573,16 +6218,18 @@ async function _syncPaperColumn(subId, newStatus) {
 //  VIEW: SETTINGS & EXPORT
 // ══════════════════════════════════════════════════════════════
 async function renderSettings() {
-  const [cp, ci, cs, csub, cmeet, cref, ccol, settingsCols, _subColMap, _autoSyncRow] =
+  const [cp, ci, cs, cmeet, cref, ccol, settingsCols, _subColMap, _autoSyncRow] =
     await Promise.all([
       db.projects.count(), db.ideas.count(), db.snippets.count(),
-      db.submissions.count(), db.meetings.count(),
+      db.meetings.count(),
       db.references.count(), db.collaborators.count(),
       db.kanbanColumns.orderBy('order').toArray(),
       _getSubColMapping(),
       db.settings.get('ros-auto-sync-paper-col'),
     ]);
-  const counts = { p: cp, i: ci, s: cs, sub: csub, meet: cmeet, ref: cref, col: ccol };
+  const paperSubCount = await db.projects
+    .filter(p => p.type === 'Paper' && !p.archived).count();
+  const counts = { p: cp, i: ci, s: cs, paper: paperSubCount, meet: cmeet, ref: cref, col: ccol };
 
   let storageHTML = '';
   if (navigator.storage && navigator.storage.estimate) {
@@ -6620,7 +6267,7 @@ async function renderSettings() {
             { label: 'Proyectos',    val: counts.p,    color: 'var(--accent)'  },
             { label: 'Ideas',        val: counts.i,    color: 'var(--purple)'  },
             { label: 'Snippets',     val: counts.s,    color: 'var(--green)'   },
-            { label: 'Submissions',  val: counts.sub,  color: 'var(--amber)'   },
+            { label: 'Papers activos', val: counts.paper, color: 'var(--accent)' },
             { label: 'Reuniones',    val: counts.meet, color: 'var(--teal)'    },
             { label: 'Referencias',  val: counts.ref,  color: 'var(--accent)'  },
             { label: 'Colaboradores',val: counts.col,  color: 'var(--text-2)'  },
@@ -7856,7 +7503,7 @@ async function inspectProject(id) {
         <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="idea">+ Idea</button>
         <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="meeting">+ Reunión</button>
         <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="reference">+ Referencia</button>
-        <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="submission">+ Submission</button>
+        ${p.type === 'Paper' ? `<button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="submission">📤 Submission</button>` : ''}
       </div>
 
       <div class="inspector-section-label" style="margin-top:12px;display:flex;align-items:center;justify-content:space-between">
@@ -7931,68 +7578,55 @@ async function inspectProject(id) {
           </div>`).join('')}` : ''}
 
       ${await (async () => {
-        const subs = await getSubmissions(p.id);
         const refs  = await getReferences(p.id);
         const meets = await getMeetings(p.id);
         let html = '';
-        if (p.type === 'Paper' || subs.length) {
-            // Submission activa más reciente para el pipeline
-            const latestSub = subs
-              .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
-            const pipelinePreview = latestSub ? (() => {
-              const SC = { preparacion:'var(--text-3)', enviado:'var(--accent)',
-                en_revision:'var(--amber)', revision_solicitada:'var(--purple)',
-                aceptado:'var(--green)', rechazado:'var(--red)' };
-              const SL = { preparacion:'En preparación', enviado:'Enviado',
-                en_revision:'En revisión', revision_solicitada:'Revisión solicitada',
-                aceptado:'Aceptado ✓', rechazado:'Rechazado' };
-              const sc = SC[latestSub.status] || 'var(--text-3)';
-              return `<span style="font-family:var(--font-mono);font-size:.62rem;
-                color:${sc};background:color-mix(in srgb,${sc} 12%,transparent);
-                border:1px solid color-mix(in srgb,${sc} 25%,transparent);
-                padding:2px 8px;border-radius:99px">📤 ${SL[latestSub.status] || latestSub.status}</span>`;
-            })() : '';
-            html += `<div class="inspector-related-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px">
-              <span>📤 Submissions${subs.length > 1 ? ` (${subs.length})` : ''} ${pipelinePreview}</span>
-              <button class="btn btn-ghost btn-sm" id="insp-new-sub-btn"
-                      style="font-size:.65rem;padding:2px 7px">+ Nuevo envío</button>
-            </div>`;
-          if (subs.length) {
-            html += subs.slice(0, 5).map(s => `
-              <div class="inspector-related-item sub-unified-row"
-                   data-goto-sub="${s.id}" style="cursor:pointer">
-                <div style="flex:1;min-width:0">
-                  <div style="font-size:.77rem;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                    ${esc(s.targetVenue || s.title)}
-                  </div>
-                  <div style="font-size:.65rem;font-family:var(--font-mono);color:var(--text-3)">
-                    ${s.deadlineAt ? `⏱ ${formatDate(s.deadlineAt)}` : ''}
-                  </div>
-                </div>
-                ${subStatusBadge(s.status)}
-              </div>`).join('');
-          } else {
-            html += `<div class="inspector-related-item"
-                         style="color:var(--text-3);font-size:.74rem;font-style:italic">
-              Sin envíos registrados — haz clic en "+ Nuevo envío"
-            </div>`;
-          }
+
+        // ── Panel de submission inline (solo Paper) ──────────
+        if (p.type === 'Paper') {
+          const st = p.submissionStatus || 'preparacion';
+          html += `
+            <div class="inspector-related-title"
+                 style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px">
+              <span>📤 Submission ${subStatusBadge(st)}</span>
+              <button class="btn btn-ghost btn-sm" id="insp-edit-sub-btn"
+                      style="font-size:.65rem;padding:2px 7px">✎ Editar</button>
+            </div>
+            <div class="inspector-meta" style="margin-bottom:10px">
+              ${p.targetVenue ? `<div class="inspector-meta-row">
+                <span class="inspector-meta-key">Venue</span>
+                <span class="inspector-meta-val">${esc(p.targetVenue)}</span>
+              </div>` : ''}
+              ${p.submittedAt ? `<div class="inspector-meta-row">
+                <span class="inspector-meta-key">Enviado</span>
+                <span class="inspector-meta-val" style="font-family:var(--font-mono);font-size:.74rem">
+                  ${formatDate(p.submittedAt)}
+                </span>
+              </div>` : ''}
+            </div>
+            ${(p.submissionRounds||[]).length ? `
+              <div class="inspector-related-title">Rondas (${p.submissionRounds.length})</div>
+              <div class="sub-rounds-list">
+                ${p.submissionRounds.map(r => `
+                  <div class="sub-round-item">
+                    <span class="history-ts">${formatDate(r.date)}</span>
+                    <span class="badge" style="font-size:.62rem">${esc(r.status)}</span>
+                    <span style="font-size:.74rem;color:var(--text-2)">${esc(r.notes||'')}</span>
+                  </div>`).join('')}
+              </div>` : ''}`;
         }
+
         if (refs.length) html += `
           <div class="inspector-related-title">Referencias (${refs.length})</div>
           ${refs.slice(0,3).map(r => `
-            <div class="inspector-related-item" data-goto-ref="${r.id}"
-                 style="cursor:pointer;display:flex;align-items:center;gap:4px">
-              <span style="flex:1">📚 ${esc(r.authors?.split(',')[0]||'')} (${r.year||'?'}) — ${esc(r.title.slice(0,40))}</span>
-              <span style="font-size:.62rem;color:var(--text-3);flex-shrink:0">→</span>
+            <div class="inspector-related-item" data-inspect-ref="${r.id}" style="cursor:pointer">
+              📚 ${esc(r.authors?.split(',')[0]||'')} (${r.year||'?'}) — ${esc(r.title.slice(0,40))}
             </div>`).join('')}`;
         if (meets.length) html += `
           <div class="inspector-related-title">Reuniones (${meets.length})</div>
           ${meets.slice(0,3).map(m => `
-            <div class="inspector-related-item" data-goto-meet="${m.id}"
-                 style="cursor:pointer;display:flex;align-items:center;gap:4px">
-              <span style="flex:1">🗓 ${formatDate(m.date)} — ${esc(m.title)}</span>
-              <span style="font-size:.62rem;color:var(--text-3);flex-shrink:0">→</span>
+            <div class="inspector-related-item" data-inspect-meeting="${m.id}" style="cursor:pointer">
+              🗓 ${formatDate(m.date)} — ${esc(m.title)}
             </div>`).join('')}`;
         return html;
       })()}
@@ -8047,12 +7681,7 @@ async function inspectProject(id) {
   });
 
   // ── Enlace submission desde inspector de Paper ──────
-  $('insp-new-sub-btn')?.addEventListener('click', () => {
-    closeModal();
-    showAddSubmissionModal(p.deadline || null, p.id);
-  });
-  inspectorBody.querySelectorAll('[data-inspect-submission]').forEach(el =>
-    el.addEventListener('click', () => inspectSubmission(+el.dataset.inspectSubmission)));
+  $('insp-edit-sub-btn')?.addEventListener('click', () => showAddSubmissionModal(null, p.id));
 
   // In-place editing
   _attachInplaceEditors(async (field, newVal) => {
@@ -8741,8 +8370,9 @@ async function updateBadges() {
   ]);
   const badge = $('ideasBadge');
   if (badge) { badge.textContent = unread; badge.classList.toggle('visible', unread > 0); }
-  const subActive = await db.submissions.filter(s =>
-    ['preparacion','enviado','en_revision','revision_solicitada'].includes(s.status)
+  const subActive = await db.projects.filter(p =>
+    p.type === 'Paper' && !p.archived &&
+    ['preparacion','enviado','en_revision','revision_solicitada'].includes(p.submissionStatus)
   ).count();
   const subBadge = $('submissionsBadge');
   if (subBadge) {
@@ -10140,7 +9770,6 @@ async function _searchPalette(q) {
   ]);
   let refs  = typeof db.references  !== 'undefined' ? await db.references.toArray()  : [];
   let meets = typeof db.meetings    !== 'undefined' ? await db.meetings.toArray()     : [];
-  const subs  = typeof db.submissions !== 'undefined' ? await db.submissions.toArray()  : [];
 
   const groups = [];
 
@@ -10232,15 +9861,6 @@ async function _searchPalette(q) {
         ]),
         icon: '🗓', label: m.title, sub: formatDate(m.date),
         action: () => { closePalette(); navigate('meetings'); setTimeout(() => inspectMeeting(m.id), 120); }
-      })),
-      ...subs.map(s => ({
-        score: _scoreMatch(lq, [
-          { text: s.title,       weight: 60 },
-          { text: s.targetVenue, weight: 30 },
-          { text: s.notes,       weight: 15 }
-        ]),
-        icon: '📤', label: s.title, sub: s.targetVenue || 'Submission',
-        action: () => { closePalette(); navigate('submissions'); setTimeout(() => inspectSubmission(s.id), 120); }
       })),
     ].filter(item => item.score > 0)
      .sort((a, b) => b.score - a.score)
