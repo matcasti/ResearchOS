@@ -43,6 +43,7 @@ const App = {
   projSortDir:       'asc',   // 'asc' | 'desc'
   collaboratorHubId: null,
   _inspectedProjectId: null,  // proyecto activo en el inspector (para palette contextual)
+  _savedInspector:    null,   // {type, id} — estado del inspector a restaurar tras navegación
   ideaBulkMode:        false,
   ideaBulkSelected:    new Set(),
   orphanBulkSelected:  new Map(),
@@ -222,6 +223,11 @@ function attachBreadcrumbHandlers() {
 //  ROUTER
 // ==============================================================
 function navigate(view, addToHistory = true) {
+  // Persiste el inspector si el panel está abierto al momento de navegar
+  if (!document.body.classList.contains('inspector-closed') &&
+      App.inspectedType && App.inspectedId) {
+    App._savedInspector = { type: App.inspectedType, id: App.inspectedId };
+  }
   App.view = view;
   if (addToHistory) {
     // Truncate forward stack when branching
@@ -256,7 +262,7 @@ function _updateNavHistoryBtns() {
 }
 
 async function renderView(view) {
-  closeInspector();
+  _softResetInspector();
   mainContent.innerHTML = '';
 
   const bcMap = {
@@ -325,6 +331,11 @@ async function renderView(view) {
 
   attachBreadcrumbHandlers();
   await updateBadges();
+
+  // Restaurar inspector si estaba abierto cuando se inició la navegación
+  if (App._savedInspector) {
+    await _restoreInspector(App._savedInspector);
+  }
 }
 
 async function _renderEstadoDia() {
@@ -7521,22 +7532,29 @@ async function showAddSnippetModal(preProjectId = null) {
 function openInspector() {
   document.body.classList.remove('inspector-closed');
 }
-function closeInspector() {
-  App.inspectorHistory = [];
-  App.inspectedType    = null;
-  App.inspectedId      = null;
+/**
+ * Resetea el inspector visualmente sin tocar App._savedInspector.
+ * Llamado internamente por renderView() en cada navegación.
+ */
+function _softResetInspector() {
+  App.inspectorHistory    = [];
+  App.inspectedType       = null;
+  App.inspectedId         = null;
   App._inspectedProjectId = null;
-
   const crumb = $('inspectorCrumb');
   if (crumb) crumb.innerHTML = '';
-
   document.body.classList.add('inspector-closed');
-
   inspectorBody.innerHTML = `
     <div class="inspector-empty">
       <span class="empty-icon">◈</span>
       <p>Selecciona un elemento para inspeccionar</p>
     </div>`;
+}
+
+/** Cierra el inspector y descarta el estado guardado (acción explícita del usuario). */
+function closeInspector() {
+  App._savedInspector = null;
+  _softResetInspector();
 }
 
 // ==============================================================
@@ -7617,6 +7635,30 @@ function _attachInplaceEditors(onSave) {
       if (type === 'text') input.select();
     });
   });
+}
+
+/**
+ * Restaura el inspector al ítem guardado. Consume App._savedInspector
+ * de inmediato para que una nueva navegación pueda guardar estado fresco.
+ */
+async function _restoreInspector(saved) {
+  App._savedInspector = null; // consumir antes de restaurar
+  try {
+    switch (saved.type) {
+      case 'project':      await inspectProject(saved.id);      break;
+      case 'idea':         await inspectIdea(saved.id);         break;
+      case 'snippet': {
+        const s = await db.snippets.get(saved.id);
+        if (s) await inspectSnippet(s);
+        break;
+      }
+      case 'meeting':      await inspectMeeting(saved.id);      break;
+      case 'reference':    await inspectReference(saved.id);    break;
+      case 'collaborator': await inspectCollaborator(saved.id); break;
+    }
+  } catch {
+    /* el ítem fue eliminado — el inspector permanece cerrado */
+  }
 }
 
 // ── Inspector Navigation History ──────────────
@@ -9851,6 +9893,24 @@ async function init() {
     const next    = current === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
     localStorage.setItem('ros-theme', next);
+  });
+
+  // -- Sidebar collapse ----------------------------------------
+  const _updateCollapseBtn = () => {
+    const btn = $('sidebarCollapseBtn');
+    if (!btn) return;
+    const isCol = document.body.classList.contains('sidebar-collapsed');
+    btn.innerHTML = isCol ? '›' : '‹';
+    btn.title     = isCol ? 'Expandir sidebar' : 'Contraer sidebar';
+  };
+  if (localStorage.getItem('ros-sidebar-collapsed') === '1')
+    document.body.classList.add('sidebar-collapsed');
+  _updateCollapseBtn();
+  $('sidebarCollapseBtn')?.addEventListener('click', () => {
+    document.body.classList.toggle('sidebar-collapsed');
+    localStorage.setItem('ros-sidebar-collapsed',
+      document.body.classList.contains('sidebar-collapsed') ? '1' : '0');
+    _updateCollapseBtn();
   });
 
   // Accent color init + handlers

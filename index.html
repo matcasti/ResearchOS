@@ -22,7 +22,7 @@
 
   <!-- ── SIDEBAR ─────────────────────────────────────────── -->
   <aside class="sidebar" id="sidebar">
-    <div class="sidebar-header">
+    <div class="sidebar-header" style="display:flex;align-items:center;justify-content:space-between">
       <div class="logo">
         <span class="logo-icon">⬡</span>
         <div>
@@ -30,81 +30,82 @@
           <span class="logo-version">v1.0 · local-first</span>
         </div>
       </div>
+      <button class="sidebar-collapse-btn" id="sidebarCollapseBtn" title="Contraer sidebar">‹</button>
     </div>
 
     <div id="researchStatus"></div>
 
     <nav class="sidebar-nav">
       <div class="nav-section-label">Workspace</div>
-      <a class="nav-item active" data-view="dashboard">
+      <a class="nav-item active" data-view="dashboard" data-tooltip="Dashboard">
         <span class="nav-icon">◈</span><span>Dashboard</span>
       </a>
-      <a class="nav-item" data-view="kanban">
+      <a class="nav-item" data-view="kanban" data-tooltip="Kanban Board">
         <span class="nav-icon">⊞</span><span>Kanban Board</span>
       </a>
-      <a class="nav-item" data-view="projects">
+      <a class="nav-item" data-view="projects" data-tooltip="Proyectos">
         <span class="nav-icon">◉</span><span>Proyectos</span>
       </a>
-      <a class="nav-item" data-view="timeline">
+      <a class="nav-item" data-view="timeline" data-tooltip="Timeline">
         <span class="nav-icon">⏱</span><span>Timeline</span>
       </a>
-      <a class="nav-item" data-view="areas">
+      <a class="nav-item" data-view="areas" data-tooltip="Áreas">
         <span class="nav-icon">⊡</span><span>Áreas</span>
       </a>
-      <a class="nav-item" data-view="nested">
+      <a class="nav-item" data-view="nested" data-tooltip="Anidados">
         <span class="nav-icon">⬡</span><span>Anidados</span>
       </a>
 
       <div class="nav-section-label">Knowledge</div>
-      <a class="nav-item" data-view="ideas">
+      <a class="nav-item" data-view="ideas" data-tooltip="Ideas Inbox">
         <span class="nav-icon">◎</span><span>Ideas Inbox</span>
         <span class="nav-badge" id="ideasBadge">0</span>
       </a>
-      <a class="nav-item" data-view="snippets">
+      <a class="nav-item" data-view="snippets" data-tooltip="Snippets">
         <span class="nav-icon">⟨/⟩</span><span>Snippets</span>
       </a>
-      <a class="nav-item" data-view="starred">
+      <a class="nav-item" data-view="starred" data-tooltip="Favoritos">
         <span class="nav-icon">★</span><span>Favoritos</span>
         <span class="nav-badge" id="starredBadge">0</span>
       </a>
 
       <div class="nav-section-label">Research Tools</div>
-      <a class="nav-item" data-view="focus">
+      <a class="nav-item" data-view="focus" data-tooltip="Focus Feed">
         <span class="nav-icon">🎯</span><span>Focus Feed</span>
       </a>
-      <a class="nav-item" data-view="orphans">
+      <a class="nav-item" data-view="orphans" data-tooltip="Huérfanos">
         <span class="nav-icon">🔗</span><span>Huérfanos</span>
       </a>
-      <a class="nav-item" data-view="submissions">
+      <a class="nav-item" data-view="submissions" data-tooltip="Submissions">
         <span class="nav-icon">📤</span><span>Submissions</span>
         <span class="nav-badge" id="submissionsBadge">0</span>
       </a>
-      <a class="nav-item" data-view="meetings">
+      <a class="nav-item" data-view="meetings" data-tooltip="Reuniones">
         <span class="nav-icon">🗓</span><span>Reuniones</span>
         <span class="nav-badge" id="meetingsBadge">0</span>
       </a>
-      <a class="nav-item" data-view="references">
+      <a class="nav-item" data-view="references" data-tooltip="Referencias">
         <span class="nav-icon">📚</span><span>Referencias</span>
       </a>
-      <a class="nav-item" data-view="collaborators">
+      <a class="nav-item" data-view="collaborators" data-tooltip="Colaboradores">
         <span class="nav-icon">👥</span><span>Colaboradores</span>
       </a>
-      <a class="nav-item" data-view="weekly">
+      <a class="nav-item" data-view="weekly" data-tooltip="Agenda">
         <span class="nav-icon">📅</span><span>Agenda</span>
       </a>
 
       <div class="nav-section-label">Tools</div>
-      <a class="nav-item" data-view="filesystem">
+      <a class="nav-item" data-view="filesystem" data-tooltip="FS Bridge">
         <span class="nav-icon">⊟</span><span>FS Bridge</span>
       </a>
-      <a class="nav-item" data-view="archived">
+      <a class="nav-item" data-view="archived" data-tooltip="Archivados">
         <span class="nav-icon">⊟</span><span>Archivados</span>
         <span class="nav-badge" id="archivedBadge">0</span>
       </a>
-      <a class="nav-item" data-view="tutorial">
+      <a class="nav-item" data-view="tutorial" data-tooltip="Tutorial">
         <span class="nav-icon">📖</span><span>Tutorial</span>
       </a>
-      <a class="nav-item" data-view="settings">
+      <a class="nav-item" data-view="settings" data-tooltip="Settings">
         <span class="nav-icon">⚙</span><span>Settings &amp; Export</span>
       </a>
     </nav>
