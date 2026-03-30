@@ -3696,3 +3696,82 @@ body.sidebar-collapsed .sidebar-collapse-btn { margin-top: 6px; }
   transition: opacity 150ms;
 }
 .tl-workload-segment:hover { opacity: 1 !important; filter: brightness(1.25); cursor: help; }
+
+/* ══════════════════════════════════════════════════════════════
+   INSPECTOR COMO BOTTOM-SHEET EN PANTALLAS PEQUEÑAS
+══════════════════════════════════════════════════════════════ */
+@media (max-width: 900px) {
+
+  /* Body: una sola columna, el inspector sale del flujo */
+  body,
+  body.inspector-closed {
+    grid-template-columns: var(--sidebar-w) 1fr !important;
+    grid-template-rows: 100vh;
+  }
+
+  /* Inspector: drawer fijo desde abajo */
+  .inspector-panel {
+    position: fixed !important;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100% !important;
+    height: 55vh;
+    max-height: 75vh;
+    border-left: none !important;
+    border-top: 1px solid var(--border-str);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    box-shadow: 0 -12px 40px rgba(0, 0, 0, .45);
+    z-index: 200;
+    /* Handle visual de arrastre */
+    padding-top: 14px;
+    transform: translateY(0);
+    transition: transform 300ms var(--ease);
+    overflow: hidden;
+  }
+
+  /* Pill decorativa arriba del drawer */
+  .inspector-panel::before {
+    content: '';
+    position: absolute;
+    top: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 36px;
+    height: 4px;
+    background: var(--border-str);
+    border-radius: 99px;
+  }
+
+  /* Inspector cerrado: oculto bajo el borde inferior */
+  body.inspector-closed .inspector-panel {
+    transform: translateY(105%) !important;
+    pointer-events: none;
+  }
+
+  /* Empujar el contenido principal hacia arriba cuando el inspector está abierto */
+  body:not(.inspector-closed) .main-content {
+    padding-bottom: 57vh; /* deja espacio para el drawer */
+  }
+
+  /* Sidebar colapsada por defecto en móvil */
+  @media (max-width: 600px) {
+    body,
+    body.inspector-closed {
+      grid-template-columns: 0 1fr !important;
+    }
+    .sidebar {
+      position: fixed;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      z-index: 300;
+      transform: translateX(-100%);
+      transition: transform 280ms var(--ease);
+      box-shadow: var(--shadow-lg);
+    }
+    body.sidebar-mobile-open .sidebar {
+      transform: translateX(0);
+    }
+  }
+}

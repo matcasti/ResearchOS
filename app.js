@@ -952,7 +952,7 @@ function _kanbanBoardHTML(kanbanData, filterFn, unreadByProject, activeSubByProj
       App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible
     );
     return `
-    <div class="kanban-col" data-col-id="${col.id}" id="col-${col.id}"
+    <div class="kanban-col" data-col-id="${col.id}" data-col-wip="${col.wip || ''}" id="col-${col.id}"
            ondragover="kanbanDragOver(event)"
            ondragleave="kanbanDragLeave(event)"
            ondrop="kanbanDrop(event)">
@@ -1569,6 +1569,33 @@ function kanbanDragEnd(e) {
   e.currentTarget.classList.remove('dragging');
   App._isDragging = false;
 }
+/**
+ * Mueve una tarjeta Kanban en el DOM sin reconstruir el tablero.
+ * Actualiza contadores de columna y badges WIP.
+ * Devuelve true si tuvo éxito, false si hay que hacer full-render.
+ */
+function _kanbanSurgicalMove(projectId, newColId) {
+  const card     = document.querySelector(`.kanban-card[data-project-id="${projectId}"]`);
+  const destList = document.querySelector(`#cards-${newColId}`);
+  if (!card || !destList) return false;
+
+  card.classList.remove('dragging');
+  destList.appendChild(card);
+
+  // Actualizar contadores de todas las columnas afectadas
+  document.querySelectorAll('.kanban-col[data-col-id]').forEach(colEl => {
+    const countEl = colEl.querySelector('.kanban-col-count');
+    if (!countEl) return;
+    const wip      = +colEl.dataset.colWip || null;
+    const n        = colEl.querySelectorAll('.kanban-card').length;
+    const exceeded = wip && n > wip;
+    countEl.className = 'kanban-col-count' + (exceeded ? ' kanban-wip-exceeded' : '');
+    countEl.textContent = n;
+    if (wip) countEl.insertAdjacentHTML('beforeend',
+      `<span class="kanban-wip-badge">/${wip}</span>`);
+  });
+  return true;
+}
 function kanbanDragOver(e) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
@@ -1595,7 +1622,6 @@ async function kanbanDrop(e) {
   App.draggedId   = null;
   if (!draggedId || !newColId) return;
   try {
-    // En modo swimlane, el drop vertical también actualiza el grupo (tipo o área)
     const groupUpdates = {};
     if (swimCell && App.kanbanGroupBy === 'type') {
       const newType = swimCell.dataset.swimGroup;
@@ -1612,16 +1638,25 @@ async function kanbanDrop(e) {
       }));
     }
     await dbWrite(() => recordColumnChange(draggedId, newColId));
-    await renderKanban();
-    const moved = Object.keys(groupUpdates).length
-      ? `Movida · ${App.kanbanGroupBy === 'type'
-          ? `tipo → ${groupUpdates.type}`
-          : 'área actualizada'}`
-      : 'Tarjeta movida';
-    showToast(moved, 'success');
+
+    // Modo quirúrgico: solo en board estándar sin cambios de grupo
+    const canSurgical = App.kanbanGroupBy === 'none' && !Object.keys(groupUpdates).length;
+    if (canSurgical && _kanbanSurgicalMove(draggedId, newColId)) {
+      showToast('Tarjeta movida', 'success');
+    } else {
+      // Fallback: re-render completo (swimlanes, cambios de tipo/área)
+      await renderKanban();
+      const msg = Object.keys(groupUpdates).length
+        ? `Movida · ${App.kanbanGroupBy === 'type'
+            ? `tipo → ${groupUpdates.type}`
+            : 'área actualizada'}`
+        : 'Tarjeta movida';
+      showToast(msg, 'success');
+    }
   } catch (err) {
     showToast('Error al mover tarjeta', 'error');
     console.error(err);
+    renderKanban(); // fallback seguro
   }
 }
 // Expose drag handlers globally for inline ondragover/ondrop
@@ -2319,7 +2354,10 @@ async function renderProjects() {
     if (App._projScrollRestore !== undefined) {
       const _savedScroll = App._projScrollRestore;
       App._projScrollRestore = undefined;
-      requestAnimationFrame(() => { mainContent.scrollTop = _savedScroll; });
+      // Doble rAF: garantiza que el layout esté completo antes de restaurar
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => { mainContent.scrollTop = _savedScroll; })
+      );
     }
   })();
 }
@@ -5392,6 +5430,17 @@ async function renderProjectHub() {
           </div>`;
       })()}
 
+      <!-- Subtareas del proyecto -->
+      ${(() => {
+        const tasks = p.subtasks || [];
+        const done  = tasks.filter(t => t.done).length;
+        return sectionToggle('proj-tasks',
+          `✓ Subtareas${tasks.length ? ` · <span style="color:var(--green)">${done}/${tasks.length}</span>` : ''}`,
+          tasks.length,
+          `<div style="padding:10px 14px">${subtaskListHTML(p, 'project')}</div>`
+        );
+      })()}
+
       <!-- Ideas -->
       ${sectionToggle('ideas', `◎ Ideas${unreadIdeas ? ` · <span style="color:var(--amber)">${unreadIdeas} sin revisar</span>` : ''}`, ideas.length,
         ideas.length ? ideas.map(i => `
@@ -5493,6 +5542,26 @@ async function renderProjectHub() {
       _updatePipelineStage(projId, status);
     });
   });
+
+  // Subtask handlers del Hub
+  mainContent.querySelectorAll('[data-toggle-st]').forEach(btn =>
+    btn.addEventListener('click', () =>
+      toggleSubtask(id, +btn.dataset.toggleSt, 'project')));
+  mainContent.querySelectorAll('[data-del-st]').forEach(btn =>
+    btn.addEventListener('click', () =>
+      deleteSubtask(id, +btn.dataset.delSt, 'project')));
+  {
+    const stInput  = mainContent.querySelector(`#stInput-${id}`);
+    const stAddBtn = mainContent.querySelector(`#stAddBtn-${id}`);
+    stAddBtn?.addEventListener('click', () => {
+      if (!stInput) return;
+      addSubtask(id, stInput.value, 'project');
+      stInput.value = '';
+    });
+    stInput?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { addSubtask(id, stInput.value, 'project'); stInput.value = ''; }
+    });
+  }
 
   // Item inspect handlers
   mainContent.querySelectorAll('[data-inspect-idea]').forEach(el =>
@@ -8031,6 +8100,69 @@ function _renderInspectorCrumb() {
   });
 }
 
+/**
+ * Busca snippets e ideas que mencionen el título del proyecto
+ * y los añade asíncronamente al inspector sin bloquear el render inicial.
+ */
+async function _appendCrossRefs(projectId, projectTitle) {
+  if (!projectTitle?.trim()) return;
+  const q = projectTitle.toLowerCase();
+
+  const [mentionSnips, mentionIdeas] = await Promise.all([
+    db.snippets.filter(s =>
+      s.title.toLowerCase().includes(q) ||
+      (s.description || '').toLowerCase().includes(q)
+    ).toArray(),
+    db.ideas.filter(i =>
+      // Excluir ideas ya directamente vinculadas al proyecto
+      (i.projectId !== projectId && !(i.projectIds || []).includes(projectId)) &&
+      (i.title.toLowerCase().includes(q) || (i.content || '').toLowerCase().includes(q))
+    ).toArray(),
+  ]);
+
+  if (!mentionSnips.length && !mentionIdeas.length) return;
+
+  // Verificar que el inspector aún muestra este proyecto
+  const actionsEl = inspectorBody.querySelector('.inspector-actions');
+  if (!actionsEl || !document.body.contains(actionsEl)) return;
+
+  const el = document.createElement('div');
+  el.innerHTML = `
+    <div class="inspector-related-title" style="margin-top:12px">
+      🔗 Mencionado en
+    </div>
+    ${mentionSnips.map(s => `
+      <div class="inspector-related-item" data-xref-snip="${s.id}"
+           style="cursor:pointer;display:flex;align-items:center;gap:6px">
+        <span style="flex-shrink:0;color:var(--green);font-size:.8rem">⟨/⟩</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${esc(s.title)}
+        </span>
+        <span style="font-size:.62rem;color:var(--text-3);flex-shrink:0">${esc(s.language||'')}</span>
+      </div>`).join('')}
+    ${mentionIdeas.map(i => `
+      <div class="inspector-related-item" data-xref-idea="${i.id}"
+           style="cursor:pointer;display:flex;align-items:center;gap:6px">
+        <span style="flex-shrink:0;color:var(--purple);font-size:.8rem">◎</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${esc(i.title)}
+        </span>
+        <span style="font-size:.62rem;color:${i.status==='unread'?'var(--amber)':'var(--text-3)'};flex-shrink:0">
+          ${i.status==='unread'?'sin revisar':''}
+        </span>
+      </div>`).join('')}`;
+
+  actionsEl.parentNode.insertBefore(el, actionsEl);
+
+  el.querySelectorAll('[data-xref-snip]').forEach(e =>
+    e.addEventListener('click', async () => {
+      const s = await db.snippets.get(+e.dataset.xrefSnip);
+      if (s) inspectSnippet(s);
+    }));
+  el.querySelectorAll('[data-xref-idea]').forEach(e =>
+    e.addEventListener('click', () => inspectIdea(+e.dataset.xrefIdea)));
+}
+
 // ── Atajos contextuales de teclado ────────────
 function _contextualNew() {
   const MAP = {
@@ -8162,6 +8294,8 @@ async function inspectProject(id) {
         </div>
       </div>
       <div id="completenessInspector"></div>
+
+      ${subtaskListHTML(p, 'project')}
 
       <!-- Quick-Add contextual -->
       <div class="insp-quickadd-bar">
@@ -8334,6 +8468,9 @@ async function inspectProject(id) {
 
   openInspector();
 
+  // Cross-refs: async, no bloquea el inspector inicial
+  _appendCrossRefs(id, p.title).catch(() => {});
+
   // mostrar custom fields
   _getTypeSchemas().then(schemas => {
     const el = $('cfDisplay');
@@ -8492,6 +8629,28 @@ async function inspectProject(id) {
     inspectProject(id);
     if (App.view === 'projects' || App.view === 'starred') renderView(App.view);
   });
+
+  // Handlers de subtareas del proyecto
+  inspectorBody.querySelectorAll('[data-toggle-st]').forEach(btn => {
+    btn.addEventListener('click', () =>
+      toggleSubtask(id, +btn.dataset.toggleSt, 'project'));
+  });
+  inspectorBody.querySelectorAll('[data-del-st]').forEach(btn => {
+    btn.addEventListener('click', () =>
+      deleteSubtask(id, +btn.dataset.delSt, 'project'));
+  });
+  {
+    const stInput  = $(`stInput-${id}`);
+    const stAddBtn = $(`stAddBtn-${id}`);
+    stAddBtn?.addEventListener('click', () => {
+      if (!stInput) return;
+      addSubtask(id, stInput.value, 'project');
+      stInput.value = '';
+    });
+    stInput?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { addSubtask(id, stInput.value, 'project'); stInput.value = ''; }
+    });
+  }
 
   $('inspArchiveBtn').addEventListener('click', async () => {
     await db.projects.update(id, { archived: !p.archived, updatedAt: new Date().toISOString() });
@@ -9010,10 +9169,12 @@ async function inspectIdea(id) {
 
   // Subtask handlers
   inspectorBody.querySelectorAll('[data-toggle-st]').forEach(btn => {
-    btn.addEventListener('click', () => toggleSubtask(id, +btn.dataset.toggleSt));
+    btn.addEventListener('click', () =>
+      toggleSubtask(id, +btn.dataset.toggleSt, btn.dataset.entityType || 'idea'));
   });
   inspectorBody.querySelectorAll('[data-del-st]').forEach(btn => {
-    btn.addEventListener('click', () => deleteSubtask(id, +btn.dataset.delSt));
+    btn.addEventListener('click', () =>
+      deleteSubtask(id, +btn.dataset.delSt, btn.dataset.entityType || 'idea'));
   });
   // -- Listener restaurar snapshot de idea -------------
   inspectorBody.querySelectorAll('.restore-idea-snap').forEach(btn => {
@@ -9038,13 +9199,14 @@ async function inspectIdea(id) {
 
   const stInput  = $(`stInput-${id}`);
   const stAddBtn = $(`stAddBtn-${id}`);
+  const stType   = stAddBtn?.dataset.entityType || 'idea';
   stAddBtn?.addEventListener('click', () => {
     if (!stInput) return;
-    addSubtask(id, stInput.value);
+    addSubtask(id, stInput.value, stType);
     stInput.value = '';
   });
   stInput?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { addSubtask(id, stInput.value); stInput.value = ''; }
+    if (e.key === 'Enter') { addSubtask(id, stInput.value, stType); stInput.value = ''; }
   });
 
   $('ideaEditBtn').addEventListener('click', () => showEditIdeaModal(idea));
@@ -10231,10 +10393,18 @@ async function init() {
     btn.innerHTML = isCol ? '›' : '‹';
     btn.title     = isCol ? 'Expandir sidebar' : 'Contraer sidebar';
   };
+
+
   if (localStorage.getItem('ros-sidebar-collapsed') === '1')
     document.body.classList.add('sidebar-collapsed');
   _updateCollapseBtn();
   $('sidebarCollapseBtn')?.addEventListener('click', () => {
+    // En móvil (<600px): toggle drawer lateral, no colapsar
+    if (window.innerWidth <= 600) {
+      document.body.classList.toggle('sidebar-mobile-open');
+      return;
+    }
+    // Desktop: colapsar/expandir sidebar
     document.body.classList.toggle('sidebar-collapsed');
     localStorage.setItem('ros-sidebar-collapsed',
       document.body.classList.contains('sidebar-collapsed') ? '1' : '0');
@@ -10877,52 +11047,68 @@ function _initPalette() {
 // ==============================================================
 //  SUBTASKS (Ideas)
 // ==============================================================
-async function toggleSubtask(ideaId, taskId) {
-  const idea = await db.ideas.get(ideaId);
-  const subtasks = (idea.subtasks || []).map(t =>
+const _stTable = type => type === 'project' ? db.projects : db.ideas;
+const _stRefresh = (type, id) =>
+  type === 'project' ? inspectProject(id) : inspectIdea(id);
+
+async function toggleSubtask(entityId, taskId, entityType = 'idea') {
+  const table  = _stTable(entityType);
+  const entity = await table.get(entityId);
+  const subtasks = (entity.subtasks || []).map(t =>
     t.id === taskId ? { ...t, done: !t.done } : t
   );
-  await dbWrite(() => db.ideas.update(ideaId, { subtasks, updatedAt: new Date().toISOString() }));
-  inspectIdea(ideaId);
+  await dbWrite(() => table.update(entityId, { subtasks, updatedAt: new Date().toISOString() }));
+  _stRefresh(entityType, entityId);
 }
 
-async function deleteSubtask(ideaId, taskId) {
-  const idea = await db.ideas.get(ideaId);
-  const subtasks = (idea.subtasks || []).filter(t => t.id !== taskId);
-  await dbWrite(() => db.ideas.update(ideaId, { subtasks, updatedAt: new Date().toISOString() }));
-  inspectIdea(ideaId);
+async function deleteSubtask(entityId, taskId, entityType = 'idea') {
+  const table  = _stTable(entityType);
+  const entity = await table.get(entityId);
+  const subtasks = (entity.subtasks || []).filter(t => t.id !== taskId);
+  await dbWrite(() => table.update(entityId, { subtasks, updatedAt: new Date().toISOString() }));
+  _stRefresh(entityType, entityId);
 }
 
-async function addSubtask(ideaId, text) {
+async function addSubtask(entityId, text, entityType = 'idea') {
   if (!text.trim()) return;
-  const idea = await db.ideas.get(ideaId);
-  const subtasks = [...(idea.subtasks || []), { id: Date.now(), text: text.trim(), done: false }];
-  await dbWrite(() => db.ideas.update(ideaId, { subtasks, updatedAt: new Date().toISOString() }));
-  inspectIdea(ideaId);
+  const table  = _stTable(entityType);
+  const entity = await table.get(entityId);
+  const subtasks = [
+    ...(entity.subtasks || []),
+    { id: Date.now(), text: text.trim(), done: false }
+  ];
+  await dbWrite(() => table.update(entityId, { subtasks, updatedAt: new Date().toISOString() }));
+  _stRefresh(entityType, entityId);
 }
 
-function subtaskListHTML(idea) {
-  const tasks = idea.subtasks || [];
-  if (!tasks.length && !true) return '';   // always show section
+function subtaskListHTML(entity, entityType = 'idea') {
+  const tasks = entity.subtasks || [];
+  const id    = entity.id;
   const done  = tasks.filter(t => t.done).length;
   return `
     <div class="inspector-related-title">
       Subtareas
       ${tasks.length ? `<span class="subtask-count-badge">${done}/${tasks.length}</span>` : ''}
     </div>
-    <div class="subtask-list" id="stList-${idea.id}">
+    <div class="subtask-list" id="stList-${id}">
       ${tasks.map(t => `
         <div class="subtask-item">
-          <button class="subtask-check ${t.done?'done':''}" data-toggle-st="${t.id}">
+          <button class="subtask-check ${t.done ? 'done' : ''}"
+                  data-toggle-st="${t.id}"
+                  data-entity-type="${entityType}">
             ${t.done ? '✓' : ''}
           </button>
-          <span class="subtask-text ${t.done?'done':''}">${esc(t.text)}</span>
-          <button class="subtask-del" data-del-st="${t.id}">✕</button>
+          <span class="subtask-text ${t.done ? 'done' : ''}">${esc(t.text)}</span>
+          <button class="subtask-del"
+                  data-del-st="${t.id}"
+                  data-entity-type="${entityType}">✕</button>
         </div>`).join('')}
     </div>
     <div class="subtask-add-row">
-      <input class="subtask-add-input" id="stInput-${idea.id}" placeholder="Nueva subtarea…" maxlength="200">
-      <button class="btn btn-ghost btn-sm" id="stAddBtn-${idea.id}">+</button>
+      <input class="subtask-add-input" id="stInput-${id}"
+             placeholder="Nueva subtarea…" maxlength="200">
+      <button class="btn btn-ghost btn-sm" id="stAddBtn-${id}"
+              data-entity-type="${entityType}">+</button>
     </div>`;
 }
 
