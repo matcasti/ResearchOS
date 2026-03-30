@@ -170,11 +170,6 @@ async function dbWrite(fn) {
 }
 
 // -- Breadcrumbs ----------------------------------------------
-const VIEW_LABELS = {
-  dashboard: 'Dashboard', kanban: 'Kanban', projects: 'Proyectos',
-  ideas: 'Ideas Inbox', snippets: 'Snippets',
-  filesystem: 'FS Bridge', settings: 'Settings', timeline: 'Timeline'
-};
 
 function breadcrumbHTML(items) {
   if (!items || !items.length) return '';
@@ -1598,7 +1593,6 @@ async function kanbanDrop(e) {
   const draggedId = App.draggedId;
   App.draggedId   = null;
   if (!draggedId || !newColId) return;
-  // DESPUÉS:
   try {
     // En modo swimlane, el drop vertical también actualiza el grupo (tipo o área)
     const groupUpdates = {};
@@ -1716,6 +1710,7 @@ function _attachTableInlineEditing(tableEl) {
         }
         await dbWrite(() => db.projects.update(projId, upd));
         showToast('Actualizado ✓', 'success');
+        App._projScrollRestore = mainContent.scrollTop;
         renderView('projects');
       };
 
@@ -2113,6 +2108,7 @@ async function renderProjects() {
       // Listeners de ordenación
       container.querySelectorAll('th[data-sk]').forEach(th => {
         th.addEventListener('click', () => {
+          App._projScrollRestore = mainContent.scrollTop;
           const key = th.dataset.sk;
           if (App.projSortKey === key) {
             App.projSortDir = App.projSortDir === 'asc' ? 'desc' : 'asc';
@@ -2317,6 +2313,12 @@ async function renderProjects() {
           App.bulkSelected.clear(); App.bulkMode = false; renderView('projects');
         });
       });
+    }
+    // Restaurar posición de scroll tras reordenar tabla o edición inline
+    if (App._projScrollRestore !== undefined) {
+      const _savedScroll = App._projScrollRestore;
+      App._projScrollRestore = undefined;
+      requestAnimationFrame(() => { mainContent.scrollTop = _savedScroll; });
     }
   })();
 }
@@ -6625,6 +6627,39 @@ async function renderStarred() {
       e.stopPropagation();
       await navigator.clipboard.writeText(decodeURIComponent(btn.dataset.code));
       btn.textContent = '✓'; setTimeout(() => btn.textContent = 'Copy', 1500);
+    });
+  });
+
+  // Listeners de ideas en vista Favoritos (★, ✕, estado)
+  mainContent.querySelectorAll('.idea-status-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = +btn.dataset.ideaId;
+      const idea = await db.ideas.get(id);
+      await db.ideas.update(id, {
+        status: idea.status === 'reviewed' ? 'unread' : 'reviewed',
+        updatedAt: new Date().toISOString()
+      });
+      renderStarred();
+    });
+  });
+  mainContent.querySelectorAll('.idea-star-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const idea = await db.ideas.get(+btn.dataset.ideaId);
+      await db.ideas.update(+btn.dataset.ideaId, { starred: !idea.starred });
+      renderStarred();
+      updateBadges();
+    });
+  });
+  mainContent.querySelectorAll('.idea-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (confirm('¿Eliminar esta idea?')) {
+        await db.ideas.delete(+btn.dataset.ideaId);
+        renderStarred();
+        showToast('Idea eliminada', 'info');
+      }
     });
   });
 }
