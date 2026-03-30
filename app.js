@@ -40,9 +40,11 @@ const App = {
   inspectorHistory:  [],      // [{type, id, label}] – historial de navegación del inspector
   kanbanGroupBy:     'none',  // 'none' | 'type' | 'area'
   kanbanDensity:     'detailed', // 'detailed' | 'compact'
-  projSortKey:       '',      // '' | 'title' | 'type' | 'priority' | 'column' | 'responsible' | 'area' | 'deadline'
-  projSortDir:       'asc',   // 'asc' | 'desc'
-  collaboratorHubId: null,
+  projSortKey:        '',      // '' | 'title' | 'type' | 'priority' | 'column' | 'responsible' | 'area' | 'deadline'
+  projSortDir:        'asc',   // 'asc' | 'desc'
+  _projScrollRestore: undefined,
+  _mdEditing:         false,
+  collaboratorHubId:  null,
   _inspectedProjectId: null,  // proyecto activo en el inspector (para palette contextual)
   _savedInspector:    null,   // {type, id} — estado del inspector a restaurar tras navegación
   ideaBulkMode:        false,
@@ -797,8 +799,7 @@ async function renderActivityHeatmap() {
 
       const [projects, ideas, snippets, refs, meets] = await Promise.all([
         db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray(),
-        typeof db.references !== 'undefined' ? db.references.toArray() : [],
-        typeof db.meetings   !== 'undefined' ? db.meetings.toArray()   : [],
+        db.references.toArray(), db.meetings.toArray(),
       ]);
 
       // Filtrar por fecha (updatedAt o createdAt que coincida con 'date')
@@ -1610,7 +1611,7 @@ async function kanbanDrop(e) {
         ...groupUpdates, updatedAt: new Date().toISOString()
       }));
     }
-    await recordColumnChange(draggedId, newColId);
+    await dbWrite(() => recordColumnChange(draggedId, newColId));
     await renderKanban();
     const moved = Object.keys(groupUpdates).length
       ? `Movida · ${App.kanbanGroupBy === 'type'
@@ -3213,12 +3214,15 @@ async function createProjectStructure(rootHandle, { name, desc, author }, templa
 //  VIEW: TIMELINE / GANTT
 // ==============================================================
 async function renderTimeline() {
-  const projects = await db.projects.toArray();
+  const [projects, allIdeasWithDL, allMeetsWithDate_pre] = await Promise.all([
+    db.projects.toArray(),
+    db.ideas.filter(i => !!i.deadline).toArray(),
+    db.meetings.filter(m => !!m.date).toArray(),
+  ]);
   const allWithDL = projects.filter(p => p.deadline)
     .sort((a,b) => new Date(a.deadline) - new Date(b.deadline));
 
   // -- Ideas con deadline ---------------------------------
-  const allIdeasWithDL = await db.ideas.filter(i => !!i.deadline).toArray();
   const ideasByProject = {};
   allIdeasWithDL.forEach(i => {
     // Respetar multi-proyecto: una idea aparece bajo cada proyecto vinculado
@@ -3233,7 +3237,7 @@ async function renderTimeline() {
   });
 
   // -- Reuniones con fecha --------------------------------
-  const allMeetsWithDate = await db.meetings.filter(m => !!m.date).toArray();
+  const allMeetsWithDate = allMeetsWithDate_pre;
   const meetsByProject = {};
   allMeetsWithDate.forEach(m => {
     const key = m.projectId || '_orphan';
@@ -5840,6 +5844,14 @@ async function renderOrphans() {
     if (clearBtn)  clearBtn.style.display   = n > 0 ? '' : 'none';
   };
 
+  // Mapa de tablas — fuente única para todos los handlers de huérfanos
+  const ORPHAN_TABLE_MAP = {
+    idea:      db.ideas,
+    snippet:   db.snippets,
+    reference: db.references,
+    meeting:   db.meetings,
+  };
+
   mainContent.querySelectorAll('.orphan-cb').forEach(cb => {
     cb.addEventListener('change', () => {
       if (cb.checked)
@@ -5895,16 +5907,10 @@ async function renderOrphans() {
     $('obConfirm').addEventListener('click', async () => {
       const pid = +$('orphBulkProjSel').value;
       if (!pid) { showToast('Elige un proyecto', 'error'); return; }
-      const TABLE_MAP = {
-        idea:      db.ideas,
-        snippet:   db.snippets,
-        reference: typeof db.references !== 'undefined' ? db.references : null,
-        meeting:   typeof db.meetings   !== 'undefined' ? db.meetings   : null,
-      };
       const now = new Date().toISOString();
       await dbWrite(async () => {
         for (const { type, id } of App.orphanBulkSelected.values()) {
-          const table = TABLE_MAP[type];
+          const table = ORPHAN_TABLE_MAP[type];
           if (table) await table.update(id, { projectId: pid, updatedAt: now });
         }
       });
@@ -5921,14 +5927,9 @@ async function renderOrphans() {
     if (!App.orphanBulkSelected.size) return;
     const n = App.orphanBulkSelected.size;
     if (!confirm(`¿Eliminar ${n} elemento(s)?`)) return;
-    const TABLE_MAP = {
-      idea: db.ideas, snippet: db.snippets,
-      reference: typeof db.references !== 'undefined' ? db.references : null,
-      meeting:   typeof db.meetings   !== 'undefined' ? db.meetings   : null,
-    };
     await dbWrite(async () => {
       for (const { type, id } of App.orphanBulkSelected.values()) {
-        const table = TABLE_MAP[type];
+        const table = ORPHAN_TABLE_MAP[type];
         if (table) await table.delete(id);
       }
     });
@@ -5957,8 +5958,7 @@ async function renderOrphans() {
     $('orphSave').addEventListener('click', async () => {
       const pid = +$('orphan-proj-sel').value || null;
       if (!pid) { closeModal(); return; }
-      const table = { idea: db.ideas, snippet: db.snippets,
-                      reference: db.references, meeting: db.meetings }[entityType];
+      const table = ORPHAN_TABLE_MAP[entityType];
       if (table) await dbWrite(() => table.update(entityId, {
         projectId: pid, updatedAt: new Date().toISOString()
       }));
@@ -5976,11 +5976,7 @@ async function renderOrphans() {
   mainContent.querySelectorAll('.orphan-delete-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (!confirm('¿Eliminar este elemento?')) return;
-      const table = {
-        idea: db.ideas, snippet: db.snippets,
-        reference: typeof db.references !== 'undefined' ? db.references : null,
-        meeting:   typeof db.meetings   !== 'undefined' ? db.meetings   : null,
-      }[btn.dataset.otype];
+      const table = ORPHAN_TABLE_MAP[btn.dataset.otype];
       if (table) await table.delete(+btn.dataset.oid);
       showToast('Eliminado', 'info');
       renderOrphans();
@@ -6660,6 +6656,15 @@ async function renderStarred() {
         renderStarred();
         showToast('Idea eliminada', 'info');
       }
+    });
+  });
+
+  // Snippets en Favoritos — clic para inspeccionar
+  mainContent.querySelectorAll('.snippet-card').forEach(card => {
+    card.addEventListener('click', async (e) => {
+      if (e.target.closest('button') || e.target.closest('.copy-btn-float')) return;
+      const s = await db.snippets.get(+card.dataset.snippetId);
+      if (s) inspectSnippet(s);
     });
   });
 }
@@ -8064,14 +8069,13 @@ async function inspectProject(id) {
   // resetear solo al cambiar de proyecto.
   if (App.inspectedId !== id) App._mdEditing = false;
   App._inspectedProjectId = id; // activa sugerencias contextuales en Command Palette
-  const [cols, areas] = await Promise.all([
+  const [cols, areas, relIdeas, relSnips] = await Promise.all([
     db.kanbanColumns.toArray(),
     _getAreas(),
+    getRelatedIdeas(id),
+    getRelatedSnippets(id),
   ]);
-  const colMap     = Object.fromEntries(cols.map(c => [c.id, c]));
-  const relIdeas   = await getRelatedIdeas(id);
-  const relSnips   = await getRelatedSnippets(id);
-  const col        = cols.find(c => c.id === p.columnId);
+  const col = cols.find(c => c.id === p.columnId);
   const currentArea = areas.find(a => a.id === p.areaId) || null;
   // Mapas codificados para inplace id-select: "id=Etiqueta|..."
   const colMapStr  = cols.map(c => `${c.id}=${c.title.replace(/[|=]/g,'')}`).join('|');
@@ -8243,8 +8247,10 @@ async function inspectProject(id) {
           </div>`).join('')}` : ''}
 
       ${await (async () => {
-        const refs  = await getReferences(p.id);
-        const meets = await getMeetings(p.id);
+        const [refs, meets] = await Promise.all([
+          getReferences(p.id),
+          getMeetings(p.id),
+        ]);
         let html = '';
 
         // -- Panel de submission inline (solo Paper) ----------
@@ -9111,7 +9117,7 @@ async function updateBadges() {
 
   // Badge: reuniones con action items pendientes
   const mbadge = $('meetingsBadge');
-  if (mbadge && typeof db.meetings !== 'undefined') {
+  if (mbadge) {
     const allMeets = await db.meetings.toArray();
     const pendingActions = allMeets.reduce((acc, m) =>
       acc + (m.actionItems || []).filter(a => !a.done).length, 0);
@@ -9362,8 +9368,10 @@ async function exportProjectAsMarkdown(projectId) {
   ]);
   if (!p) return;
 
-  const refs  = typeof db.references  !== 'undefined' ? await db.references.where('projectId').equals(projectId).toArray()  : [];
-  const meets = typeof db.meetings    !== 'undefined' ? await db.meetings.where('projectId').equals(projectId).toArray()     : [];
+  const [refs, meets] = await Promise.all([
+    db.references.where('projectId').equals(projectId).toArray(),
+    db.meetings.where('projectId').equals(projectId).toArray(),
+  ]);
   const col   = cols.find(c => c.id === p.columnId);
 
   const hr  = '\n\n---\n\n';
@@ -10593,11 +10601,10 @@ async function _renderAlertPanel(container) {
 //  ÍNDICE DE BÚSQUEDA EN MEMORIA
 // ==============================================================
 async function _buildSearchIndex() {
-  const [projects, ideas, snippets] = await Promise.all([
-    db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray()
+  cconst [projects, ideas, snippets, refs, meets] = await Promise.all([
+    db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray(),
+    db.references.toArray(), db.meetings.toArray(),
   ]);
-  const refs  = typeof db.references !== 'undefined' ? await db.references.toArray() : [];
-  const meets = typeof db.meetings   !== 'undefined' ? await db.meetings.toArray()   : [];
 
   const idx = new Map();
   const tokenize = str => (str || '').toLowerCase()
