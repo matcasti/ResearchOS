@@ -315,6 +315,8 @@ body.theme-transitioning * {
   overflow-y: auto;
   overflow-x: hidden;
   background: var(--bg-base);
+}
+.main-content.view-enter {
   animation: fadeIn 200ms var(--ease);
 }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }

@@ -44,6 +44,8 @@ const App = {
   projSortDir:        'asc',   // 'asc' | 'desc'
   _projScrollRestore: undefined,
   _mdEditing:         false,
+  _isNavigating:      false,   // true solo durante navigate() → activa view-enter
+  _projDataOnly:      false,
   collaboratorHubId:  null,
   _inspectedProjectId: null,  // proyecto activo en el inspector (para palette contextual)
   _savedInspector:    null,   // {type, id} — estado del inspector a restaurar tras navegación
@@ -244,6 +246,7 @@ function navigate(view, addToHistory = true) {
   document.querySelectorAll('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.view === view);
   });
+  App._isNavigating = true;
   renderView(view);
 }
 
@@ -267,8 +270,17 @@ function _updateNavHistoryBtns() {
 }
 
 async function renderView(view) {
+  const _wasNavigating = App._isNavigating;
+  App._isNavigating = false;
   _softResetInspector();
-  mainContent.innerHTML = '';
+
+  // ── Refresh data-only: no blanquear mainContent, solo repoblar #projectsContainer ──
+  if (view === 'projects' && App._projDataOnly && App.view === 'projects') {
+    await renderProjects();           // lee y resetea _projDataOnly internamente
+    await updateBadges();
+    if (App._savedInspector) await _restoreInspector(App._savedInspector);
+    return;
+  }
 
   const bcMap = {
     dashboard:  [{label:'Dashboard', view:'dashboard'}],
@@ -340,6 +352,13 @@ async function renderView(view) {
   // Restaurar inspector si estaba abierto cuando se inició la navegación
   if (App._savedInspector) {
     await _restoreInspector(App._savedInspector);
+  }
+
+  // ── Animación de entrada solo en navegaciones reales, no en refreshes de datos ──
+  if (_wasNavigating) {
+    mainContent.classList.remove('view-enter');
+    void mainContent.offsetWidth;          // fuerza reflow para reiniciar animación
+    mainContent.classList.add('view-enter');
   }
 }
 
@@ -1747,6 +1766,7 @@ function _attachTableInlineEditing(tableEl) {
         await dbWrite(() => db.projects.update(projId, upd));
         showToast('Actualizado ✓', 'success');
         App._projScrollRestore = mainContent.scrollTop;
+        App._projDataOnly = true;   // ← refresh solo datos, sin blanquear la vista
         renderView('projects');
       };
 
@@ -1763,6 +1783,9 @@ function _attachTableInlineEditing(tableEl) {
 //  VIEW: PROJECTS
 // ==============================================================
 async function renderProjects() {
+  const _dataOnly = App._projDataOnly;
+  App._projDataOnly = false;
+
   let allProjects = await db.projects.toArray();
   const cols      = await db.kanbanColumns.toArray();
   const colMap    = Object.fromEntries(cols.map(c => [c.id, c]));
@@ -1795,6 +1818,8 @@ async function renderProjects() {
     activePills.push({ key:'area', label:`Área: ${_area?.name || App.filterArea}` });
   }
 
+  if (!_dataOnly) {
+  mainContent.innerHTML = '';   // limpiar DESPUÉS del fetch → no hay frame en blanco
   mainContent.insertAdjacentHTML('beforeend', `
     <div class="view">
       <div class="view-header">
@@ -1960,6 +1985,7 @@ async function renderProjects() {
 
   // -- Panel de alertas --------------------------------
   _renderAlertPanel(mainContent.querySelector('.view')).catch(() => {});
+  } // fin if (!_dataOnly)
 
   // Async: compute completeness for each card then render
   (async () => {
@@ -2153,6 +2179,7 @@ async function renderProjects() {
             App.projSortDir = 'asc';
           }
           App._projPage = 1;
+          App._projDataOnly = true;   // ← refresh solo datos, sin blanquear la vista
           renderView('projects');
         });
       });
@@ -2210,6 +2237,7 @@ async function renderProjects() {
     });
 
     if (App.bulkMode) {
+      $('bulkBar')?.remove();
       const bulkBar = document.createElement('div');
       bulkBar.id = 'bulkBar';
       bulkBar.style.cssText = `
@@ -3314,6 +3342,7 @@ async function renderTimeline() {
     ? (PRIO_COLORS[p.priority] || 'var(--text-2)')
     : (TYPE_COLORS[p.type]     || 'var(--text-2)');
 
+  mainContent.innerHTML = '';   // limpiar DESPUÉS del fetch → no hay frame en blanco
   mainContent.insertAdjacentHTML('beforeend', `
     <div class="view">
       <div class="view-header">
@@ -10537,6 +10566,7 @@ async function renderAreas() {
     _getAreas(),
     db.projects.filter(p => !p.archived).toArray()
   ]);
+  mainContent.innerHTML = '';   // limpiar DESPUÉS del fetch → no hay frame en blanco
   mainContent.insertAdjacentHTML('beforeend', `
     <div class="view">
       <div class="view-header">
