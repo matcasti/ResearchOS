@@ -3749,7 +3749,7 @@ async function renderNestedProjects() {
     btn.addEventListener('click', e => {
       e.stopPropagation();
       const parentId = +btn.dataset.nestAddChild;
-      showAddProjectModal(null, parentId); // ver 6.c
+      showAddProjectModal(null, parentId);
     });
   });
 
@@ -5204,19 +5204,15 @@ async function renderProjectHub() {
   const id = App.projectHubId;
   if (!id) { navigate('projects'); return; }
 
-  const [p, cols, ideas, snippets] = await Promise.all([
+  const [p, cols, ideas, snippets, meetings, references] = await Promise.all([
     db.projects.get(id),
     db.kanbanColumns.toArray(),
     db.ideas.where('projectId').equals(id).toArray(),
     db.snippets.where('projectId').equals(id).toArray(),
+    db.meetings.where('projectId').equals(id).toArray(),
+    db.references.where('projectId').equals(id).toArray(),
   ]);
   if (!p) { navigate('projects'); return; }
-
-  // Datos de tablas extendidas
-  const meetings   = typeof db.meetings   !== 'undefined'
-    ? await db.meetings.where('projectId').equals(id).toArray()   : [];
-  const references = typeof db.references !== 'undefined'
-    ? await db.references.where('projectId').equals(id).toArray() : [];
 
   const col     = cols.find(c => c.id === p.columnId);
   const colMap  = Object.fromEntries(cols.map(c => [c.id, c]));
@@ -5498,11 +5494,11 @@ async function renderProjectHub() {
   mainContent.querySelectorAll('[data-inspect-idea]').forEach(el =>
     el.addEventListener('click', () => inspectIdea(+el.dataset.inspectIdea)));
   mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
-    el.addEventListener('click', () => typeof inspectSubmission === 'function' && inspectProject(+el.dataset.inspectSubmission)));
+    el.addEventListener('click', () => inspectProject(+el.dataset.inspectSubmission)));
   mainContent.querySelectorAll('[data-inspect-meeting]').forEach(el =>
-    el.addEventListener('click', () => typeof inspectMeeting === 'function' && inspectMeeting(+el.dataset.inspectMeeting)));
+    el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
   mainContent.querySelectorAll('[data-inspect-ref]').forEach(el =>
-    el.addEventListener('click', () => typeof inspectReference === 'function' && inspectReference(+el.dataset.inspectRef)));
+    el.addEventListener('click', () => inspectReference(+el.dataset.inspectRef)));
   mainContent.querySelectorAll('[data-inspect-snip]').forEach(el =>
     el.addEventListener('click', async () => {
       const s = await db.snippets.get(+el.dataset.inspectSnip);
@@ -5608,7 +5604,7 @@ async function renderFocusFeed() {
   const [projects, ideas, meetings] = await Promise.all([
     db.projects.filter(p => !p.archived).toArray(),
     db.ideas.filter(i => i.status === 'unread').toArray(),
-    typeof db.meetings !== 'undefined' ? db.meetings.toArray() : Promise.resolve([]),
+    db.meetings.toArray(),
   ]);
 
   const items = [];
@@ -5737,7 +5733,7 @@ async function renderFocusFeed() {
   mainContent.querySelectorAll('[data-inspect-idea]').forEach(el =>
     el.addEventListener('click', () => inspectIdea(+el.dataset.inspectIdea)));
   mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
-    el.addEventListener('click', () => typeof inspectSubmission === 'function' && inspectProject(+el.dataset.inspectSubmission)));
+    el.addEventListener('click', () => inspectProject(+el.dataset.inspectSubmission)));
   mainContent.querySelectorAll('[data-inspect-meeting]').forEach(el =>
     el.addEventListener('click', () => typeof inspectMeeting === 'function' && inspectMeeting(+el.dataset.inspectMeeting)));
 }
@@ -5752,8 +5748,10 @@ async function renderOrphans() {
     db.projects.toArray(),
     db.snippetCollections.toArray(),
   ]);
-  const refs  = typeof db.references  !== 'undefined' ? await db.references.toArray()  : [];
-  const meets = typeof db.meetings    !== 'undefined' ? await db.meetings.toArray()     : [];
+  const [refs, meets] = await Promise.all([
+    db.references.toArray(),
+    db.meetings.toArray(),
+  ]);
 
   const orphanIdeas    = ideas.filter(i => !i.projectId && !((i.projectIds||[]).length));
   const orphanSnippets = snippets.filter(s => !s.projectId && !((s.projectIds||[]).length));
@@ -6068,9 +6066,11 @@ async function renderIdeaTriage() {
       </div>
     </div>`;
 
-  const next = (skip = false) => {
+  const next = async (skip = false) => {
     if (!skip) {
-      db.ideas.update(idea.id, { status: 'reviewed', updatedAt: new Date().toISOString() });
+      await dbWrite(() => db.ideas.update(idea.id, {
+        status: 'reviewed', updatedAt: new Date().toISOString()
+      }));
     }
     App.triageIdx++;
     renderIdeaTriage();
@@ -6080,7 +6080,7 @@ async function renderIdeaTriage() {
   $('triageBtnDone').addEventListener('click', () => next(false));
   $('triageBtnArchive').addEventListener('click', async () => {
     if (confirm('¿Eliminar esta idea?')) {
-      await db.ideas.delete(idea.id);
+      await dbWrite(() => db.ideas.delete(idea.id));
       App.triageIdx = Math.max(0, App.triageIdx - 1);
       renderIdeaTriage();
     }
@@ -8378,8 +8378,6 @@ async function inspectProject(id) {
   });
 
   // -- Listeners del editor Markdown -------------------
-  if (!App._mdEditing) App._mdEditing = false;
-
   $('mdEditToggle')?.addEventListener('click', () => {
     App._mdEditing = !App._mdEditing;
     // Re-render sólo el inspector (sin cerrar)
