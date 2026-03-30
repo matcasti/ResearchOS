@@ -8076,6 +8076,7 @@ async function inspectProject(id) {
     getRelatedSnippets(id),
   ]);
   const col = cols.find(c => c.id === p.columnId);
+  const colMap = Object.fromEntries(cols.map(c => [c.id, c]));
   const currentArea = areas.find(a => a.id === p.areaId) || null;
   // Mapas codificados para inplace id-select: "id=Etiqueta|..."
   const colMapStr  = cols.map(c => `${c.id}=${c.title.replace(/[|=]/g,'')}`).join('|');
