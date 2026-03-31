@@ -692,6 +692,39 @@ async function renderDashboard() {
             })()}
           </div>
         </div>
+        <div class="dash-chart-card">
+          <div class="dash-chart-title" style="display:flex;align-items:center;
+               justify-content:space-between">
+            <span>Pipeline de papers</span>
+            <button class="btn btn-ghost btn-sm" style="font-size:.6rem;padding:1px 6px"
+                    data-dash-nav="submissions">Ver todo →</button>
+          </div>
+          <div class="dash-chart-bars">
+            ${await (async () => {
+              const papers = await db.projects.filter(p => p.type === 'Paper' && !p.archived).toArray();
+              if (!papers.length) return '<span style="color:var(--text-3);font-size:.75rem">Sin papers activos</span>';
+              const counts = {};
+              SUB_STATUSES.forEach(s => { counts[s.key] = 0; });
+              papers.forEach(p => {
+                const k = p.submissionStatus || 'preparacion';
+                if (counts[k] !== undefined) counts[k]++;
+              });
+              const max = Math.max(...Object.values(counts), 1);
+              return SUB_STATUSES
+                .filter(s => counts[s.key] > 0)
+                .map(s => `
+                  <div class="dash-bar-row">
+                    <span class="dash-bar-label" style="color:${s.color}">${s.shortLabel}</span>
+                    <div class="dash-bar-track">
+                      <div class="dash-bar-fill" data-w="${(counts[s.key]/max*100).toFixed(1)}"
+                           style="width:0;background:${s.color}"></div>
+                    </div>
+                    <span class="dash-bar-val">${counts[s.key]}</span>
+                  </div>`).join('') ||
+                '<span style="color:var(--text-3);font-size:.75rem">Sin actividad de submission</span>';
+            })()}
+          </div>
+        </div>
       </div>
 
       <div class="section-title">Proyectos Recientes</div>
@@ -767,6 +800,8 @@ async function renderDashboard() {
     localStorage.setItem('ros-briefing-expanded', String(!nowHidden));
   });
   // Daily Briefing — navegación por filas
+  mainContent.querySelectorAll('[data-dash-nav]').forEach(btn =>
+    btn.addEventListener('click', () => navigate(btn.dataset.dashNav)));
   mainContent.querySelectorAll('[data-db-inspect-project]').forEach(el =>
     el.addEventListener('click', () => inspectProject(+el.dataset.dbInspectProject)));
   mainContent.querySelectorAll('[data-db-inspect-meeting]').forEach(el =>
@@ -4226,6 +4261,139 @@ async function _renderSubmissionPipeline(container) {
     el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
 }
 
+// ── NUEVA FUNCIÓN: gestión de rondas de revisión ──────────
+async function showSubmissionRoundsModal(projectId) {
+  const p = await db.projects.get(projectId);
+  if (!p || p.type !== 'Paper') return;
+  const rounds = JSON.parse(JSON.stringify(p.submissionRounds || []));
+
+  const DECISIONS = [
+    { key: 'major',    label: 'Major Revision',  color: 'var(--red)'    },
+    { key: 'minor',    label: 'Minor Revision',  color: 'var(--amber)'  },
+    { key: 'reject',   label: 'Rechazado',        color: 'var(--red)'    },
+    { key: 'accept',   label: 'Aceptado',         color: 'var(--green)'  },
+    { key: 'pending',  label: 'Pendiente',        color: 'var(--text-3)' },
+  ];
+  const decColor = key => DECISIONS.find(d => d.key === key)?.color || 'var(--text-3)';
+  const decLabel = key => DECISIONS.find(d => d.key === key)?.label || key;
+
+  const renderRoundRows = () => rounds.map((r, i) => `
+    <div style="background:var(--bg-elevated);border:1px solid var(--border);
+                border-radius:var(--radius-md);padding:12px 14px;margin-bottom:8px;
+                border-left:3px solid ${decColor(r.decision)}">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-family:var(--font-mono);font-size:.72rem;font-weight:600;
+                     color:var(--text-1)">Ronda ${i + 1}</span>
+        <button class="btn btn-ghost btn-sm rd-del-btn" data-ri="${i}"
+                style="color:var(--red);padding:2px 7px;font-size:.65rem">✕</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Enviado</label>
+          <input class="form-input rd-submitted" data-ri="${i}" type="date"
+                 value="${r.submittedAt || ''}" style="font-size:.78rem;padding:5px 8px">
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Decisión</label>
+          <select class="form-select rd-decision" data-ri="${i}"
+                  style="font-size:.78rem;padding:5px 8px">
+            ${DECISIONS.map(d =>
+              `<option value="${d.key}" ${r.decision === d.key ? 'selected' : ''}>${d.label}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Fecha decisión</label>
+          <input class="form-input rd-decdate" data-ri="${i}" type="date"
+                 value="${r.decisionDate || ''}" style="font-size:.78rem;padding:5px 8px">
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Venue</label>
+          <input class="form-input rd-venue" data-ri="${i}"
+                 value="${esc(r.venue || p.targetVenue || '')}"
+                 placeholder="Journal / Fondo…"
+                 style="font-size:.78rem;padding:5px 8px">
+        </div>
+        <div class="form-group" style="grid-column:1/-1;margin:0">
+          <label class="form-label">Notas (comentarios de revisores)</label>
+          <textarea class="form-textarea rd-notes" data-ri="${i}" rows="2"
+                    style="font-size:.76rem;font-family:var(--font-mono)"
+                    placeholder="Síntesis de la retroalimentación recibida…">${esc(r.notes || '')}</textarea>
+        </div>
+      </div>
+    </div>`).join('');
+
+  showModal(`📤 Rondas de revisión — ${p.title}`, `
+    <div class="modal-body">
+      <div style="font-size:.78rem;color:var(--text-2);margin-bottom:12px">
+        Registra cada envío/ronda de revisión. El historial queda vinculado al proyecto.
+      </div>
+      <div id="roundsContainer">${renderRoundRows()}</div>
+      <button class="btn btn-ghost btn-sm" id="rdAddBtn" style="width:100%;margin-top:4px">
+        + Agregar ronda
+      </button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="rdCancel">Cancelar</button>
+      <button class="btn btn-primary" id="rdSave">Guardar rondas</button>
+    </div>`);
+
+  const reRender = () => {
+    $('roundsContainer').innerHTML = renderRoundRows();
+    attachRoundHandlers();
+  };
+
+  const attachRoundHandlers = () => {
+    document.querySelectorAll('.rd-del-btn').forEach(btn => {
+      btn.addEventListener('click', () => { rounds.splice(+btn.dataset.ri, 1); reRender(); });
+    });
+  };
+  attachRoundHandlers();
+
+  $('rdAddBtn').addEventListener('click', () => {
+    rounds.push({
+      id:           Date.now(),
+      submittedAt:  new Date().toISOString().split('T')[0],
+      decision:     'pending',
+      decisionDate: '',
+      venue:        p.targetVenue || '',
+      notes:        '',
+    });
+    reRender();
+  });
+
+  $('rdCancel').addEventListener('click', closeModal);
+  $('rdSave').addEventListener('click', async () => {
+    // Leer valores actuales del DOM antes de guardar
+    document.querySelectorAll('.rd-submitted').forEach(el => {
+      const i = +el.dataset.ri; if (rounds[i]) rounds[i].submittedAt = el.value;
+    });
+    document.querySelectorAll('.rd-decision').forEach(el => {
+      const i = +el.dataset.ri; if (rounds[i]) rounds[i].decision = el.value;
+    });
+    document.querySelectorAll('.rd-decdate').forEach(el => {
+      const i = +el.dataset.ri; if (rounds[i]) rounds[i].decisionDate = el.value;
+    });
+    document.querySelectorAll('.rd-venue').forEach(el => {
+      const i = +el.dataset.ri; if (rounds[i]) rounds[i].venue = el.value.trim();
+    });
+    document.querySelectorAll('.rd-notes').forEach(el => {
+      const i = +el.dataset.ri; if (rounds[i]) rounds[i].notes = el.value.trim();
+    });
+
+    await dbWrite(() => db.projects.update(projectId, {
+      submissionRounds: rounds,
+      updatedAt:        new Date().toISOString(),
+    }));
+    closeModal();
+    showToast('Rondas guardadas ✓', 'success');
+    if (App.view === 'project-hub')  renderProjectHub();
+    if (App.view === 'submissions')  renderSubmissions();
+    if (App.inspectedType === 'project' && App.inspectedId === projectId)
+      setTimeout(() => inspectProject(projectId), 150);
+  });
+}
+
 async function renderSubmissions() {
   const [paperProjects, cols] = await Promise.all([
     db.projects.filter(p => p.type === 'Paper' && !p.archived).toArray(),
@@ -4295,7 +4463,7 @@ async function renderSubmissions() {
                         padding:1px 6px;border-radius:99px">⊞ ${esc(col.title)}</span>` : ''}
                     ${p.responsible ? `<span style="font-size:.72rem;color:var(--text-3)">👤 ${esc(p.responsible)}</span>` : ''}
                   </div>
-                  <div class="sub-card-dates">
+                  <div class="sub-card-dates" style="align-items:center;gap:10px">
                     ${p.deadline ? `<span style="font-size:.72rem;font-family:var(--font-mono);
                         color:${daysToDeadline!==null&&daysToDeadline<=7?'var(--red)':'var(--text-3)'}">
                         ⏱ Deadline: ${formatDate(p.deadline)}
@@ -4303,6 +4471,30 @@ async function renderSubmissions() {
                       </span>` : ''}
                     ${p.submittedAt ? `<span style="font-size:.72rem;font-family:var(--font-mono);color:var(--text-3)">
                         ✓ Enviado: ${formatDate(p.submittedAt)}
+                      </span>` : ''}
+                    ${(() => {
+                      // ── NUEVO: tiempo en etapa actual ──────────────
+                      const hist  = p.submissionStatusHistory || [];
+                      const last  = hist.length ? hist[hist.length - 1].date : p.createdAt;
+                      const days  = last ? Math.floor((Date.now() - new Date(last)) / 86400000) : null;
+                      if (days === null) return '';
+                      const stale = days > 30;
+                      return `<span style="font-size:.68rem;font-family:var(--font-mono);
+                        color:${stale ? 'var(--amber)' : 'var(--text-3)'};
+                        background:${stale ? 'rgba(251,191,36,.1)' : 'transparent'};
+                        border:1px solid ${stale ? 'rgba(251,191,36,.25)' : 'transparent'};
+                        padding:1px 6px;border-radius:99px"
+                        title="Días en estado actual">
+                        ${stale ? '⚠' : '⊙'} ${days}d en "${(SUB_STATUSES.find(s=>s.key===(p.submissionStatus||'preparacion'))||{shortLabel:'?'}).shortLabel}"
+                      </span>`;
+                    })()}
+                    ${(p.submissionRounds||[]).length ? `
+                      <span style="font-size:.68rem;font-family:var(--font-mono);
+                        color:var(--purple);background:rgba(167,139,250,.1);
+                        border:1px solid rgba(167,139,250,.25);
+                        padding:1px 6px;border-radius:99px"
+                        title="Rondas de revisión registradas">
+                        📋 ${p.submissionRounds.length} ronda${p.submissionRounds.length>1?'s':''}
                       </span>` : ''}
                   </div>
                 </div>`;
@@ -5526,9 +5718,16 @@ async function _updatePipelineStage(projectId, newStatus) {
   if (newStatus === 'enviado' && !p.submittedAt)
     upd.submittedAt = now.split('T')[0];
 
-  await dbWrite(() => db.projects.update(projectId, upd));
+  const statusHistory = Array.isArray(p.submissionStatusHistory)
+    ? [...p.submissionStatusHistory] : [];
+  statusHistory.push({
+    from: p.submissionStatus || null,
+    to:   newStatus || null,
+    date: now,
+  });
+  upd.submissionStatusHistory = statusHistory;
 
-  if (newStatus) await _syncPaperColumn(projectId, newStatus);
+  await dbWrite(() => db.projects.update(projectId, upd));
 
   const label = newStatus
     ? (SUB_STATUSES.find(s => s.key === newStatus)?.label || newStatus)
@@ -5765,8 +5964,14 @@ async function renderProjectHub() {
           ${p.deadline    ? `<div style="font-size:.74rem;font-family:var(--font-mono);color:var(--text-3)">⏱ Deadline: ${formatDate(p.deadline)}</div>` : ''}
           ${p.submittedAt ? `<div style="font-size:.74rem;font-family:var(--font-mono);color:var(--green)">✓ Enviado: ${formatDate(p.submittedAt)}</div>` : ''}
           ${(p.submissionRounds||[]).length ? `<div style="font-size:.72rem;color:var(--text-3)">${p.submissionRounds.length} ronda(s) de revisión</div>` : ''}
-          <button class="btn btn-ghost btn-sm hub-sub-edit-btn"
-                  style="align-self:flex-start;margin-top:4px">✎ Editar submission</button>
+          <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
+            <button class="btn btn-ghost btn-sm hub-sub-edit-btn"
+                    style="align-self:flex-start">✎ Editar submission</button>
+            <button class="btn btn-ghost btn-sm hub-rounds-btn"
+                    style="align-self:flex-start">
+              📋 Rondas${(p.submissionRounds||[]).length ? ` (${p.submissionRounds.length})` : ''}
+            </button>
+          </div>
         </div>`
       ) : ''}
 
@@ -5964,8 +6169,8 @@ async function renderProjectHub() {
   $('hubAddMeetingBtn').addEventListener('click', () => showAddMeetingModal(null, p.id));
   $('hubAddRefBtn').addEventListener('click',     () => showAddReferenceModal(p.id));
   $('hubAddSubBtn')?.addEventListener('click',    () => showAddSubmissionModal(null, p.id));
-  mainContent.querySelector('.hub-sub-edit-btn')?.addEventListener('click', () =>
-    showAddSubmissionModal(null, p.id));
+  mainContent.querySelector('.hub-sub-edit-btn')?.addEventListener('click', () => showAddSubmissionModal(null, p.id));
+  mainContent.querySelector('.hub-rounds-btn')?.addEventListener('click', () => showSubmissionRoundsModal(id));
   $('hubAddSnipBtn').addEventListener('click',    () => showAddSnippetModal(p.id));
 }
 
@@ -8684,13 +8889,60 @@ async function inspectProject(id) {
 
   // SUBMISSION (Paper only)
   const subHTML = p.type === 'Paper' ? (() => {
-    const st = p.submissionStatus || 'preparacion';
+    const st        = p.submissionStatus || 'preparacion';
+    const curIdx    = SUB_STATUSES.findIndex(s => s.key === st);
+    const nextStage = SUB_STATUSES[curIdx + 1] || null;
+    const prevStage = SUB_STATUSES[curIdx - 1] || null;
+
+    // Tiempo en etapa actual
+    const statusHist  = p.submissionStatusHistory || [];
+    const lastChange  = statusHist.length
+      ? statusHist[statusHist.length - 1].date : p.createdAt;
+    const daysInStage = lastChange
+      ? Math.floor((Date.now() - new Date(lastChange)) / 86400000) : null;
+    const staleStage  = daysInStage !== null && daysInStage > 30;
+
+    // Rounds summary
+    const rounds     = p.submissionRounds || [];
+    const lastRound  = rounds[rounds.length - 1] || null;
+
     return `
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
         ${subStatusBadge(st)}
+        ${daysInStage !== null ? `
+          <span style="font-family:var(--font-mono);font-size:.62rem;
+                 color:${staleStage ? 'var(--amber)' : 'var(--text-3)'};
+                 background:${staleStage ? 'rgba(251,191,36,.1)' : 'var(--bg-elevated)'};
+                 border:1px solid ${staleStage ? 'rgba(251,191,36,.25)' : 'var(--border)'};
+                 padding:1px 7px;border-radius:99px"
+                title="Tiempo en etapa actual">
+            ${staleStage ? '⚠' : '⏱'} ${daysInStage}d en esta etapa
+          </span>` : ''}
+      </div>
+
+      <!-- Acciones rápidas de etapa -->
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px">
+        ${nextStage ? `
+          <button class="btn btn-primary btn-sm" id="insp-next-stage-btn"
+                  data-status="${nextStage.key}"
+                  style="font-size:.68rem;background:color-mix(in srgb,${nextStage.color} 20%,transparent);
+                         color:${nextStage.color};border:1px solid color-mix(in srgb,${nextStage.color} 40%,transparent)">
+            → ${nextStage.label}
+          </button>` : ''}
+        ${prevStage ? `
+          <button class="btn btn-ghost btn-sm" id="insp-prev-stage-btn"
+                  data-status="${prevStage.key}"
+                  style="font-size:.68rem;color:var(--text-3)">
+            ← ${prevStage.label}
+          </button>` : ''}
         <button class="btn btn-ghost btn-sm" id="insp-edit-sub-btn"
                 style="font-size:.65rem;padding:2px 7px">✎ Editar</button>
+        <button class="btn btn-ghost btn-sm" id="insp-rounds-btn"
+                style="font-size:.65rem;padding:2px 7px">
+          📋 Rondas${rounds.length ? ` (${rounds.length})` : ''}
+        </button>
       </div>
+
       <div class="inspector-meta">
         ${p.targetVenue ? `<div class="inspector-meta-row">
           <span class="inspector-meta-key">Venue</span>
@@ -8708,10 +8960,43 @@ async function inspectProject(id) {
             ${formatDate(p.deadline)}
           </span>
         </div>` : ''}
+        ${lastRound ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">Última ronda</span>
+          <span class="inspector-meta-val" style="font-size:.72rem">
+            <span style="color:${(() => {
+              const DECISIONS = {major:'var(--red)',minor:'var(--amber)',reject:'var(--red)',accept:'var(--green)',pending:'var(--text-3)'};
+              return DECISIONS[lastRound.decision] || 'var(--text-3)';
+            })()}">
+              ${(() => {
+                const LABELS = {major:'Major Rev.',minor:'Minor Rev.',reject:'Rechazado',accept:'Aceptado',pending:'Pendiente'};
+                return LABELS[lastRound.decision] || lastRound.decision;
+              })()}
+            </span>
+            ${lastRound.decisionDate ? ` · ${formatDate(lastRound.decisionDate)}` : ''}
+          </span>
+        </div>` : ''}
       </div>
-      ${(p.submissionRounds||[]).length ? `
-        <div style="font-size:.65rem;font-family:var(--font-mono);color:var(--text-3);
-                    margin-top:4px">${p.submissionRounds.length} ronda(s) de revisión</div>` : ''}`;
+
+      <!-- Historial de estados -->
+      ${statusHist.length > 1 ? `
+        <div style="margin-top:8px">
+          <div style="font-family:var(--font-mono);font-size:.58rem;text-transform:uppercase;
+                      letter-spacing:.08em;color:var(--text-3);margin-bottom:4px">Historial</div>
+          <div style="border-left:1px dashed var(--border-str);margin-left:4px">
+            ${[...statusHist].reverse().slice(0, 4).map(h => {
+              const s   = SUB_STATUSES.find(x => x.key === h.to) || { label: h.to || 'Inicio', color: 'var(--text-3)' };
+              return `<div style="display:flex;align-items:center;gap:6px;padding:2px 0 2px 8px;
+                                  font-size:.68rem;color:var(--text-2);position:relative">
+                <span style="position:absolute;left:-4px;width:7px;height:7px;border-radius:50%;
+                             background:${s.color};border:1.5px solid var(--bg-elevated)"></span>
+                <span style="color:${s.color}">${s.label}</span>
+                <span style="color:var(--text-3);font-family:var(--font-mono);margin-left:auto">
+                  ${relativeDate(h.date)}
+                </span>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>` : ''}`;
   })() : '';
 
   // IDEAS VINCULADAS
@@ -8912,6 +9197,19 @@ async function inspectProject(id) {
 
   // ── Event listeners ───────────────────────────────────────
   $('insp-edit-sub-btn')?.addEventListener('click', () => showAddSubmissionModal(null, p.id));
+
+  // Botones de avance/retroceso de etapa en inspector
+  inspectorBody.querySelector('#insp-next-stage-btn')?.addEventListener('click', e => {
+    const status = e.currentTarget.dataset.status;
+    _updatePipelineStage(p.id, status);
+  });
+  inspectorBody.querySelector('#insp-prev-stage-btn')?.addEventListener('click', e => {
+    const status = e.currentTarget.dataset.status;
+    _updatePipelineStage(p.id, status);
+  });
+  inspectorBody.querySelector('#insp-rounds-btn')?.addEventListener('click', () => {
+    showSubmissionRoundsModal(p.id);
+  });
 
   $('mdEditToggle')?.addEventListener('click', () => {
     App._mdEditing = !App._mdEditing; inspectProject(p.id);
