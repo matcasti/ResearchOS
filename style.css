@@ -494,6 +494,17 @@ body.theme-transitioning * {
 }
 .kanban-col.drag-over { border-color: var(--accent); background: var(--bg-hover); }
 
+/* ── Submission pipeline drag-over — mismo patrón que Kanban ── */
+.sub-pipe-col.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-d);
+}
+
+/* Cursor grab en cards arrastrables del pipeline */
+.sub-pipe-card[draggable="true"]        { cursor: grab; }
+.sub-pipe-card[draggable="true"]:active { cursor: grabbing; }
+.sub-pipe-card.dragging                 { opacity: .4; }
+
 .kanban-col-header {
   padding: 12px 14px 10px;
   border-bottom: 1px solid var(--border);

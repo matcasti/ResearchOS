@@ -1714,13 +1714,18 @@ function _kanbanSurgicalMove(projectId, newColId) {
 function kanbanDragOver(e) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
-  const t = e.currentTarget.closest('[data-swim-col]') || e.currentTarget.closest('.kanban-col');
+  const t = e.currentTarget.closest('[data-swim-col]')
+       || e.currentTarget.closest('.kanban-col')
+       || e.currentTarget.closest('.sub-pipe-col');
   t?.classList.add('drag-over');
 }
 function kanbanDragLeave(e) {
-  const col = e.currentTarget.classList.contains('kanban-col')
+  const col = (e.currentTarget.classList.contains('kanban-col') ||
+             e.currentTarget.classList.contains('sub-pipe-col'))
     ? e.currentTarget
-    : e.currentTarget.closest('[data-swim-col]') || e.currentTarget.closest('.kanban-col');
+    : e.currentTarget.closest('[data-swim-col]')
+   || e.currentTarget.closest('.kanban-col')
+   || e.currentTarget.closest('.sub-pipe-col');
   // Solo quitar la clase si el puntero salió completamente de la columna
   if (col && !col.contains(e.relatedTarget)) {
     col.classList.remove('drag-over');
@@ -1786,6 +1791,23 @@ async function kanbanDrop(e) {
 window.kanbanDragOver  = kanbanDragOver;
 window.kanbanDragLeave = kanbanDragLeave;
 window.kanbanDrop      = kanbanDrop;
+
+// ── DROP handler específico del pipeline de submission
+// Reutiliza App.draggedId (seteado por kanbanDragStart) y _updatePipelineStage existente
+async function subPipelineDrop(e) {
+  e.preventDefault();
+  const col    = e.currentTarget.closest('.sub-pipe-col');
+  col?.classList.remove('drag-over');
+  const newKey    = col?.dataset.subStage;
+  const draggedId = App.draggedId;
+  App.draggedId   = null;
+  if (!draggedId || !newKey) return;
+  const proj = await db.projects.get(draggedId);
+  if (!proj || proj.type !== 'Paper') return;
+  if ((proj.submissionStatus || DEFAULT_SUB_STAGES[0].key) === newKey) return;
+  await _updatePipelineStage(draggedId, newKey);
+}
+window.subPipelineDrop = subPipelineDrop;
 
 // -- Saved Views helpers (localStorage, sin BD) ---------------
 function _getSavedViews() {
@@ -4142,18 +4164,36 @@ async function renderWeeklyAgenda() {
 // ==============================================================
 //  VIEW: SUBMISSION TRACKER
 // ==============================================================
-const SUB_STATUSES = [
-  { key: 'preparacion',         label: 'En preparación',  shortLabel: 'En prep.',      color: 'var(--text-3)' },
-  { key: 'enviado',             label: 'Enviado',          shortLabel: 'Enviado',       color: 'var(--accent)' },
-  { key: 'en_revision',         label: 'En revisión',      shortLabel: 'En revisión',   color: 'var(--amber)'  },
-  { key: 'revision_solicitada', label: 'Rev. solicitada',  shortLabel: 'Rev. solicit.', color: 'var(--purple)' },
-  { key: 'aceptado',            label: 'Aceptado ✓',      shortLabel: 'Aceptado ✓',   color: 'var(--green)'  },
-  { key: 'rechazado',           label: 'Rechazado',        shortLabel: 'Rechazado',     color: 'var(--red)'    },
+const DEFAULT_SUB_STAGES = [
+  { key:'preparacion',         label:'En preparación', shortLabel:'En prep.',      color:'#64748b', icon:'✍',  order:0 },
+  { key:'enviado',             label:'Enviado',         shortLabel:'Enviado',       color:'#38bdf8', icon:'📤', order:1 },
+  { key:'en_revision',         label:'En revisión',     shortLabel:'En revisión',   color:'#fbbf24', icon:'⏳', order:2 },
+  { key:'revision_solicitada', label:'Rev. solicitada', shortLabel:'Rev. solicit.', color:'#a78bfa', icon:'✏',  order:3 },
+  { key:'aceptado',            label:'Aceptado ✓',     shortLabel:'Aceptado ✓',   color:'#34d399', icon:'✅', order:4 },
+  { key:'rechazado',           label:'Rechazado',       shortLabel:'Rechazado',     color:'#f87171', icon:'❌', order:5 },
 ];
-// Mapas derivados — fuente única de verdad
-const SUB_COLOR_MAP   = Object.fromEntries(SUB_STATUSES.map(s => [s.key, s.color]));
-const SUB_SHORT_LABEL = Object.fromEntries(SUB_STATUSES.map(s => [s.key, s.shortLabel]));
-const SUB_TYPES = ['Paper','Grant','Ponencia','Capítulo','Reporte','Otro'];
+
+// Estado mutable en runtime — reconstruido desde settings al iniciar y al guardar
+let SUB_STATUSES    = [...DEFAULT_SUB_STAGES];
+let SUB_COLOR_MAP   = Object.fromEntries(DEFAULT_SUB_STAGES.map(s => [s.key, s.color]));
+let SUB_SHORT_LABEL = Object.fromEntries(DEFAULT_SUB_STAGES.map(s => [s.key, s.shortLabel]));
+
+async function _getSubStages() {
+  const s = await db.settings.get('ros-sub-stages');
+  if (s?.value) try { return JSON.parse(s.value); } catch {}
+  return [...DEFAULT_SUB_STAGES];
+}
+
+async function _saveSubStages(stages) {
+  await db.settings.put({ key: 'ros-sub-stages', value: JSON.stringify(stages) });
+  _applySubStages(stages);
+}
+
+function _applySubStages(stages) {
+  SUB_STATUSES    = stages;
+  SUB_COLOR_MAP   = Object.fromEntries(stages.map(s => [s.key, s.color]));
+  SUB_SHORT_LABEL = Object.fromEntries(stages.map(s => [s.key, s.shortLabel]));
+}
 
 function subStatusBadge(status) {
   const s = SUB_STATUSES.find(s => s.key === status) || SUB_STATUSES[0];
@@ -4210,7 +4250,10 @@ async function _renderSubmissionPipeline(container) {
   };
 
   const cardHTML = p => `
-    <div class="sub-pipe-card" data-inspect-project="${p.id}">
+    <div class="sub-pipe-card"
+         draggable="true"
+         data-project-id="${p.id}"
+         data-inspect-project="${p.id}">
       <div class="sub-pipe-card-title">${esc(p.title)}</div>
       ${p.targetVenue ? `<div class="sub-pipe-venue">→ ${esc(p.targetVenue)}</div>` : ''}
       <div class="sub-pipe-card-footer">
@@ -4242,7 +4285,11 @@ async function _renderSubmissionPipeline(container) {
     </div>
     <div class="sub-pipe-board">
       ${SUB_STATUSES.map(s => `
-        <div class="sub-pipe-col">
+        <div class="sub-pipe-col"
+          data-sub-stage="${s.key}"
+          ondragover="kanbanDragOver(event)"
+          ondragleave="kanbanDragLeave(event)"
+          ondrop="subPipelineDrop(event)">
           <div class="sub-pipe-col-header">
             <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;
                          display:inline-block;background:${s.color}"></span>
@@ -4257,8 +4304,11 @@ async function _renderSubmissionPipeline(container) {
         </div>`).join('')}
     </div>`;
 
-  container.querySelectorAll('[data-inspect-project]').forEach(el =>
-    el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+  container.querySelectorAll('[data-inspect-project]').forEach(el => el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+  container.querySelectorAll('.sub-pipe-card[draggable]').forEach(card => {
+    card.addEventListener('dragstart', kanbanDragStart);
+    card.addEventListener('dragend',   kanbanDragEnd);
+  });
 }
 
 // ── NUEVA FUNCIÓN: gestión de rondas de revisión ──────────
@@ -4394,6 +4444,147 @@ async function showSubmissionRoundsModal(projectId) {
   });
 }
 
+// ── Gestión de etapas del pipeline — mismo patrón que showManageColumnsModal
+async function showManageSubStagesModal() {
+  const stages = await _getSubStages();
+
+  const renderRows = () => stages.map((s, i) => `
+    <div class="col-manage-row" data-stage-idx="${i}">
+      <span class="col-manage-handle" title="Reordenar" style="cursor:grab">⠿</span>
+      <input class="form-input stage-manage-icon"  value="${esc(s.icon || '◯')}"
+             data-si="${i}"
+             style="width:44px;font-size:1rem;text-align:center;padding:5px 4px;flex-shrink:0"
+             title="Icono">
+      <input class="form-input stage-manage-label" value="${esc(s.label)}"
+             data-si="${i}"
+             style="flex:2;padding:5px 8px;font-size:.82rem"
+             placeholder="Etiqueta larga">
+      <input class="form-input stage-manage-short" value="${esc(s.shortLabel)}"
+             data-si="${i}"
+             style="flex:1;padding:5px 8px;font-size:.78rem"
+             placeholder="Corta">
+      <input type="color" class="stage-manage-color"
+             value="${/^#/.test(s.color) ? s.color : '#64748b'}"
+             data-si="${i}"
+             style="width:32px;height:32px;border:none;background:none;cursor:pointer;border-radius:6px">
+      <button class="btn btn-ghost btn-sm stage-manage-del" data-si="${i}"
+              style="color:var(--red)" ${stages.length <= 1 ? 'disabled' : ''}>✕</button>
+    </div>`).join('');
+
+  showModal('⚙ Etapas del Pipeline de Submission', `
+    <div class="modal-body">
+      <div style="font-size:.75rem;color:var(--text-3);margin-bottom:10px">
+        Icono · Etiqueta completa · Etiqueta corta · Color.
+        Las claves internas se generan del nombre al crear etapas nuevas.
+        Los cambios se propagan al Kanban, Hub, Submissions y Settings.
+      </div>
+      <div id="stageManageList">${renderRows()}</div>
+      <button class="btn btn-ghost btn-sm" id="stageAddNew"
+              style="margin-top:10px;width:100%">+ Nueva etapa</button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="stageManageCancel">Cancelar</button>
+      <button class="btn btn-primary" id="stageManageSave">Guardar cambios</button>
+    </div>`);
+
+  $('stageManageCancel').addEventListener('click', closeModal);
+
+  const reRender = () => {
+    $('stageManageList').innerHTML = renderRows();
+    attachHandlers();
+    attachDragToStageRows();
+  };
+
+  const attachHandlers = () => {
+    document.querySelectorAll('.stage-manage-del').forEach(btn =>
+      btn.addEventListener('click', () => { stages.splice(+btn.dataset.si, 1); reRender(); }));
+  };
+  attachHandlers();
+
+  $('stageAddNew').addEventListener('click', () => {
+    stages.push({
+      key:        `stage_${Date.now()}`,
+      label:      'Nueva etapa',
+      shortLabel: 'Nueva',
+      color:      '#38bdf8',
+      icon:       '◯',
+      order:      stages.length,
+    });
+    reRender();
+  });
+
+  // Drag-to-reorder — mismo patrón que showManageColumnsModal.attachDragToRows
+  const attachDragToStageRows = () => {
+    const list = $('stageManageList');
+    if (!list) return;
+    let srcIdx = null;
+    list.querySelectorAll('.col-manage-row').forEach(row => {
+      row.setAttribute('draggable', 'true');
+      row.addEventListener('dragstart', e => {
+        srcIdx = +row.dataset.stageIdx;
+        e.dataTransfer.effectAllowed = 'move';
+        row.style.opacity = '.4';
+      });
+      row.addEventListener('dragend',   () => {
+        row.style.opacity = '';
+        list.querySelectorAll('.col-manage-row').forEach(r => r.classList.remove('drag-over'));
+      });
+      row.addEventListener('dragover',  e => {
+        e.preventDefault();
+        if (+row.dataset.stageIdx !== srcIdx) row.classList.add('drag-over');
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+      row.addEventListener('drop', e => {
+        e.preventDefault();
+        row.classList.remove('drag-over');
+        const tgtIdx = +row.dataset.stageIdx;
+        if (srcIdx === null || srcIdx === tgtIdx) return;
+        const [moved] = stages.splice(srcIdx, 1);
+        stages.splice(tgtIdx, 0, moved);
+        reRender();
+      });
+    });
+  };
+  attachDragToStageRows();
+
+  $('stageManageSave').addEventListener('click', async () => {
+    // Leer valores del DOM antes de guardar
+    document.querySelectorAll('.stage-manage-icon').forEach(inp => {
+      const i = +inp.dataset.si;
+      if (stages[i]) stages[i].icon       = inp.value.trim()  || stages[i].icon;
+    });
+    document.querySelectorAll('.stage-manage-label').forEach(inp => {
+      const i = +inp.dataset.si;
+      if (stages[i]) stages[i].label      = inp.value.trim()  || stages[i].label;
+    });
+    document.querySelectorAll('.stage-manage-short').forEach(inp => {
+      const i = +inp.dataset.si;
+      if (stages[i]) stages[i].shortLabel = inp.value.trim()  || stages[i].shortLabel;
+    });
+    document.querySelectorAll('.stage-manage-color').forEach(inp => {
+      const i = +inp.dataset.si;
+      if (stages[i]) stages[i].color      = inp.value;
+    });
+    // Normalizar orden; generar key para etapas nuevas (key temporal = stage_<ts>)
+    stages.forEach((s, i) => {
+      s.order = i;
+      if (/^stage_\d+$/.test(s.key)) {
+        s.key = s.label
+          .toLowerCase()
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-z0-9]+/g, '_')
+          .replace(/^_|_$/g, '')
+          .slice(0, 32) || `stage_${i}`;
+      }
+    });
+
+    await _saveSubStages(stages);   // actualiza SUB_STATUSES, SUB_COLOR_MAP, SUB_SHORT_LABEL
+    closeModal();
+    showToast('Etapas guardadas ✓ — propagadas a Kanban, Hub y Submissions', 'success');
+    renderView(App.view);           // refrescar la vista actual
+  });
+}
+
 async function renderSubmissions() {
   const [paperProjects, cols] = await Promise.all([
     db.projects.filter(p => p.type === 'Paper' && !p.archived).toArray(),
@@ -4425,6 +4616,8 @@ async function renderSubmissions() {
             <button class="view-toggle-btn ${mode==='pipeline'?'active':''}"
                     id="subViewPipeline" title="Vista pipeline">⊞ Pipeline</button>
           </div>
+          <button class="btn btn-ghost btn-sm" id="manageSubStagesBtn"
+                  title="Gestionar etapas del pipeline">⚙ Etapas</button>
           <button class="btn btn-primary" id="addSubmissionBtn">+ Nuevo Paper</button>
         </div>
       </div>
@@ -4515,6 +4708,7 @@ async function renderSubmissions() {
   $('subViewPipeline').addEventListener('click', () => {
     App.submissionsViewMode = 'pipeline'; renderSubmissions();
   });
+  $('manageSubStagesBtn')?.addEventListener('click', showManageSubStagesModal);
 
   // Render pipeline si corresponde
   if (mode === 'pipeline') {
@@ -5642,14 +5836,27 @@ function _paperPipelineHTML(p, cols) {
   const submissionStatus = p.submissionStatus || null;
 
   const STAGES = [
-    { key: 'draft',     statusKey: null,                 label: 'Escritura',    icon: '✍',  match: s => !s,                        colKeywords: ['ideac','escritur','análisis','limpieza'] },
-    { key: 'internal',  statusKey: 'preparacion',         label: 'Rev. interna', icon: '🔍', match: s => s === 'preparacion',         colKeywords: ['peer','review','revisión'] },
-    { key: 'submitted', statusKey: 'enviado',             label: 'Enviado',      icon: '📤', match: s => s === 'enviado',             colKeywords: [] },
-    { key: 'review',    statusKey: 'en_revision',         label: 'En revisión',  icon: '⏳', match: s => s === 'en_revision',         colKeywords: [] },
-    { key: 'revision',  statusKey: 'revision_solicitada', label: 'Rev. solicit.',icon: '✏',  match: s => s === 'revision_solicitada', colKeywords: [] },
-    { key: 'accepted',  statusKey: 'aceptado',            label: 'Aceptado ✓',  icon: '✅', match: s => s === 'aceptado',            colKeywords: ['completado','publicado'] },
-    { key: 'rejected',  statusKey: 'rechazado',           label: 'Rechazado',    icon: '❌', match: s => s === 'rechazado',           colKeywords: [] },
-  ];
+  // Etapa pre-pipeline — inferida de la columna Kanban cuando no hay submissionStatus
+  {
+    key:         'draft',
+    statusKey:   null,
+    label:       'Escritura',
+    icon:        '✍',
+    color:       'var(--text-3)',
+    match:       s => !s,
+    colKeywords: ['ideac','escritur','análisis','limpieza'],
+  },
+  // Etapas dinámicas desde SUB_STATUSES — siempre actualizadas
+  ...SUB_STATUSES.map(s => ({
+    key:         s.key,
+    statusKey:   s.key,
+    label:       s.label,
+    icon:        s.icon || '◯',
+    color:       s.color,
+    match:       ss => ss === s.key,
+    colKeywords: s.key === 'preparacion' ? ['peer','review','revisión'] : [],
+  })),
+];
 
   let activeIdx = 0;
   if (submissionStatus) {
@@ -5679,10 +5886,7 @@ function _paperPipelineHTML(p, cols) {
           const isPast   = i < activeIdx;
           const isActive = i === activeIdx;
           const isFuture = i > activeIdx;
-          const color = isActive ? 'var(--accent)'
-            : st.key === 'accepted' && isPast ? 'var(--green)'
-            : st.key === 'rejected' && isPast ? 'var(--red)'
-            : isPast ? 'var(--text-2)' : 'var(--text-3)';
+          const color = isActive ? st.color : isPast ? 'var(--text-2)' : 'var(--text-3)';
           return `
             <div style="display:flex;align-items:center;gap:2px">
               <button class="pipeline-stage-btn"
@@ -10991,6 +11195,10 @@ async function _checkSessionResume() {
 async function init() {
   // Seed database defaults
   await seedDefaults();
+
+  // Cargar etapas del pipeline desde settings (reconstruye SUB_STATUSES, maps derivados)
+  const _initStages = await _getSubStages();
+  _applySubStages(_initStages);
 
   // Google Drive Sync — restaurar sesión si hay token guardado
   await GoogleSync.init();
