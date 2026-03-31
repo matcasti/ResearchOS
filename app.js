@@ -49,7 +49,7 @@ const App = {
   collaboratorHubId:  null,
   _inspectedProjectId: null,  // proyecto activo en el inspector (para palette contextual)
   _savedInspector:    null,   // {type, id} — estado del inspector a restaurar tras navegación
-  submissionsViewMode: 'list',   // 'list' | 'pipeline'
+  submissionsViewMode: 'pipeline',   // 'list' | 'pipeline'
   ideaBulkMode:        false,
   ideaBulkSelected:    new Set(),
   orphanBulkSelected:  new Map(),
@@ -4409,7 +4409,7 @@ async function renderSubmissions() {
     if (counts[st] !== undefined) counts[st]++;
   });
 
-  const mode = App.submissionsViewMode || 'list';
+  const mode = App.submissionsViewMode || 'pipeline';
 
   mainContent.innerHTML = `
     <div class="view">
