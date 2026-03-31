@@ -2008,6 +2008,11 @@ body.presentation-mode .kanban-col { width: 300px; }
   font-size: .75rem;
 }
 
+.sub-pipe-venue{
+  font-size: 0.62rem;
+  padding-bottom: 5px;
+}
+
 /* ══════════════════════════════════════════════════════════════
    MEETINGS
 ══════════════════════════════════════════════════════════════ */
