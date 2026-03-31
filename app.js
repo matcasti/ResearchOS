@@ -49,6 +49,7 @@ const App = {
   collaboratorHubId:  null,
   _inspectedProjectId: null,  // proyecto activo en el inspector (para palette contextual)
   _savedInspector:    null,   // {type, id} — estado del inspector a restaurar tras navegación
+  submissionsViewMode: 'list',   // 'list' | 'pipeline'
   ideaBulkMode:        false,
   ideaBulkSelected:    new Set(),
   orphanBulkSelected:  new Map(),
@@ -91,6 +92,60 @@ const SaveIndicator = {
     if (tx) tx.textContent = '⚠ Error';
   }
 };
+
+// -- Undo Stack ------------------------------------------------
+const UndoStack = {
+  _stack: [],
+  MAX: 8,
+
+  push({ label, undo }) {
+    this._stack.push({ label, undo });
+    if (this._stack.length > this.MAX) this._stack.shift();
+  },
+  peek()  { return this._stack[this._stack.length - 1] || null; },
+  async pop() {
+    const entry = this._stack.pop();
+    if (!entry) return null;
+    await entry.undo();
+    return entry.label;
+  },
+  clear() { this._stack = []; }
+};
+
+/**
+ * Toast con botón "↩ Deshacer" que dispara la última acción del UndoStack.
+ * Si no hay nada en el stack, cae back a showToast normal.
+ */
+function showToastWithUndo(message, type = 'info') {
+  if (!UndoStack.peek()) { showToast(message, type); return; }
+  const icons = { success: '✓', error: '✕', info: 'ℹ' };
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.style.cssText = 'display:flex;align-items:center;gap:6px;';
+  toast.innerHTML = `
+    <span>${icons[type] || '•'}</span>
+    <span style="flex:1">${esc(message)}</span>
+    <button class="toast-undo-btn">↩ Deshacer</button>`;
+  $('toastContainer').appendChild(toast);
+
+  const timer = setTimeout(() => toast.remove(), 5500);
+
+  toast.querySelector('.toast-undo-btn').addEventListener('click', async () => {
+    clearTimeout(timer);
+    toast.remove();
+    try {
+      const label = await UndoStack.pop();
+      if (label) {
+        showToast(`↩ Deshecho: ${label}`, 'success');
+        renderView(App.view);
+        updateBadges();
+      }
+    } catch (e) {
+      showToast('No se pudo deshacer', 'error');
+      console.error(e);
+    }
+  });
+}
 
 // -- INSERTAR: Deadline Reminder Module -----------------------
 const DeadlineReminder = {
@@ -1647,7 +1702,10 @@ async function kanbanDrop(e) {
   App.draggedId   = null;
   if (!draggedId || !newColId) return;
   try {
+    const proj = await db.projects.get(draggedId);
+    const oldColId = proj?.columnId;
     const groupUpdates = {};
+
     if (swimCell && App.kanbanGroupBy === 'type') {
       const newType = swimCell.dataset.swimGroup;
       if (newType && newType !== 'Sin tipo') groupUpdates.type = newType;
@@ -1657,6 +1715,7 @@ async function kanbanDrop(e) {
       const area      = areas.find(a => a.name === groupName);
       groupUpdates.areaId = area ? area.id : null;
     }
+
     if (Object.keys(groupUpdates).length) {
       await dbWrite(() => db.projects.update(draggedId, {
         ...groupUpdates, updatedAt: new Date().toISOString()
@@ -1664,24 +1723,28 @@ async function kanbanDrop(e) {
     }
     await dbWrite(() => recordColumnChange(draggedId, newColId));
 
-    // Modo quirúrgico: solo en board estándar sin cambios de grupo
+    // Registrar undo solo para movimientos simples de columna
+    if (!Object.keys(groupUpdates).length && oldColId && oldColId !== newColId) {
+      UndoStack.push({
+        label: `Mover "${(proj?.title||'').slice(0,28)}"`,
+        undo:  async () => { await dbWrite(() => recordColumnChange(draggedId, oldColId)); }
+      });
+    }
+
     const canSurgical = App.kanbanGroupBy === 'none' && !Object.keys(groupUpdates).length;
     if (canSurgical && _kanbanSurgicalMove(draggedId, newColId)) {
-      showToast('Tarjeta movida', 'success');
+      showToastWithUndo('Tarjeta movida', 'success');
     } else {
-      // Fallback: re-render completo (swimlanes, cambios de tipo/área)
       await renderKanban();
       const msg = Object.keys(groupUpdates).length
-        ? `Movida · ${App.kanbanGroupBy === 'type'
-            ? `tipo → ${groupUpdates.type}`
-            : 'área actualizada'}`
+        ? `Movida · ${App.kanbanGroupBy==='type'?`tipo → ${groupUpdates.type}`:'área actualizada'}`
         : 'Tarjeta movida';
-      showToast(msg, 'success');
+      showToastWithUndo(msg, 'success');
     }
   } catch (err) {
     showToast('Error al mover tarjeta', 'error');
     console.error(err);
-    renderKanban(); // fallback seguro
+    renderKanban();
   }
 }
 // Expose drag handlers globally for inline ondragover/ondrop
@@ -4063,21 +4126,122 @@ function subStatusBadge(status) {
           color:${s.color};border:1px solid color-mix(in srgb,${s.color} 35%,transparent); margin-top: 5px">${s.label}</span>`;
 }
 
+// ==============================================================
+//  RESEARCH PIPELINE — vista Kanban por etapas de publicación
+// ==============================================================
+async function _renderSubmissionPipeline(container) {
+  const [paperProjects, cols, areas] = await Promise.all([
+    db.projects.filter(p => p.type === 'Paper' && !p.archived).toArray(),
+    db.kanbanColumns.toArray(),
+    _getAreas(),
+  ]);
+  const areaMap  = Object.fromEntries(areas.map(a => [a.id, a]));
+  const today    = new Date(); today.setHours(0,0,0,0);
+
+  // Agrupar por estado de submission
+  const buckets = {};
+  SUB_STATUSES.forEach(s => { buckets[s.key] = []; });
+  paperProjects.forEach(p => {
+    const key = p.submissionStatus || 'preparacion';
+    if (buckets[key]) buckets[key].push(p);
+    else              buckets['preparacion'].push(p);
+  });
+
+  const deadlineChip = p => {
+    if (!p.deadline) return '';
+    const d   = Math.ceil((new Date(p.deadline+'T00:00:00') - today) / 86400000);
+    const col  = d < 0 ? 'var(--red)' : d <= 7 ? 'var(--amber)' : 'var(--text-3)';
+    const lbl  = d < 0  ? `Vencido ${Math.abs(d)}d`
+               : d === 0 ? '¡Hoy!'
+               : `${d}d`;
+    return `<span style="font-family:var(--font-mono);font-size:.58rem;
+                  color:${col};background:color-mix(in srgb,${col} 12%,transparent);
+                  border:1px solid color-mix(in srgb,${col} 28%,transparent);
+                  padding:1px 5px;border-radius:99px;flex-shrink:0">⏱ ${lbl}</span>`;
+  };
+
+  const staleChip = p => {
+    if (!p.updatedAt) return '';
+    const days = Math.floor((Date.now() - new Date(p.updatedAt)) / 86400000);
+    if (days < 14) return '';
+    return `<span class="sub-pipe-stale">sin actividad ${days}d</span>`;
+  };
+
+  const areaChip = p => {
+    const a = p.areaId ? areaMap[p.areaId] : null;
+    if (!a) return '';
+    return `<span class="area-chip" style="border-color:${a.color};color:${a.color};font-size:.55rem">
+      ⊡ ${esc(a.name)}</span>`;
+  };
+
+  const cardHTML = p => `
+    <div class="sub-pipe-card" data-inspect-project="${p.id}">
+      <div class="sub-pipe-card-title">${esc(p.title)}</div>
+      ${p.targetVenue ? `<div class="sub-pipe-venue">→ ${esc(p.targetVenue)}</div>` : ''}
+      <div class="sub-pipe-card-footer">
+        ${deadlineChip(p)}
+        ${staleChip(p)}
+        ${areaChip(p)}
+      </div>
+    </div>`;
+
+  const totalPapers = paperProjects.length;
+  const inProgress  = paperProjects.filter(p =>
+    ['enviado','en_revision','revision_solicitada'].includes(p.submissionStatus)).length;
+
+  container.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;
+                margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div style="font-family:var(--font-mono);font-size:.72rem;color:var(--text-2)">
+        ${totalPapers} paper(s) · ${inProgress} en proceso activo
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;font-size:.72rem;color:var(--text-3);
+                  font-family:var(--font-mono)">
+        ${Object.entries(buckets)
+          .filter(([,cards]) => cards.length)
+          .map(([key, cards]) => {
+            const s = SUB_STATUSES.find(s => s.key === key);
+            return `<span style="color:${s.color}">${s.shortLabel} ${cards.length}</span>`;
+          }).join(' · ')}
+      </div>
+    </div>
+    <div class="sub-pipe-board">
+      ${SUB_STATUSES.map(s => `
+        <div class="sub-pipe-col">
+          <div class="sub-pipe-col-header">
+            <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;
+                         display:inline-block;background:${s.color}"></span>
+            <span class="sub-pipe-col-title">${s.label}</span>
+            <span class="sub-pipe-col-count">${buckets[s.key].length}</span>
+          </div>
+          <div class="sub-pipe-cards">
+            ${buckets[s.key].length
+              ? buckets[s.key].map(cardHTML).join('')
+              : `<div class="sub-pipe-empty">—</div>`}
+          </div>
+        </div>`).join('')}
+    </div>`;
+
+  container.querySelectorAll('[data-inspect-project]').forEach(el =>
+    el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+}
+
 async function renderSubmissions() {
   const [paperProjects, cols] = await Promise.all([
     db.projects.filter(p => p.type === 'Paper' && !p.archived).toArray(),
     db.kanbanColumns.toArray(),
   ]);
   const colMap = Object.fromEntries(cols.map(c => [c.id, c]));
-  paperProjects.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  paperProjects.sort((a,b) => (b.updatedAt||'').localeCompare(a.updatedAt||''));
 
-  // Contar por estado desde el campo del proyecto
   const counts = {};
   SUB_STATUSES.forEach(s => { counts[s.key] = 0; });
   paperProjects.forEach(p => {
     const st = p.submissionStatus || 'preparacion';
     if (counts[st] !== undefined) counts[st]++;
   });
+
+  const mode = App.submissionsViewMode || 'list';
 
   mainContent.innerHTML = `
     <div class="view">
@@ -4086,62 +4250,96 @@ async function renderSubmissions() {
           <div class="view-title">📤 Submission Tracker</div>
           <div class="view-subtitle">${paperProjects.length} paper(s) en seguimiento</div>
         </div>
-        <button class="btn btn-primary" id="addSubmissionBtn">+ Nuevo Paper</button>
+        <div style="display:flex;gap:8px;align-items:center">
+          <div class="view-toggle-group">
+            <button class="view-toggle-btn ${mode==='list'?'active':''}"
+                    id="subViewList" title="Vista lista">☰ Lista</button>
+            <button class="view-toggle-btn ${mode==='pipeline'?'active':''}"
+                    id="subViewPipeline" title="Vista pipeline">⊞ Pipeline</button>
+          </div>
+          <button class="btn btn-primary" id="addSubmissionBtn">+ Nuevo Paper</button>
+        </div>
       </div>
 
-      <div class="sub-pipeline">
+      <!-- Pipeline de conteos — siempre visible -->
+      <div class="sub-pipeline" style="margin-bottom:${mode==='pipeline'?'8':'20'}px">
         ${SUB_STATUSES.map(s => `
-          <div class="sub-pipeline-stage">
+          <div class="sub-pipeline-stage" style="cursor:pointer"
+               data-sub-filter="${s.key}" title="Filtrar: ${s.label}">
             <div class="sub-pipeline-count" style="color:${s.color}">${counts[s.key]}</div>
             <div class="sub-pipeline-label">${s.label}</div>
           </div>`).join('')}
       </div>
 
-      <div class="sub-list">
-        ${paperProjects.length ? paperProjects.map(p => {
-          const status = p.submissionStatus || 'preparacion';
-          const col    = colMap[p.columnId];
-          const today  = new Date(); today.setHours(0,0,0,0);
-          const daysToDeadline = p.deadline
-            ? Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000) : null;
-          return `
-            <div class="sub-card" data-inspect-project="${p.id}">
-              <div class="sub-card-top">
-                <div class="sub-card-title">${esc(p.title)}</div>
-                ${subStatusBadge(status)}
-              </div>
-              <div class="sub-card-meta">
-                ${p.targetVenue ? `<span style="color:var(--text-2);font-size:.75rem">→ ${esc(p.targetVenue)}</span>` : ''}
-                ${col ? `<span style="font-family:var(--font-mono);font-size:.6rem;
-                    background:color-mix(in srgb,${col.color} 14%,transparent);
-                    color:${col.color};border:1px solid color-mix(in srgb,${col.color} 28%,transparent);
-                    padding:1px 6px;border-radius:99px">⊞ ${esc(col.title)}</span>` : ''}
-                ${p.responsible ? `<span style="font-size:.72rem;color:var(--text-3)">👤 ${esc(p.responsible)}</span>` : ''}
-              </div>
-              <div class="sub-card-dates">
-                ${p.deadline ? `<span style="font-size:.72rem;font-family:var(--font-mono);
-                    color:${daysToDeadline !== null && daysToDeadline <= 7 ? 'var(--red)' : 'var(--text-3)'}">
-                    ⏱ Deadline: ${formatDate(p.deadline)}
-                    ${daysToDeadline !== null && daysToDeadline >= 0 && daysToDeadline <= 30 ? `(${daysToDeadline}d)` : ''}
-                  </span>` : ''}
-                ${p.submittedAt ? `<span style="font-size:.72rem;font-family:var(--font-mono);color:var(--text-3)">
-                    ✓ Enviado: ${formatDate(p.submittedAt)}
-                  </span>` : ''}
-              </div>
-            </div>`;
-        }).join('')
+      <!-- Contenido según modo -->
+      <div id="subContentArea">
+        ${mode === 'pipeline' ? '' : paperProjects.length ? `
+          <div class="sub-list">
+            ${paperProjects.map(p => {
+              const status = p.submissionStatus || 'preparacion';
+              const col    = colMap[p.columnId];
+              const today  = new Date(); today.setHours(0,0,0,0);
+              const daysToDeadline = p.deadline
+                ? Math.ceil((new Date(p.deadline+'T00:00:00') - today) / 86400000) : null;
+              return `
+                <div class="sub-card" data-inspect-project="${p.id}">
+                  <div class="sub-card-top">
+                    <div class="sub-card-title">${esc(p.title)}</div>
+                    ${subStatusBadge(status)}
+                  </div>
+                  <div class="sub-card-meta">
+                    ${p.targetVenue ? `<span style="color:var(--text-2);font-size:.75rem">→ ${esc(p.targetVenue)}</span>` : ''}
+                    ${col ? `<span style="font-family:var(--font-mono);font-size:.6rem;
+                        background:color-mix(in srgb,${col.color} 14%,transparent);
+                        color:${col.color};border:1px solid color-mix(in srgb,${col.color} 28%,transparent);
+                        padding:1px 6px;border-radius:99px">⊞ ${esc(col.title)}</span>` : ''}
+                    ${p.responsible ? `<span style="font-size:.72rem;color:var(--text-3)">👤 ${esc(p.responsible)}</span>` : ''}
+                  </div>
+                  <div class="sub-card-dates">
+                    ${p.deadline ? `<span style="font-size:.72rem;font-family:var(--font-mono);
+                        color:${daysToDeadline!==null&&daysToDeadline<=7?'var(--red)':'var(--text-3)'}">
+                        ⏱ Deadline: ${formatDate(p.deadline)}
+                        ${daysToDeadline!==null&&daysToDeadline>=0&&daysToDeadline<=30?`(${daysToDeadline}d)`:''}
+                      </span>` : ''}
+                    ${p.submittedAt ? `<span style="font-size:.72rem;font-family:var(--font-mono);color:var(--text-3)">
+                        ✓ Enviado: ${formatDate(p.submittedAt)}
+                      </span>` : ''}
+                  </div>
+                </div>`;
+            }).join('')}
+          </div>`
         : `<div class="empty-state">
              <span class="empty-state-icon">📤</span>
              <h3>Sin papers en seguimiento</h3>
-             <p>Crea un proyecto tipo Paper para hacer seguimiento de su proceso de publicación</p>
+             <p>Crea un proyecto tipo Paper para comenzar</p>
            </div>`}
       </div>
     </div>`;
+
+  // Toggle de vista
+  $('subViewList').addEventListener('click', () => {
+    App.submissionsViewMode = 'list'; renderSubmissions();
+  });
+  $('subViewPipeline').addEventListener('click', () => {
+    App.submissionsViewMode = 'pipeline'; renderSubmissions();
+  });
+
+  // Render pipeline si corresponde
+  if (mode === 'pipeline') {
+    await _renderSubmissionPipeline($('subContentArea'));
+  }
 
   $('addSubmissionBtn').addEventListener('click', _openNewPaperModal);
 
   mainContent.querySelectorAll('[data-inspect-project]').forEach(el =>
     el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+
+  // Click en etapa del pipeline de conteos → filtrar lista
+  mainContent.querySelectorAll('[data-sub-filter]').forEach(el =>
+    el.addEventListener('click', () => {
+      App.submissionsViewMode = 'list'; renderSubmissions();
+      // Podría añadir filtro por status en el futuro
+    }));
 }
 
 function _openNewPaperModal() {
@@ -4554,10 +4752,44 @@ async function renderReferences() {
     el.addEventListener('click', () => inspectReference(+el.dataset.inspectRef)));
 }
 
+// -- DOI Lookup via CrossRef (sin auth) -----------------------
+async function _lookupDOI(doi) {
+  const clean = doi.trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '');
+  if (!clean) return null;
+  try {
+    const res  = await fetch(`https://api.crossref.org/works/${encodeURIComponent(clean)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const m    = data.message;
+    return {
+      title:   (m.title || [])[0] || '',
+      authors: (m.author || [])
+        .map(a => [a.family, a.given ? a.given.charAt(0) + '.' : ''].filter(Boolean).join(', '))
+        .join('; '),
+      year:    m.published?.['date-parts']?.[0]?.[0] || null,
+      journal: (m['container-title'] || [])[0] || '',
+      doi:     m.DOI || clean,
+    };
+  } catch { return null; }
+}
+
 async function showAddReferenceModal(preProjectId = null) {
   const projects = await db.projects.toArray();
   showModal('📚 Nueva Referencia', `
     <div class="modal-body">
+      <!-- DOI Lookup -->
+      <div style="font-family:var(--font-mono);font-size:.6rem;text-transform:uppercase;
+                  letter-spacing:.09em;color:var(--text-3);margin-bottom:6px">
+        ⚡ Búsqueda automática por DOI
+      </div>
+      <div class="doi-lookup-row">
+        <input class="form-input" id="ar-doi-search"
+               placeholder="Pega el DOI (10.xxxx/…) y presiona Buscar"
+               autocomplete="off">
+        <button class="btn btn-ghost btn-sm" id="ar-doi-lookup-btn">🔍 Buscar</button>
+      </div>
+      <div class="doi-status" id="ar-doi-status">Pega un DOI para auto-rellenar los campos</div>
+
       <div class="form-group">
         <label class="form-label">Título *</label>
         <input class="form-input" id="ar-title" placeholder="A unifying framework for…">
@@ -4606,7 +4838,38 @@ async function showAddReferenceModal(preProjectId = null) {
       <button class="btn btn-ghost" id="arCancel">Cancelar</button>
       <button class="btn btn-primary" id="arSave">Guardar</button>
     </div>`);
-  setTimeout(() => $('ar-title')?.focus(), 60);
+
+  setTimeout(() => $('ar-doi-search')?.focus(), 60);
+
+  // DOI Lookup handler
+  const doLookup = async () => {
+    const doi    = $('ar-doi-search').value.trim();
+    const status = $('ar-doi-status');
+    if (!doi) { status.textContent = 'Escribe un DOI primero'; return; }
+    status.style.color = 'var(--amber)';
+    status.textContent = '⏳ Buscando en CrossRef…';
+    const result = await _lookupDOI(doi);
+    if (!result) {
+      status.style.color = 'var(--red)';
+      status.textContent = '✕ DOI no encontrado — rellena los campos manualmente';
+      return;
+    }
+    // Rellenar campos
+    if (result.title)   $('ar-title').value   = result.title;
+    if (result.authors) $('ar-authors').value = result.authors;
+    if (result.year)    $('ar-year').value    = result.year;
+    if (result.journal) $('ar-journal').value = result.journal;
+    if (result.doi)     $('ar-doi').value     = result.doi;
+    status.style.color = 'var(--green)';
+    status.textContent = `✓ Datos rellenados desde CrossRef · ${result.journal || 'sin journal detectado'}`;
+    $('ar-title').focus();
+  };
+
+  $('ar-doi-lookup-btn').addEventListener('click', doLookup);
+  $('ar-doi-search').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); doLookup(); }
+  });
+
   $('arCancel').addEventListener('click', closeModal);
   $('arSave').addEventListener('click', async () => {
     const title = $('ar-title').value.trim();
@@ -8235,303 +8498,390 @@ function _inspectorStar() {
   btn?.click();
 }
 
+// ==============================================================
+//  INSPECTOR — SECCIONES COLAPSABLES
+// ==============================================================
+
+/** Lee si una sección del inspector está abierta (persiste en localStorage). */
+function _inspSecOpen(sectionId) {
+  const stored = localStorage.getItem(`ros-insp-sec-${sectionId}`);
+  if (stored !== null) return stored === 'true';
+  // Defaults: estas secciones abren por defecto
+  const defaultOpen = new Set([
+    'p-meta','p-comp','p-desc','p-tasks','p-sub',
+    'p-ideas','p-tags','p-cf'
+  ]);
+  return defaultOpen.has(sectionId);
+}
+
+/** Genera el HTML de una sección colapsable del inspector. */
+function _inspSectionHTML(id, title, content) {
+  const open = _inspSecOpen(id);
+  return `
+    <div class="insp-sec">
+      <div class="insp-sec-header" data-insp-sec="${id}">
+        <span class="insp-sec-title">${title}</span>
+        <span class="insp-sec-chev">${open ? '▾' : '▸'}</span>
+      </div>
+      <div class="insp-sec-body"${open ? '' : ' style="display:none"'}>${content}</div>
+    </div>`;
+}
+
+/** Adjunta handlers de toggle a todas las secciones del inspector. */
+function _attachInspSectionToggles() {
+  inspectorBody.querySelectorAll('[data-insp-sec]').forEach(header => {
+    header.addEventListener('click', () => {
+      const id   = header.dataset.inspSec;
+      const body = header.nextElementSibling;
+      const chev = header.querySelector('.insp-sec-chev');
+      if (!body) return;
+      const wasOpen = body.style.display !== 'none';
+      body.style.display = wasOpen ? 'none' : '';
+      if (chev) chev.textContent = wasOpen ? '▸' : '▾';
+      localStorage.setItem(`ros-insp-sec-${id}`, String(!wasOpen));
+    });
+  });
+}
+
 async function inspectProject(id) {
   const p = await db.projects.get(id);
   if (!p) return;
-  // Preservar estado del editor si se re-renderiza el mismo proyecto;
-  // resetear solo al cambiar de proyecto.
   if (App.inspectedId !== id) App._mdEditing = false;
-  App._inspectedProjectId = id; // activa sugerencias contextuales en Command Palette
-  const [cols, areas, relIdeas, relSnips] = await Promise.all([
+  App._inspectedProjectId = id;
+
+  // ── Todos los fetches en paralelo ─────────────────────────
+  const [cols, areas, relIdeas, relSnips, refs, meets, schemas] = await Promise.all([
     db.kanbanColumns.toArray(),
     _getAreas(),
     getRelatedIdeas(id),
     getRelatedSnippets(id),
+    getReferences(id),
+    getMeetings(id),
+    _getTypeSchemas(),
   ]);
-  const col = cols.find(c => c.id === p.columnId);
-  const colMap = Object.fromEntries(cols.map(c => [c.id, c]));
+
+  const col      = cols.find(c => c.id === p.columnId);
+  const colMap   = Object.fromEntries(cols.map(c => [c.id, c]));
   const currentArea = areas.find(a => a.id === p.areaId) || null;
-  // Mapas codificados para inplace id-select: "id=Etiqueta|..."
-  const colMapStr  = cols.map(c => `${c.id}=${c.title.replace(/[|=]/g,'')}`).join('|');
-  const areaMapStr = ['=Sin área', ...areas.map(a => `${a.id}=${a.name.replace(/[|=]/g,'')}`)]
+  const colMapStr   = cols.map(c => `${c.id}=${c.title.replace(/[|=]/g,'')}`).join('|');
+  const areaMapStr  = ['=Sin área', ...areas.map(a => `${a.id}=${a.name.replace(/[|=]/g,'')}`)]
     .join('|');
+
   _pushInspectorHistory('project', id, p.title);
 
+  // ── Completeness ──────────────────────────────────────────
+  const pct = projectCompleteness(p);
+  const pctMissing = [
+    !p.description?.trim() && 'descripción',
+    !p.deadline             && 'deadline',
+    !p.responsible?.trim()  && 'responsable',
+    !(p.tags||[]).length    && 'etiquetas',
+  ].filter(Boolean);
+
+  // ── HTML por sección ──────────────────────────────────────
+
+  // META
+  const metaHTML = `
+    <div class="inspector-meta">
+      <div class="inspector-meta-row">
+        <span class="inspector-meta-key">Tipo</span>
+        <span class="inspector-meta-val"
+              data-inplace="type" data-inplace-type="select"
+              data-inplace-opts="Proyecto|Grant|Paper|Análisis|Dataset|Presentación"
+              data-inplace-value="${esc(p.type||'Proyecto')}">
+          <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
+        </span>
+      </div>
+      <div class="inspector-meta-row">
+        <span class="inspector-meta-key">Responsable</span>
+        <span class="inspector-meta-val"
+              data-inplace="responsible" data-inplace-value="${esc(p.responsible||'')}">
+          ${_personChipHTML(p.responsible||'', p.responsibleId||null)}
+        </span>
+      </div>
+      ${p.coauthors?.length ? `
+      <div class="inspector-meta-row">
+        <span class="inspector-meta-key">Coautores</span>
+        <span class="inspector-meta-val" style="display:flex;flex-wrap:wrap;gap:3px">
+          ${p.coauthors.map((n,i) => _personChipHTML(n, p.coauthorIds?.[i]||null, {small:true})).join('')}
+        </span>
+      </div>` : ''}
+      <div class="inspector-meta-row">
+        <span class="inspector-meta-key">Deadline</span>
+        <span class="inspector-meta-val"
+              data-inplace="deadline" data-inplace-type="date"
+              data-inplace-value="${p.deadline||''}">
+          ${p.deadline ? formatDate(p.deadline) : '—'}
+        </span>
+      </div>
+      <div class="inspector-meta-row">
+        <span class="inspector-meta-key">Prioridad</span>
+        <span class="inspector-meta-val"
+              data-inplace="priority" data-inplace-type="select"
+              data-inplace-opts="Alta|Media|Baja"
+              data-inplace-value="${esc(p.priority||'Media')}">
+          ${esc(p.priority||'—')}
+        </span>
+      </div>
+      <div class="inspector-meta-row">
+        <span class="inspector-meta-key">Columna</span>
+        <span class="inspector-meta-val"
+              data-inplace="columnId" data-inplace-type="id-select"
+              data-inplace-value="${p.columnId}"
+              data-inplace-map="${colMapStr}">
+          ${esc(col?.title ?? '—')}
+        </span>
+      </div>
+      <div class="inspector-meta-row">
+        <span class="inspector-meta-key">Área</span>
+        <span class="inspector-meta-val"
+              data-inplace="areaId" data-inplace-type="id-select"
+              data-inplace-value="${p.areaId??''}"
+              data-inplace-map="${areaMapStr}">
+          ${currentArea
+            ? `<span class="area-chip" style="border-color:${currentArea.color};color:${currentArea.color}">⊡ ${esc(currentArea.name)}</span>`
+            : `<span style="color:var(--text-3);font-size:.74rem">— Sin área —</span>`}
+        </span>
+      </div>
+      <div class="inspector-meta-row">
+        <span class="inspector-meta-key">Creado</span>
+        <span class="inspector-meta-val">${relativeDate(p.createdAt)}</span>
+      </div>
+    </div>`;
+
+  // COMPLETENESS
+  const compHTML = `
+    ${completenessBarHTML(pct)}
+    <div style="font-size:.7rem;color:var(--text-3);margin-top:5px;font-family:var(--font-mono)">
+      ${pct >= 100 ? '✓ Proyecto completo'
+        : 'Faltan: ' + pctMissing.join(', ')}
+    </div>`;
+
+  // DESCRIPCIÓN
+  const descHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+      <span></span>
+      <button class="btn btn-ghost btn-sm" id="mdEditToggle" style="font-size:.68rem">
+        ${App._mdEditing ? '👁 Preview' : '✏ Editar'}
+      </button>
+    </div>
+    ${App._mdEditing
+      ? `<textarea class="form-input" id="mdDescEditor"
+            style="min-height:110px;font-family:var(--font-mono);font-size:.8rem;resize:vertical"
+            placeholder="Soporta **Markdown**, - listas, \`código\`…"
+          >${esc(p.description||'')}</textarea>
+         <div style="display:flex;gap:6px;margin-top:6px">
+           <button class="btn btn-primary btn-sm" id="mdDescSave">Guardar</button>
+           <button class="btn btn-ghost btn-sm" id="mdDescCancel">Cancelar</button>
+         </div>`
+      : `<div class="inspector-desc md-preview" id="mdDescPreview">
+           ${p.description ? renderMd(p.description)
+             : '<span style="color:var(--text-3);font-size:.78rem">Sin descripción — haz clic en ✏ Editar</span>'}
+         </div>`}`;
+
+  // SUBTAREAS
+  const tasksHTML = subtaskListHTML(p, 'project');
+
+  // SUBMISSION (Paper only)
+  const subHTML = p.type === 'Paper' ? (() => {
+    const st = p.submissionStatus || 'preparacion';
+    return `
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        ${subStatusBadge(st)}
+        <button class="btn btn-ghost btn-sm" id="insp-edit-sub-btn"
+                style="font-size:.65rem;padding:2px 7px">✎ Editar</button>
+      </div>
+      <div class="inspector-meta">
+        ${p.targetVenue ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">Venue</span>
+          <span class="inspector-meta-val">${esc(p.targetVenue)}</span>
+        </div>` : ''}
+        ${p.submittedAt ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">Enviado</span>
+          <span class="inspector-meta-val" style="font-family:var(--font-mono);font-size:.74rem">
+            ${formatDate(p.submittedAt)}
+          </span>
+        </div>` : ''}
+        ${p.deadline ? `<div class="inspector-meta-row">
+          <span class="inspector-meta-key">Deadline</span>
+          <span class="inspector-meta-val" style="font-family:var(--font-mono);font-size:.74rem">
+            ${formatDate(p.deadline)}
+          </span>
+        </div>` : ''}
+      </div>
+      ${(p.submissionRounds||[]).length ? `
+        <div style="font-size:.65rem;font-family:var(--font-mono);color:var(--text-3);
+                    margin-top:4px">${p.submissionRounds.length} ronda(s) de revisión</div>` : ''}`;
+  })() : '';
+
+  // IDEAS VINCULADAS
+  const ideasHTML = relIdeas.length ? relIdeas.slice(0,5).map(i => `
+    <div class="inspector-related-item" data-goto-idea="${i.id}"
+         style="cursor:pointer;display:flex;align-items:center;gap:4px">
+      <span style="flex-shrink:0;color:${i.status==='unread'?'var(--amber)':'var(--text-3)'};font-size:.8rem">◎</span>
+      <span style="flex:1">${esc(i.title)}</span>
+      <span style="font-size:.6rem;color:var(--text-3)">→</span>
+    </div>`).join('')
+  : `<div style="font-size:.73rem;color:var(--text-3);font-style:italic;padding:2px 0">
+       Sin ideas vinculadas. Agrega con + Idea abajo.</div>`;
+
+  // SNIPPETS
+  const snipsHTML = relSnips.length ? relSnips.slice(0,4).map(s => `
+    <div class="inspector-related-item" data-goto-snip="${s.id}"
+         style="cursor:pointer;display:flex;align-items:center;gap:5px">
+      <span class="snippet-lang-badge lang-${s.language||'Other'}" style="font-size:.55rem;flex-shrink:0">
+        ${esc(s.language||'Other')}</span>
+      <span style="flex:1">${esc(s.title)}</span>
+    </div>`).join('')
+  : `<div style="font-size:.73rem;color:var(--text-3);font-style:italic;padding:2px 0">Sin snippets vinculados.</div>`;
+
+  // REFERENCIAS
+  const refsHTML = refs.length ? refs.slice(0,4).map(r => `
+    <div class="inspector-related-item" data-inspect-ref="${r.id}" style="cursor:pointer">
+      📚 ${esc(r.authors?.split(',')[0]||'')} (${r.year||'?'}) — ${esc(r.title.slice(0,40))}
+    </div>`).join('')
+  : `<div style="font-size:.73rem;color:var(--text-3);font-style:italic;padding:2px 0">Sin referencias vinculadas.</div>`;
+
+  // REUNIONES
+  const meetsHTML = meets.length ? meets.slice(0,4).map(m => {
+    const pending = (m.actionItems||[]).filter(a=>!a.done).length;
+    return `<div class="inspector-related-item" data-inspect-meeting="${m.id}" style="cursor:pointer;
+            display:flex;align-items:center;gap:6px">
+      <span style="font-family:var(--font-mono);font-size:.65rem;color:var(--text-3);flex-shrink:0">
+        ${formatDate(m.date)}</span>
+      <span style="flex:1">${esc(m.title)}</span>
+      ${pending ? `<span style="font-size:.62rem;color:var(--amber);flex-shrink:0">⚑ ${pending}</span>` : ''}
+    </div>`;
+  }).join('')
+  : `<div style="font-size:.73rem;color:var(--text-3);font-style:italic;padding:2px 0">Sin reuniones registradas.</div>`;
+
+  // ETIQUETAS + CAMPOS PERSONALIZADOS
+  const cfFields   = schemas?.[p.type] || [];
+  const cfVals     = p.customFields || {};
+  const cfEntries  = cfFields.filter(f => cfVals[f.key] !== undefined && cfVals[f.key] !== '');
+  const tagsAndCFHTML = `
+    <div class="insp-tags-field"
+         data-inplace="tags" data-inplace-type="tags"
+         data-inplace-value="${esc((p.tags||[]).join(', '))}">
+      ${(p.tags||[]).length
+        ? p.tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')
+        : `<span style="color:var(--text-3);font-size:.72rem;font-style:italic">Sin etiquetas — doble clic</span>`}
+    </div>
+    ${cfEntries.length ? `
+      <div style="margin-top:8px;display:flex;flex-direction:column;gap:5px">
+        ${cfEntries.map(f => `
+          <div class="inspector-meta-row">
+            <span class="inspector-meta-key">${esc(f.label)}</span>
+            <span class="inspector-meta-val" style="font-family:var(--font-mono);font-size:.74rem">
+              ${f.key.includes('Url')||f.key.includes('url')
+                ? `<a href="${esc(String(cfVals[f.key]))}" target="_blank"
+                      style="color:var(--accent);text-decoration:none">↗ ${esc(String(cfVals[f.key]).replace(/^https?:\/\//,'').slice(0,32))}</a>`
+                : esc(String(cfVals[f.key]))}
+            </span>
+          </div>`).join('')}
+      </div>` : ''}`;
+
+  // HISTORIAL DE CAMBIOS
+  const histHTML = (() => {
+    const hist = [...(p._history||[])].reverse().slice(0, 5);
+    if (!hist.length) return '';
+    const FIELDS = { title:'Título', type:'Tipo', responsible:'Responsable',
+                     priority:'Prioridad', deadline:'Deadline', description:'Descripción' };
+    return hist.map((snap, si) => {
+      const prev  = hist[si+1] || snap;
+      const diffs = Object.entries(FIELDS)
+        .filter(([k]) => snap[k] !== prev[k] && si < hist.length-1)
+        .map(([k,l]) =>
+          `<span class="history-diff">${l}: </span>` +
+          `<span class="history-diff-old">${esc(String(prev[k]||'—').slice(0,40))}</span> → ` +
+          `<span class="history-diff-new">${esc(String(snap[k]||'—').slice(0,40))}</span>`)
+        .join('<br>');
+      return `<div class="history-entry">
+        <span class="history-ts">${relativeDate(snap.ts)}</span>
+        ${diffs || '<span style="color:var(--text-3)">Snapshot inicial</span>'}
+      </div>`;
+    }).join('');
+  })();
+
+  // TIEMPO POR COLUMNA
+  const durations = computeColumnDurations(p, colMap);
+  const colHistHTML = (() => {
+    if (!durations.length) return '';
+    const maxD = Math.max(...durations.map(d => d.days), 1);
+    return `<div class="col-duration-list">
+      ${durations.map(d => `
+        <div class="col-duration-item">
+          <span class="col-duration-name">${esc(d.colTitle)}</span>
+          <div class="col-duration-bar-wrap">
+            <div class="col-duration-bar"
+                 style="width:${(d.days/maxD*100).toFixed(1)}%;background:${d.colColor}"></div>
+          </div>
+          <span class="col-duration-label">${d.days}d</span>
+        </div>`).join('')}
+    </div>`;
+  })();
+
+  // ── Ensamblar HTML del inspector ──────────────────────────
   inspectorBody.innerHTML = `
     <div>
-      <div style="margin-bottom:10px">
+      <div style="margin-bottom:8px;display:flex;gap:4px;flex-wrap:wrap">
         <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
-        <span class="badge ${prioBadgeClass(p.priority)}" style="margin-left:4px">${esc(p.priority)}</span>
+        <span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority)}</span>
       </div>
       <div class="inspector-project-title">${esc(p.title)}</div>
 
-      <div class="inspector-meta">
-        <div class="inspector-meta-row">
-          <span class="inspector-meta-key">Tipo</span>
-          <span class="inspector-meta-val"
-                data-inplace="type"
-                data-inplace-type="select"
-                data-inplace-opts="Proyecto|Grant|Paper|Análisis|Dataset|Presentación"
-                data-inplace-value="${esc(p.type || 'Proyecto')}">
-            <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
-          </span>
-        </div>
-        <div class="inspector-meta-row">
-          <span class="inspector-meta-key">Responsable</span>
-          <span class="inspector-meta-val"
-                data-inplace="responsible"
-                data-inplace-value="${esc(p.responsible || '')}">
-            ${_personChipHTML(p.responsible || '', p.responsibleId || null)}
-          </span>
-        </div>
-        ${p.coauthors?.length ? `
-        <div class="inspector-meta-row">
-          <span class="inspector-meta-key">Coautores</span>
-          <span class="inspector-meta-val" style="display:flex;flex-wrap:wrap;gap:3px">
-            ${p.coauthors.map((name, i) =>
-              _personChipHTML(name, p.coauthorIds?.[i] || null, { small: true })
-            ).join('')}
-          </span>
-        </div>` : ''}
-        <div class="inspector-meta-row">
-          <span class="inspector-meta-key">Deadline</span>
-          <span class="inspector-meta-val"
-                data-inplace="deadline"
-                data-inplace-type="date"
-                data-inplace-value="${p.deadline || ''}">${p.deadline ? formatDate(p.deadline) : '—'}</span>
-        </div>
-        <div class="inspector-meta-row">
-          <span class="inspector-meta-key">Prioridad</span>
-          <span class="inspector-meta-val"
-                data-inplace="priority"
-                data-inplace-type="select"
-                data-inplace-opts="Alta|Media|Baja"
-                data-inplace-value="${esc(p.priority || 'Media')}">${esc(p.priority || '—')}</span>
-        </div>
-        <div class="inspector-meta-row">
-          <span class="inspector-meta-key">Columna</span>
-          <span class="inspector-meta-val"
-                data-inplace="columnId"
-                data-inplace-type="id-select"
-                data-inplace-value="${p.columnId}"
-                data-inplace-map="${colMapStr}"
-                style="color:var(--text-1)">${esc(col?.title ?? '—')}</span>
-        </div>
-        <div class="inspector-meta-row">
-          <span class="inspector-meta-key">Área</span>
-          <span class="inspector-meta-val"
-                data-inplace="areaId"
-                data-inplace-type="id-select"
-                data-inplace-value="${p.areaId ?? ''}"
-                data-inplace-map="${areaMapStr}">
-            ${currentArea
-              ? `<span class="area-chip" style="border-color:${currentArea.color};color:${currentArea.color}">⊡ ${esc(currentArea.name)}</span>`
-              : `<span style="color:var(--text-3);font-size:.74rem">— Sin área —</span>`}
-          </span>
-        </div>
-        <div class="inspector-meta-row">
-          <span class="inspector-meta-key">Creado</span>
-          <span class="inspector-meta-val">${relativeDate(p.createdAt)}</span>
-        </div>
-      </div>
-      <div id="completenessInspector"></div>
+      ${_inspSectionHTML('p-meta', 'Metadata', metaHTML)}
+      ${_inspSectionHTML('p-comp', 'Completitud', compHTML)}
+      ${_inspSectionHTML('p-desc', 'Descripción', descHTML)}
+      ${_inspSectionHTML('p-tasks', `Subtareas${(p.subtasks||[]).length ? ` · ${(p.subtasks||[]).filter(t=>t.done).length}/${p.subtasks.length}` : ''}`, tasksHTML)}
 
-      ${subtaskListHTML(p, 'project')}
-
-      <!-- Quick-Add contextual -->
       <div class="insp-quickadd-bar">
-        <span style="font-size:.65rem;color:var(--text-3);font-family:var(--font-mono)">Agregar a este proyecto:</span>
+        <span style="font-size:.63rem;color:var(--text-3);font-family:var(--font-mono)">Agregar:</span>
         <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="idea">+ Idea</button>
         <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="meeting">+ Reunión</button>
         <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="reference">+ Referencia</button>
-        ${p.type === 'Paper' ? `<button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="submission">📤 Submission</button>` : ''}
+        ${p.type==='Paper'?`<button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="submission">📤</button>`:''}
       </div>
 
-      <div class="inspector-section-label" style="margin-top:12px;display:flex;align-items:center;justify-content:space-between">
-        <span>Descripción</span>
-        <button class="btn btn-ghost btn-sm" id="mdEditToggle" style="font-size:.7rem">
-          ${App._mdEditing ? '👁 Preview' : '✏ Editar'}
-        </button>
-      </div>
-      ${App._mdEditing
-        ? `<textarea class="form-input" id="mdDescEditor"
-              style="min-height:120px;font-family:var(--font-mono);font-size:.8rem;resize:vertical"
-              placeholder="Soporta **Markdown**, - listas, \`código\`, etc."
-            >${esc(p.description || '')}</textarea>
-           <div style="display:flex;gap:6px;margin-top:6px">
-             <button class="btn btn-primary btn-sm" id="mdDescSave">Guardar</button>
-             <button class="btn btn-ghost btn-sm" id="mdDescCancel">Cancelar</button>
-           </div>`
-        : `<div class="inspector-desc md-preview" id="mdDescPreview">
-             ${p.description ? renderMd(p.description) : '<span style="color:var(--text-3);font-size:.8rem">Sin descripción — haz clic en ✏ Editar</span>'}
-           </div>`
-      }
+      ${p.type==='Paper' ? _inspSectionHTML('p-sub', '📤 Submission', subHTML) : ''}
 
-      <div class="inspector-related-title">Etiquetas</div>
-      <div class="insp-tags-field"
-           data-inplace="tags"
-           data-inplace-type="tags"
-           data-inplace-value="${esc((p.tags||[]).join(', '))}">
-        ${(p.tags||[]).length
-          ? p.tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')
-          : `<span style="color:var(--text-3);font-size:.73rem;font-style:italic">Sin etiquetas — doble clic para agregar</span>`}
-      </div>
-      <div id="cfDisplay"></div>
-
-      ${(p._history||[]).length ? (() => {
-        const hist = [...(p._history||[])].reverse().slice(0, 5);
-        const FIELDS = { title:'Título', type:'Tipo', responsible:'Responsable',
-                         priority:'Prioridad', deadline:'Deadline', description:'Descripción' };
-        return `
-          <div class="inspector-related-title">Historial (últimas ${hist.length} ediciones)</div>
-          <div class="history-list">
-            ${hist.map((snap, si) => {
-              // Diff against next-older snapshot or current state
-              const prev   = hist[si + 1] || snap;
-              const diffs  = Object.entries(FIELDS)
-                .filter(([k]) => snap[k] !== prev[k] && si < hist.length - 1)
-                .map(([k, label]) =>
-                  `<span class="history-diff">${label}: </span>` +
-                  `<span class="history-diff-old">${esc(String(prev[k] || '—'))}</span> → ` +
-                  `<span class="history-diff-new">${esc(String(snap[k] || '—'))}</span>`)
-                .join('<br>');
-              return `
-                <div class="history-entry">
-                  <span class="history-ts">${relativeDate(snap.ts)}</span>
-                  ${diffs || '<span style="color:var(--text-3)">Snapshot inicial</span>'}
-                </div>`;
-            }).join('')}
-          </div>`;
-      })() : ''}
-
-      ${relIdeas.length ? `
-        <div class="inspector-related-title">Ideas vinculadas (${relIdeas.length})</div>
-        ${relIdeas.slice(0,4).map(i => `
-          <div class="inspector-related-item" data-goto-idea="${i.id}"
-               style="cursor:pointer;display:flex;align-items:center;gap:4px">
-            <span style="flex:1">◎ ${esc(i.title)}</span>
-            <span style="font-size:.62rem;color:var(--text-3);flex-shrink:0">→</span>
-          </div>`).join('')}` : ''}
-
-      ${relSnips.length ? `
-        <div class="inspector-related-title">Snippets vinculados (${relSnips.length})</div>
-        ${relSnips.slice(0,4).map(s => `
-          <div class="inspector-related-item" data-goto-snip="${s.id}"
-               style="cursor:pointer;display:flex;align-items:center;gap:4px">
-            <span style="flex:1">⟨/⟩ ${esc(s.title)}</span>
-            <span style="font-size:.62rem;color:var(--text-3);flex-shrink:0">→</span>
-          </div>`).join('')}` : ''}
-
-      ${await (async () => {
-        const [refs, meets] = await Promise.all([
-          getReferences(p.id),
-          getMeetings(p.id),
-        ]);
-        let html = '';
-
-        // -- Panel de submission inline (solo Paper) ----------
-        if (p.type === 'Paper') {
-          const st = p.submissionStatus || 'preparacion';
-          html += `
-            <div class="inspector-related-title"
-                 style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px">
-              <span>📤 Submission ${subStatusBadge(st)}</span>
-              <button class="btn btn-ghost btn-sm" id="insp-edit-sub-btn"
-                      style="font-size:.65rem;padding:2px 7px">✎ Editar</button>
-            </div>
-            <div class="inspector-meta" style="margin-bottom:10px">
-              ${p.targetVenue ? `<div class="inspector-meta-row">
-                <span class="inspector-meta-key">Venue</span>
-                <span class="inspector-meta-val">${esc(p.targetVenue)}</span>
-              </div>` : ''}
-              ${p.submittedAt ? `<div class="inspector-meta-row">
-                <span class="inspector-meta-key">Enviado</span>
-                <span class="inspector-meta-val" style="font-family:var(--font-mono);font-size:.74rem">
-                  ${formatDate(p.submittedAt)}
-                </span>
-              </div>` : ''}
-            </div>
-            ${(p.submissionRounds||[]).length ? `
-              <div class="inspector-related-title">Rondas (${p.submissionRounds.length})</div>
-              <div class="sub-rounds-list">
-                ${p.submissionRounds.map(r => `
-                  <div class="sub-round-item">
-                    <span class="history-ts">${formatDate(r.date)}</span>
-                    <span class="badge" style="font-size:.62rem">${esc(r.status)}</span>
-                    <span style="font-size:.74rem;color:var(--text-2)">${esc(r.notes||'')}</span>
-                  </div>`).join('')}
-              </div>` : ''}`;
-        }
-
-        if (refs.length) html += `
-          <div class="inspector-related-title">Referencias (${refs.length})</div>
-          ${refs.slice(0,3).map(r => `
-            <div class="inspector-related-item" data-inspect-ref="${r.id}" style="cursor:pointer">
-              📚 ${esc(r.authors?.split(',')[0]||'')} (${r.year||'?'}) — ${esc(r.title.slice(0,40))}
-            </div>`).join('')}`;
-        if (meets.length) html += `
-          <div class="inspector-related-title">Reuniones (${meets.length})</div>
-          ${meets.slice(0,3).map(m => `
-            <div class="inspector-related-item" data-inspect-meeting="${m.id}" style="cursor:pointer">
-              🗓 ${formatDate(m.date)} — ${esc(m.title)}
-            </div>`).join('')}`;
-        return html;
-      })()}
-
-      ${(() => {
-        const durations = computeColumnDurations(p, colMap);
-        if (!durations.length) return '';
-        const maxD = Math.max(...durations.map(d => d.days), 1);
-        return `
-          <div class="inspector-related-title">Tiempo por columna</div>
-          <div class="col-duration-list">
-            ${durations.map(d => `
-              <div class="col-duration-item">
-                <span class="col-duration-name">${esc(d.colTitle)}</span>
-                <div class="col-duration-bar-wrap">
-                  <div class="col-duration-bar"
-                       style="width:${(d.days/maxD*100).toFixed(1)}%;background:${d.colColor}"></div>
-                </div>
-                <span class="col-duration-label">${d.days}d</span>
-              </div>`).join('')}
-          </div>`;
-      })()}
+      ${_inspSectionHTML('p-ideas',
+        `Ideas vinculadas (${relIdeas.length})`,
+        ideasHTML)}
+      ${_inspSectionHTML('p-snips',
+        `Snippets (${relSnips.length})`,
+        snipsHTML)}
+      ${_inspSectionHTML('p-refs',
+        `Referencias (${refs.length})`,
+        refsHTML)}
+      ${_inspSectionHTML('p-meets',
+        `Reuniones (${meets.length})`,
+        meetsHTML)}
+      ${_inspSectionHTML('p-tags', 'Etiquetas & Campos', tagsAndCFHTML)}
+      ${durations.length ? _inspSectionHTML('p-colhist', 'Tiempo por columna', colHistHTML) : ''}
+      ${histHTML ? _inspSectionHTML('p-hist', `Historial (${(p._history||[]).length})`, histHTML) : ''}
 
       <div class="inspector-actions">
         <button class="btn btn-primary btn-sm" id="inspHubBtn">⬡ Abrir Hub</button>
         <button class="btn btn-ghost btn-sm" id="inspEditBtn">✎ Editar</button>
         <button class="btn btn-ghost btn-sm" id="inspFSBtn" title="Crear estructura FS">📁 FS</button>
-        <button class="btn btn-ghost btn-sm" id="inspStarBtn">${p.starred ? '★ Quitar fav.' : '☆ Favorito'}</button>
-        <button class="btn btn-ghost btn-sm" id="inspArchiveBtn">${p.archived ? '↩ Restaurar' : '⊟ Archivar'}</button>
+        <button class="btn btn-ghost btn-sm" id="inspStarBtn">${p.starred?'★ Quitar fav.':'☆ Favorito'}</button>
+        <button class="btn btn-ghost btn-sm" id="inspArchiveBtn">${p.archived?'↩ Restaurar':'⊟ Archivar'}</button>
         <button class="btn btn-danger btn-sm" id="inspDeleteBtn">✕ Eliminar</button>
       </div>
     </div>`;
 
   openInspector();
-
-  // Cross-refs: async, no bloquea el inspector inicial
-  _appendCrossRefs(id, p.title).catch(() => {});
-
-  // mostrar custom fields
-  _getTypeSchemas().then(schemas => {
-    const el = $('cfDisplay');
-    if (!el) return;
-    el.innerHTML = _customFieldsDisplayHTML(p.customFields || {}, schemas, p.type);
-  });
-
-  // -- Enlace submission desde inspector de Paper ------
-  $('insp-edit-sub-btn')?.addEventListener('click', () => showAddSubmissionModal(null, p.id));
-
-  // In-place editing
+  _attachInspSectionToggles();
   _attachInplaceEditors(async (field, newVal) => {
     await snapshotProject(id);
     const upd = { updatedAt: new Date().toISOString() };
     switch (field) {
-      case 'deadline':  upd.deadline = newVal || null; break;
-      case 'columnId':  upd.columnId = +newVal || null; break;
-      case 'areaId':    upd.areaId = newVal ? +newVal : null; break;
-      case 'tags':      upd.tags = newVal.split(',').map(s => s.trim()).filter(Boolean); break;
-      default:          upd[field] = newVal;
+      case 'deadline': upd.deadline = newVal || null; break;
+      case 'columnId': upd.columnId = +newVal || null; break;
+      case 'areaId':   upd.areaId   = newVal ? +newVal : null; break;
+      case 'tags':     upd.tags     = newVal.split(',').map(s=>s.trim()).filter(Boolean); break;
+      default:         upd[field]   = newVal;
     }
     await dbWrite(() => db.projects.update(id, upd));
     showToast('Campo actualizado ✓', 'success');
@@ -8539,196 +8889,8 @@ async function inspectProject(id) {
     setTimeout(() => inspectProject(id), 80);
   });
 
-  $('inspDeleteBtn').addEventListener('click', async () => {
-    if (confirm(`¿Eliminar "${p.title}"?`)) {
-      await db.projects.delete(id);
-      closeInspector();
-      showToast('Proyecto eliminado', 'info');
-      renderView(App.view);
-    }
-  });
-
-  $('inspHubBtn').addEventListener('click', () => {
-    App.projectHubId = id;
-    navigate('project-hub');
-  });
-
-  $('inspFSBtn').addEventListener('click', () => {
-    navigate('filesystem');
-    setTimeout(() => {
-      const sel = $('fsProjectSelect');
-      if (sel) sel.value = id;
-      sel?.dispatchEvent(new Event('change'));
-    }, 300);
-  });
-
-  // -- Listeners del editor Markdown -------------------
-  $('mdEditToggle')?.addEventListener('click', () => {
-    App._mdEditing = !App._mdEditing;
-    // Re-render sólo el inspector (sin cerrar)
-    inspectProject(p.id);
-  });
-
-  $('mdDescSave')?.addEventListener('click', async () => {
-    const val = $('mdDescEditor')?.value ?? '';
-    await snapshotProject(p.id);
-    await dbWrite(() => db.projects.update(p.id, {
-      description: val,
-      updatedAt: new Date().toISOString()
-    }));
-    App._mdEditing = false;
-    showToast('Descripción guardada ✓', 'success');
-    inspectProject(p.id);
-  });
-
-  $('mdDescCancel')?.addEventListener('click', () => {
-    App._mdEditing = false;
-    inspectProject(p.id);
-  });
-
-  // completeness in inspector
-  {
-    const pct = projectCompleteness(p);
-    const el = $('completenessInspector');
-    if (el) el.innerHTML = `
-      <div class="inspector-related-title">Completitud del proyecto</div>
-      ${completenessBarHTML(pct)}
-      <div style="font-size:.7rem;color:var(--text-3);margin-top:4px;font-family:var(--font-mono)">
-        ${pct < 100 ? 'Faltan: ' + [
-          !p.description?.trim() && 'descripción',
-          !p.deadline            && 'deadline',
-          !p.responsible?.trim() && 'responsable',
-          !(p.tags||[]).length   && 'etiquetas',
-        ].filter(Boolean).join(', ') : '✓ Proyecto completo'}
-      </div>`;
-  }
-
-  // Quick-Add contextual — abre el modal correspondiente con projectId pre-cargado
-  inspectorBody.querySelectorAll('.insp-qa-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      switch (btn.dataset.qa) {
-        case 'idea': {
-          // Reutiliza showAddIdeaModal pre-seleccionando el proyecto
-          const projects = await db.projects.toArray();
-          const body = `
-            <div class="modal-body">
-              <div class="form-group">
-                <label class="form-label">Título *</label>
-                <input class="form-input" id="qi-title" placeholder="Idea o recurso…">
-              </div>
-              <div class="form-group">
-                <label class="form-label">Contenido / URL / Nota</label>
-                <textarea class="form-textarea" id="qi-content" placeholder="Detalles…"></textarea>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Deadline (opcional)</label>
-                <input type="date" class="form-input" id="qi-deadline">
-              </div>
-            </div>
-            <div class="modal-footer">
-              <button class="btn btn-ghost" id="qiCancel">Cancelar</button>
-              <button class="btn btn-primary" id="qiSave">Guardar Idea</button>
-            </div>`;
-          showModal(`+ Idea → ${p.title}`, body);
-          setTimeout(() => $('qi-title')?.focus(), 60);
-          $('qiCancel').addEventListener('click', closeModal);
-          $('qiSave').addEventListener('click', async () => {
-            const title = $('qi-title').value.trim();
-            if (!title) { showToast('Título requerido', 'error'); return; }
-            const now = new Date().toISOString();
-            await dbWrite(() => db.ideas.add({
-              title, content: $('qi-content').value.trim(),
-              status:    'unread',
-              projectId: p.id,
-              projectIds:[p.id],
-              deadline:  $('qi-deadline')?.value || null,
-              tags: [], subtasks: [], createdAt: now, updatedAt: now
-            }));
-            closeModal(); showToast('Idea añadida ✓', 'success');
-            updateBadges();
-          });
-          break;
-        }
-        case 'meeting':
-          await showAddMeetingModal(null, p.id);
-          break;
-        case 'reference':
-          await showAddReferenceModal(p.id);
-          break;
-        case 'submission':
-          await showAddSubmissionModal(null, p.id);
-          break;
-      }
-    });
-  });
-
-  $('inspEditBtn').addEventListener('click', () => showEditProjectModal(p));
-
-  $('inspStarBtn').addEventListener('click', async () => {
-    await db.projects.update(id, { starred: !p.starred, updatedAt: new Date().toISOString() });
-    showToast(p.starred ? 'Quitado de favoritos' : '★ Añadido a favoritos', 'success');
-    inspectProject(id);
-    if (App.view === 'projects' || App.view === 'starred') renderView(App.view);
-  });
-
-  // Handlers de subtareas del proyecto
-  inspectorBody.querySelectorAll('[data-toggle-st]').forEach(btn => {
-    btn.addEventListener('click', () =>
-      toggleSubtask(id, +btn.dataset.toggleSt, 'project'));
-  });
-  inspectorBody.querySelectorAll('[data-del-st]').forEach(btn => {
-    btn.addEventListener('click', () =>
-      deleteSubtask(id, +btn.dataset.delSt, 'project'));
-  });
-  {
-    const stInput  = $(`stInput-${id}`);
-    const stAddBtn = $(`stAddBtn-${id}`);
-    stAddBtn?.addEventListener('click', () => {
-      if (!stInput) return;
-      addSubtask(id, stInput.value, 'project');
-      stInput.value = '';
-    });
-    stInput?.addEventListener('keydown', e => {
-      if (e.key === 'Enter') { addSubtask(id, stInput.value, 'project'); stInput.value = ''; }
-    });
-  }
-
-  $('inspArchiveBtn').addEventListener('click', async () => {
-    await db.projects.update(id, { archived: !p.archived, updatedAt: new Date().toISOString() });
-    showToast(p.archived ? 'Proyecto restaurado' : 'Proyecto archivado', 'info');
-    closeInspector();
-    renderView(App.view);
-  });
-
-  // Elementos relacionados — navegan a su vista y abren inspector
-  inspectorBody.querySelectorAll('[data-goto-idea]').forEach(el =>
-    el.addEventListener('click', () => {
-      //navigate('ideas');
-      setTimeout(() => inspectIdea(+el.dataset.gotoIdea), 150);
-    }));
-  inspectorBody.querySelectorAll('[data-goto-snip]').forEach(el =>
-    el.addEventListener('click', async () => {
-      //navigate('snippets');
-      const s = await db.snippets.get(+el.dataset.gotoSnip);
-      setTimeout(() => { if (s) inspectSnippet(s); }, 150);
-    }));
-  inspectorBody.querySelectorAll('[data-goto-sub]').forEach(el =>
-    el.addEventListener('click', () => {
-      //navigate('submissions');
-      setTimeout(() => inspectProject(+el.dataset.gotoSub), 150);
-    }));
-  inspectorBody.querySelectorAll('[data-goto-ref]').forEach(el =>
-    el.addEventListener('click', () => {
-      //navigate('references');
-      setTimeout(() => inspectReference(+el.dataset.gotoRef), 150);
-    }));
-  inspectorBody.querySelectorAll('[data-goto-meet]').forEach(el =>
-    el.addEventListener('click', () => {
-      //navigate('meetings');
-      setTimeout(() => inspectMeeting(+el.dataset.gotoMeet), 150);
-    }));
-
-  // Async: show subprojects
+  // Cross-refs y subproyectos — async fire-and-forget
+  _appendCrossRefs(id, p.title).catch(() => {});
   db.projects.where('parentId').equals(id).toArray().then(children => {
     if (!children.length) return;
     const actionsEl = inspectorBody.querySelector('.inspector-actions');
@@ -8744,9 +8906,141 @@ async function inspectProject(id) {
           </div>`).join('')}
       </div>`;
     actionsEl.parentNode.insertBefore(subEl, actionsEl);
-    subEl.querySelectorAll('[data-inspect-project]').forEach(el => {
-      el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject));
+    subEl.querySelectorAll('[data-inspect-project]').forEach(el =>
+      el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
+  });
+
+  // ── Event listeners ───────────────────────────────────────
+  $('insp-edit-sub-btn')?.addEventListener('click', () => showAddSubmissionModal(null, p.id));
+
+  $('mdEditToggle')?.addEventListener('click', () => {
+    App._mdEditing = !App._mdEditing; inspectProject(p.id);
+  });
+  $('mdDescSave')?.addEventListener('click', async () => {
+    const val = $('mdDescEditor')?.value ?? '';
+    await snapshotProject(p.id);
+    await dbWrite(() => db.projects.update(p.id, { description: val, updatedAt: new Date().toISOString() }));
+    App._mdEditing = false;
+    showToast('Descripción guardada ✓', 'success');
+    inspectProject(p.id);
+  });
+  $('mdDescCancel')?.addEventListener('click', () => {
+    App._mdEditing = false; inspectProject(p.id);
+  });
+
+  inspectorBody.querySelectorAll('[data-toggle-st]').forEach(btn =>
+    btn.addEventListener('click', () => toggleSubtask(id, +btn.dataset.toggleSt, 'project')));
+  inspectorBody.querySelectorAll('[data-del-st]').forEach(btn =>
+    btn.addEventListener('click', () => deleteSubtask(id, +btn.dataset.delSt, 'project')));
+  {
+    const stInput  = $(`stInput-${id}`);
+    const stAddBtn = $(`stAddBtn-${id}`);
+    stAddBtn?.addEventListener('click', () => {
+      if (!stInput) return; addSubtask(id, stInput.value, 'project'); stInput.value = '';
     });
+    stInput?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { addSubtask(id, stInput.value, 'project'); stInput.value = ''; }
+    });
+  }
+
+  inspectorBody.querySelectorAll('[data-goto-idea]').forEach(el =>
+    el.addEventListener('click', () => inspectIdea(+el.dataset.gotoIdea)));
+  inspectorBody.querySelectorAll('[data-goto-snip]').forEach(el =>
+    el.addEventListener('click', async () => {
+      const s = await db.snippets.get(+el.dataset.gotoSnip); if (s) inspectSnippet(s);
+    }));
+  inspectorBody.querySelectorAll('[data-inspect-ref]').forEach(el =>
+    el.addEventListener('click', () => inspectReference(+el.dataset.inspectRef)));
+  inspectorBody.querySelectorAll('[data-inspect-meeting]').forEach(el =>
+    el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
+
+  inspectorBody.querySelectorAll('.insp-qa-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      switch (btn.dataset.qa) {
+        case 'idea': {
+          showModal(`+ Idea → ${p.title}`, `
+            <div class="modal-body">
+              <div class="form-group"><label class="form-label">Título *</label>
+                <input class="form-input" id="qi-title" placeholder="Nueva idea…"></div>
+              <div class="form-group"><label class="form-label">Contenido / Nota</label>
+                <textarea class="form-textarea" id="qi-content" rows="2"></textarea></div>
+              <div class="form-group"><label class="form-label">Deadline (opcional)</label>
+                <input type="date" class="form-input" id="qi-deadline"></div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-ghost" id="qiCancel">Cancelar</button>
+              <button class="btn btn-primary" id="qiSave">Guardar Idea</button>
+            </div>`);
+          setTimeout(() => $('qi-title')?.focus(), 60);
+          $('qiCancel').addEventListener('click', closeModal);
+          $('qiSave').addEventListener('click', async () => {
+            const title = $('qi-title').value.trim();
+            if (!title) { showToast('Título requerido', 'error'); return; }
+            const now = new Date().toISOString();
+            await dbWrite(() => db.ideas.add({
+              title, content: $('qi-content').value.trim(),
+              status:'unread', projectId:p.id, projectIds:[p.id],
+              deadline:$('qi-deadline')?.value||null,
+              tags:[], subtasks:[], createdAt:now, updatedAt:now
+            }));
+            closeModal(); showToast('Idea añadida ✓','success'); updateBadges();
+          });
+          break;
+        }
+        case 'meeting':    await showAddMeetingModal(null, p.id); break;
+        case 'reference':  await showAddReferenceModal(p.id);    break;
+        case 'submission': await showAddSubmissionModal(null, p.id); break;
+      }
+    });
+  });
+
+  $('inspHubBtn').addEventListener('click', () => { App.projectHubId = id; navigate('project-hub'); });
+  $('inspFSBtn').addEventListener('click', () => {
+    navigate('filesystem');
+    setTimeout(() => {
+      const sel = $('fsProjectSelect');
+      if (sel) sel.value = id;
+      sel?.dispatchEvent(new Event('change'));
+    }, 300);
+  });
+  $('inspEditBtn').addEventListener('click', () => showEditProjectModal(p));
+  $('inspStarBtn').addEventListener('click', async () => {
+    await db.projects.update(id, { starred: !p.starred, updatedAt: new Date().toISOString() });
+    showToast(p.starred ? 'Quitado de favoritos' : '★ Añadido a favoritos', 'success');
+    inspectProject(id);
+    if (['projects','starred'].includes(App.view)) renderView(App.view);
+  });
+
+  $('inspArchiveBtn').addEventListener('click', async () => {
+    const wasArchived = !!p.archived;
+    await db.projects.update(id, { archived: !wasArchived, updatedAt: new Date().toISOString() });
+    if (!wasArchived) {
+      UndoStack.push({
+        label: `Archivar "${p.title.slice(0,30)}"`,
+        undo: async () => {
+          await dbWrite(() => db.projects.update(id, { archived: false, updatedAt: new Date().toISOString() }));
+        }
+      });
+      showToastWithUndo('Proyecto archivado', 'info');
+    } else {
+      showToast('Proyecto restaurado', 'success');
+    }
+    closeInspector(); renderView(App.view);
+  });
+
+  $('inspDeleteBtn').addEventListener('click', async () => {
+    if (!confirm(`¿Eliminar "${p.title}"?`)) return;
+    const snapshot = { ...p };
+    await db.projects.delete(id);
+    UndoStack.push({
+      label: `Eliminar "${p.title.slice(0,30)}"`,
+      undo: async () => {
+        await dbWrite(() => db.projects.add(snapshot));
+      }
+    });
+    closeInspector();
+    showToastWithUndo('Proyecto eliminado', 'info');
+    renderView(App.view);
   });
 }
 
@@ -9260,12 +9554,16 @@ async function inspectIdea(id) {
   });
 
   $('ideaDeleteBtn').addEventListener('click', async () => {
-    if (confirm('¿Eliminar esta idea?')) {
-      await db.ideas.delete(id);
-      closeInspector();
-      showToast('Idea eliminada', 'info');
-      if (App.view === 'ideas') renderIdeas();
-    }
+    if (!confirm('¿Eliminar esta idea?')) return;
+    const snapshot = { ...idea };
+    await db.ideas.delete(id);
+    UndoStack.push({
+      label: `Eliminar idea "${idea.title.slice(0,30)}"`,
+      undo:  async () => { await dbWrite(() => db.ideas.add(snapshot)); }
+    });
+    closeInspector();
+    showToastWithUndo('Idea eliminada', 'info');
+    if (App.view === 'ideas') renderIdeas();
   });
 }
 
