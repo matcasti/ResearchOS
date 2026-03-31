@@ -59,7 +59,6 @@ const App = {
 // -- DOM refs -------------------------------------------------
 const $ = id => document.getElementById(id);
 const mainContent    = $('mainContent');
-const inspectorPanel = $('inspectorPanel');
 const inspectorBody  = $('inspectorBody');
 const modalOverlay   = $('modalOverlay');
 const modalTitle     = $('modalTitle');
@@ -272,6 +271,13 @@ function _updateNavHistoryBtns() {
 async function renderView(view) {
   const _wasNavigating = App._isNavigating;
   App._isNavigating = false;
+
+  // Preservar inspector en refresh data-only (sort/inline edit), sin pasar por navigate()
+  if (view === 'projects' && App._projDataOnly && App.view === 'projects' &&
+      App.inspectedType && App.inspectedId && !App._savedInspector) {
+    App._savedInspector = { type: App.inspectedType, id: App.inspectedId };
+  }
+
   _softResetInspector();
 
   // ── Refresh data-only: no blanquear mainContent, solo repoblar #projectsContainer ──
@@ -5342,7 +5348,7 @@ async function renderProjectHub() {
               <span class="hub-meta-icon">👤</span>${esc(p.responsible)}
             </span>` : ''}
           ${dlLabel ? `
-            <span class="hub-meta-chip" style="color:${dlColor};border-color:${dlColor === 'var(--text-2)' ? '' : dlColor}20">
+            <span class="hub-meta-chip" style="color:${dlColor};${dlColor !== 'var(--text-2)' ? `border-color:color-mix(in srgb,${dlColor} 35%,transparent)` : ''}">
               <span class="hub-meta-icon">⏱</span>${dlLabel}
             </span>` : ''}
         </div>
@@ -5908,7 +5914,7 @@ async function renderOrphans() {
       <div id="orphBulkBar" style="display:none;background:var(--bg-card);
            border:1px solid var(--accent);border-radius:var(--radius-lg);
            padding:10px 16px;margin-bottom:14px;
-           display:none;align-items:center;gap:10px;flex-wrap:wrap">
+           align-items:center;gap:10px;flex-wrap:wrap">
         <span id="orphBulkCount" style="font-family:var(--font-mono);font-size:.78rem;
               color:var(--text-2);min-width:80px">0 seleccionados</span>
         <div style="flex:1"></div>
@@ -10802,7 +10808,7 @@ async function _renderAlertPanel(container) {
 //  ÍNDICE DE BÚSQUEDA EN MEMORIA
 // ==============================================================
 async function _buildSearchIndex() {
-  cconst [projects, ideas, snippets, refs, meets] = await Promise.all([
+  const [projects, ideas, snippets, refs, meets] = await Promise.all([
     db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray(),
     db.references.toArray(), db.meetings.toArray(),
   ]);
