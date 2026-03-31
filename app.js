@@ -217,7 +217,7 @@ async function dbWrite(fn) {
     const r = await fn();
     SaveIndicator.done();
     localStorage.setItem('ros-last-active', String(Date.now()));
-    GoogleSync.scheduleAutoSave();
+    GoogleSync.scheduleAutoSave().catch(() => {});
     _scheduleSearchIndex();
     _renderResearchStatus().catch(() => {});
     return r;
@@ -3183,138 +3183,136 @@ const FS_TEMPLATES = {
 async function renderFilesystem() {
   const fsSupported = 'showDirectoryPicker' in window;
   const projects = await db.projects.toArray();
-  {
-    const tplKeys = Object.keys(FS_TEMPLATES);
-    const tplTabsHTML = tplKeys.map(k => `
-      <button class="lang-tab ${k === 'rstudio' ? 'active' : ''}" data-tpl="${k}">
-        ${FS_TEMPLATES[k].name}
-      </button>`).join('');
+  const tplKeys = Object.keys(FS_TEMPLATES);
+  const tplTabsHTML = tplKeys.map(k => `
+    <button class="lang-tab ${k === 'rstudio' ? 'active' : ''}" data-tpl="${k}">
+      ${FS_TEMPLATES[k].name}
+    </button>`).join('');
 
-    mainContent.innerHTML = `
-      <div class="view">
-        <div class="view-header">
-          <div>
-            <div class="view-title">FS Bridge</div>
-            <div class="view-subtitle">Genera estructura de proyecto en tu sistema de archivos local</div>
+  mainContent.innerHTML = `
+    <div class="view">
+      <div class="view-header">
+        <div>
+          <div class="view-title">FS Bridge</div>
+          <div class="view-subtitle">Genera estructura de proyecto en tu sistema de archivos local</div>
+        </div>
+      </div>
+
+      ${!fsSupported ? `
+        <div class="fs-unsupported">
+          ⚠ La File System Access API no está disponible en este navegador.<br>
+          Usa <strong>Chrome 86+</strong> o <strong>Edge 86+</strong> para esta funcionalidad.<br>
+          <small style="opacity:.7">Firefox y Safari no soportan showDirectoryPicker() aún.</small>
+        </div>` : ''}
+
+      <div class="section-title">Template de carpetas</div>
+      <div class="lang-tabs" id="tplTabs" style="margin-bottom:12px">${tplTabsHTML}</div>
+      <p id="tplDescText" style="font-size:.8rem;color:var(--text-2);margin:0 0 16px">
+        ${esc(FS_TEMPLATES.rstudio.desc)}
+      </p>
+
+      <div class="fs-layout">
+        <div class="fs-form-section">
+          <div class="form-group">
+            <label class="form-label">Proyecto vinculado (opcional)</label>
+            <select class="form-select" id="fsProjectSelect">
+              <option value="">— Nuevo proyecto —</option>
+              ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
+            </select>
           </div>
+          <div class="form-group">
+            <label class="form-label">Nombre del directorio</label>
+            <input class="form-input" id="fsDirName" placeholder="mi_proyecto_2025"
+                   ${!fsSupported ? 'disabled' : ''}>
+            <span class="form-hint">Se usará como nombre de carpeta en tu sistema</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Descripción del proyecto</label>
+            <textarea class="form-textarea" id="fsDescription"
+                      placeholder="Escribe una descripción breve del proyecto…"
+                      ${!fsSupported ? 'disabled' : ''}></textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Autor / Responsable</label>
+            <input class="form-input" id="fsAuthor" placeholder="Dr. García"
+                   ${!fsSupported ? 'disabled' : ''}>
+          </div>
+
+          <div id="customTplEditor" style="display:none">
+            <div class="form-group">
+              <label class="form-label">Carpetas a crear (una por línea)</label>
+              <textarea class="form-textarea" id="fsCustomDirs" rows="4"
+                        style="font-family:var(--font-mono);font-size:.78rem"
+                        placeholder="data-raw&#10;scripts&#10;output"></textarea>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Archivos a crear (ruta:contenido, uno por línea)</label>
+              <textarea class="form-textarea" id="fsCustomFiles" rows="4"
+                        style="font-family:var(--font-mono);font-size:.78rem"
+                        placeholder="README.md:# Mi Proyecto&#10;scripts/main.R:# Script principal"></textarea>
+            </div>
+          </div>
+
+          <button class="dir-picker-btn ${!fsSupported ? 'disabled' : ''}"
+                  id="pickDirBtn" ${!fsSupported ? 'disabled' : ''}>
+            <span class="dir-picker-icon">📁</span>
+            Seleccionar carpeta raíz y generar estructura
+          </button>
         </div>
 
-        ${!fsSupported ? `
-          <div class="fs-unsupported">
-            ⚠ La File System Access API no está disponible en este navegador.<br>
-            Usa <strong>Chrome 86+</strong> o <strong>Edge 86+</strong> para esta funcionalidad.<br>
-            <small style="opacity:.7">Firefox y Safari no soportan showDirectoryPicker() aún.</small>
-          </div>` : ''}
-
-        <div class="section-title">Template de carpetas</div>
-        <div class="lang-tabs" id="tplTabs" style="margin-bottom:12px">${tplTabsHTML}</div>
-        <p id="tplDescText" style="font-size:.8rem;color:var(--text-2);margin:0 0 16px">
-          ${esc(FS_TEMPLATES.rstudio.desc)}
-        </p>
-
-        <div class="fs-layout">
-          <div class="fs-form-section">
-            <div class="form-group">
-              <label class="form-label">Proyecto vinculado (opcional)</label>
-              <select class="form-select" id="fsProjectSelect">
-                <option value="">— Nuevo proyecto —</option>
-                ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Nombre del directorio</label>
-              <input class="form-input" id="fsDirName" placeholder="mi_proyecto_2025"
-                     ${!fsSupported ? 'disabled' : ''}>
-              <span class="form-hint">Se usará como nombre de carpeta en tu sistema</span>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Descripción del proyecto</label>
-              <textarea class="form-textarea" id="fsDescription"
-                        placeholder="Escribe una descripción breve del proyecto…"
-                        ${!fsSupported ? 'disabled' : ''}></textarea>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Autor / Responsable</label>
-              <input class="form-input" id="fsAuthor" placeholder="Dr. García"
-                     ${!fsSupported ? 'disabled' : ''}>
-            </div>
-
-            <div id="customTplEditor" style="display:none">
-              <div class="form-group">
-                <label class="form-label">Carpetas a crear (una por línea)</label>
-                <textarea class="form-textarea" id="fsCustomDirs" rows="4"
-                          style="font-family:var(--font-mono);font-size:.78rem"
-                          placeholder="data-raw&#10;scripts&#10;output"></textarea>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Archivos a crear (ruta:contenido, uno por línea)</label>
-                <textarea class="form-textarea" id="fsCustomFiles" rows="4"
-                          style="font-family:var(--font-mono);font-size:.78rem"
-                          placeholder="README.md:# Mi Proyecto&#10;scripts/main.R:# Script principal"></textarea>
-              </div>
-            </div>
-
-            <button class="dir-picker-btn ${!fsSupported ? 'disabled' : ''}"
-                    id="pickDirBtn" ${!fsSupported ? 'disabled' : ''}>
-              <span class="dir-picker-icon">📁</span>
-              Seleccionar carpeta raíz y generar estructura
-            </button>
-          </div>
-
-          <div class="fs-preview">
-            <div class="section-title">Vista previa de estructura</div>
-            <div class="fs-tree" id="fsTree">
-              <span style="color:var(--text-3)">Elige un template y escribe el nombre del directorio.</span>
-            </div>
+        <div class="fs-preview">
+          <div class="section-title">Vista previa de estructura</div>
+          <div class="fs-tree" id="fsTree">
+            <span style="color:var(--text-3)">Elige un template y escribe el nombre del directorio.</span>
           </div>
         </div>
-      </div>`;
+      </div>
+    </div>`;
 
-    let currentTpl = 'rstudio';
-    const updateTplPreview = () => {
-      const tpl  = FS_TEMPLATES[currentTpl];
-      const tree = $('fsTree');
-      if (!tree) return;
-      if (currentTpl === 'custom') {
-        tree.innerHTML = '<span style="color:var(--text-3)">Define tus carpetas y archivos arriba.</span>';
-        return;
-      }
-      const name = ($('fsDirName')?.value.trim() || 'mi_proyecto').replace(/[^a-zA-Z0-9_\-]/g, '_');
-      tree.innerHTML = [
-        `<div class="success"><span class="dir">📁 ${name}/</span></div>`,
-        ...tpl.dirs.map(d  => `<div class="success">  <span class="dir">📁 ${d}/</span></div>`),
-        ...tpl.files.map(f => `<div class="success">  📄 ${f.name.replace('{safe}', name)}</div>`),
-      ].join('');
-    };
-    updateTplPreview();
-
-    mainContent.querySelectorAll('[data-tpl]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        currentTpl = btn.dataset.tpl;
-        mainContent.querySelectorAll('[data-tpl]').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        $('tplDescText').textContent = FS_TEMPLATES[currentTpl].desc;
-        $('customTplEditor').style.display = currentTpl === 'custom' ? 'block' : 'none';
-        updateTplPreview();
-      });
-    });
-
-    $('fsDirName')?.addEventListener('input', updateTplPreview);
-
-    if (fsSupported) {
-      $('pickDirBtn').addEventListener('click', () => runFSBridge(currentTpl));
-      $('fsProjectSelect').addEventListener('change', async () => {
-        const id = +$('fsProjectSelect').value;
-        if (!id) return;
-        const p = await db.projects.get(id);
-        if (p) {
-          $('fsDirName').value     = p.title.replace(/[^a-zA-Z0-9_\-]/g, '_').toLowerCase();
-          $('fsDescription').value = p.description || '';
-          $('fsAuthor').value      = p.responsible || '';
-          updateTplPreview();
-        }
-      });
+  let currentTpl = 'rstudio';
+  const updateTplPreview = () => {
+    const tpl  = FS_TEMPLATES[currentTpl];
+    const tree = $('fsTree');
+    if (!tree) return;
+    if (currentTpl === 'custom') {
+      tree.innerHTML = '<span style="color:var(--text-3)">Define tus carpetas y archivos arriba.</span>';
+      return;
     }
+    const name = ($('fsDirName')?.value.trim() || 'mi_proyecto').replace(/[^a-zA-Z0-9_\-]/g, '_');
+    tree.innerHTML = [
+      `<div class="success"><span class="dir">📁 ${name}/</span></div>`,
+      ...tpl.dirs.map(d  => `<div class="success">  <span class="dir">📁 ${d}/</span></div>`),
+      ...tpl.files.map(f => `<div class="success">  📄 ${f.name.replace('{safe}', name)}</div>`),
+    ].join('');
+  };
+  updateTplPreview();
+
+  mainContent.querySelectorAll('[data-tpl]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentTpl = btn.dataset.tpl;
+      mainContent.querySelectorAll('[data-tpl]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      $('tplDescText').textContent = FS_TEMPLATES[currentTpl].desc;
+      $('customTplEditor').style.display = currentTpl === 'custom' ? 'block' : 'none';
+      updateTplPreview();
+    });
+  });
+
+  $('fsDirName')?.addEventListener('input', updateTplPreview);
+
+  if (fsSupported) {
+    $('pickDirBtn').addEventListener('click', () => runFSBridge(currentTpl));
+    $('fsProjectSelect').addEventListener('change', async () => {
+      const id = +$('fsProjectSelect').value;
+      if (!id) return;
+      const p = await db.projects.get(id);
+      if (p) {
+        $('fsDirName').value     = p.title.replace(/[^a-zA-Z0-9_\-]/g, '_').toLowerCase();
+        $('fsDescription').value = p.description || '';
+        $('fsAuthor').value      = p.responsible || '';
+        updateTplPreview();
+      }
+    });
   }
 }
 
@@ -11695,11 +11693,29 @@ function _scoreMatch(lq, fields) {
 
 async function _searchPalette(q) {
   const lq = q.trim().toLowerCase();
-  let [projects, ideas, snippets] = await Promise.all([
-    db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray()
-  ]);
-  let refs  = typeof db.references  !== 'undefined' ? await db.references.toArray()  : [];
-  let meets = typeof db.meetings    !== 'undefined' ? await db.meetings.toArray()     : [];
+  let projects, ideas, snippets, refs, meets;
+
+  if (lq.length >= 2 && App._searchIdx.size > 0) {
+    // Índice disponible: obtener IDs relevantes primero, luego sólo esos registros
+    const hits = { project: new Set(), idea: new Set(), snippet: new Set(),
+                   ref: new Set(), meeting: new Set() };
+    App._searchIdx.forEach((entries, tok) => {
+      if (tok === lq || tok.startsWith(lq) || tok.includes(lq))
+        entries.forEach(e => { if (hits[e.type]) hits[e.type].add(e.id); });
+    });
+    [projects, ideas, snippets, refs, meets] = await Promise.all([
+      hits.project.size ? db.projects.where('id').anyOf([...hits.project]).toArray() : Promise.resolve([]),
+      hits.idea.size    ? db.ideas.where('id').anyOf([...hits.idea]).toArray()       : Promise.resolve([]),
+      hits.snippet.size ? db.snippets.where('id').anyOf([...hits.snippet]).toArray() : Promise.resolve([]),
+      hits.ref.size     ? db.references.where('id').anyOf([...hits.ref]).toArray()   : Promise.resolve([]),
+      hits.meeting.size ? db.meetings.where('id').anyOf([...hits.meeting]).toArray() : Promise.resolve([]),
+    ]);
+  } else {
+    [projects, ideas, snippets, refs, meets] = await Promise.all([
+      db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray(),
+      db.references.toArray(), db.meetings.toArray(),
+    ]);
+  }
 
   const groups = [];
 
@@ -11753,21 +11769,6 @@ async function _searchPalette(q) {
       if (ctxItems.length > 1)
         groups.push({ label: `◉ Contexto: "${ctxProj.title.slice(0, 32)}"`, items: ctxItems });
     }
-  }
-
-  // -- Pre-filtro via índice en memoria (queries ≥ 2 chars) --
-  if (lq.length >= 2 && App._searchIdx.size > 0) {
-    const hits = { project: new Set(), idea: new Set(), snippet: new Set(),
-                   ref: new Set(), meeting: new Set() };
-    App._searchIdx.forEach((entries, tok) => {
-      if (tok === lq || tok.startsWith(lq) || tok.includes(lq))
-        entries.forEach(e => { if (hits[e.type]) hits[e.type].add(e.id); });
-    });
-    projects = projects.filter(p => hits.project.has(p.id));
-    ideas    = ideas.filter(i    => hits.idea.has(i.id));
-    snippets = snippets.filter(s => hits.snippet.has(s.id));
-    refs     = refs.filter(r     => hits.ref.has(r.id));
-    meets    = meets.filter(m    => hits.meeting.has(m.id));
   }
 
   // -- Cuando hay query: búsqueda unificada rankeada ------
