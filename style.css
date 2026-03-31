@@ -3755,8 +3755,9 @@ body.sidebar-collapsed .sidebar-collapse-btn { margin-top: 6px; }
   body:not(.inspector-closed) .main-content {
     padding-bottom: 57vh; /* deja espacio para el drawer */
   }
+}
 
-  /* Sidebar colapsada por defecto en móvil */
+/* Sidebar colapsada por defecto en móvil */
   @media (max-width: 600px) {
     body,
     body.inspector-closed {
@@ -3776,4 +3777,3 @@ body.sidebar-collapsed .sidebar-collapse-btn { margin-top: 6px; }
       transform: translateX(0);
     }
   }
-}

@@ -2863,11 +2863,15 @@ async function renderSnippets() {
 
   // Active collection filter
   const activeColId = App.filterCollection ?? 'all';
-  let snippets = allSnippets;
-  if (App.filterLang !== 'all') snippets = snippets.filter(s => s.language === App.filterLang);
-  if (activeColId !== 'all')    snippets = snippets.filter(s => s.collectionId === +activeColId);
-  if (activeColId === 'none')   snippets = allSnippets.filter(s => !s.collectionId &&
-                                  (App.filterLang === 'all' || s.language === App.filterLang));
+  let snippets;
+  if (activeColId === 'none') {
+    snippets = allSnippets.filter(s => !s.collectionId &&
+      (App.filterLang === 'all' || s.language === App.filterLang));
+  } else {
+    snippets = allSnippets;
+    if (App.filterLang !== 'all') snippets = snippets.filter(s => s.language === App.filterLang);
+    if (activeColId !== 'all')    snippets = snippets.filter(s => s.collectionId === +activeColId);
+  }
 
   mainContent.innerHTML = `
     <div class="view">
@@ -8002,6 +8006,7 @@ function _attachInplaceEditors(onSave) {
       const field    = el.dataset.inplace;
       const type     = el.dataset.inplaceType || 'text';
       const oldVal   = el.dataset.inplaceValue ?? el.textContent.trim();
+      let _cancelled = false;
 
       let input;
       if (type === 'select') {
@@ -8041,6 +8046,7 @@ function _attachInplaceEditors(onSave) {
       }
 
       const commit = async () => {
+        if (_cancelled) return;
         const newVal  = input.value.trim();
         const sameVal = type === 'id-select'
           ? String(newVal) === String(oldVal)
@@ -8052,7 +8058,7 @@ function _attachInplaceEditors(onSave) {
       input.addEventListener('blur',    commit);
       input.addEventListener('keydown', e => {
         if (e.key === 'Enter')  { e.preventDefault(); commit(); }
-        if (e.key === 'Escape') { el.style.display = ''; input.remove(); }
+        if (e.key === 'Escape') { _cancelled = true; el.style.display = ''; input.remove(); }
       });
 
       el.style.display = 'none';
@@ -9625,7 +9631,6 @@ async function exportProjectAsMarkdown(projectId) {
       md += `### ${formatDate(m.date)} — ${m.title}\n`;
       if (m.participants) md += `_Participantes: ${m.participants}_\n\n`;
       if (m.agreements)   md += `${m.agreements}\n\n`;
-      const pendingAIs = (m.actionItems||[]).filter(a => !a.done);
       if ((m.actionItems||[]).length) {
         md += `**Próximos pasos:**\n`;
         m.actionItems.forEach(a => { md += `- [${a.done?'x':' '}] ${a.text}\n`; });
