@@ -384,7 +384,7 @@ body.theme-transitioning * {
   box-shadow: var(--shadow-sm);
 }
 .card.clickable { cursor: pointer; }
-.card.clickable:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow-md); }
+.card.clickable:hover { border-color: var(--accent); box-shadow: 0 0 0 0 var(--accent), var(--shadow-md); }
 
 /* ── Badges / tags ────────────────────────────────────────── */
 .badge {

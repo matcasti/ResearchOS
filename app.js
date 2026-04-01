@@ -147,7 +147,7 @@ function showToastWithUndo(message, type = 'info') {
   });
 }
 
-// -- INSERTAR: Deadline Reminder Module -----------------------
+// -- Deadline Reminder Module -----------------------
 const DeadlineReminder = {
   _interval: null,
 
