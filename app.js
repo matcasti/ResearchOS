@@ -705,7 +705,7 @@ async function renderDashboard() {
               const counts = {};
               SUB_STATUSES.forEach(s => { counts[s.key] = 0; });
               papers.forEach(p => {
-                const k = p.submissionStatus || 'preparacion';
+                const k = p.submissionStatus || _defaultSubKey();
                 if (counts[k] !== undefined) counts[k]++;
               });
               const max = Math.max(...Object.values(counts), 1);
@@ -4184,6 +4184,9 @@ let SUB_STATUSES    = [...DEFAULT_SUB_STAGES];
 let SUB_COLOR_MAP   = Object.fromEntries(DEFAULT_SUB_STAGES.map(s => [s.key, s.color]));
 let SUB_SHORT_LABEL = Object.fromEntries(DEFAULT_SUB_STAGES.map(s => [s.key, s.shortLabel]));
 
+/** Devuelve la clave de la primera etapa activa (p.ej. 'preparacion'), respetando customizaciones. */
+const _defaultSubKey = () => SUB_STATUSES[0]?.key ?? 'preparacion';
+
 async function _getSubStages() {
   const s = await db.settings.get('ros-sub-stages');
   if (s?.value) try { return JSON.parse(s.value); } catch {}
@@ -4221,10 +4224,11 @@ async function _renderSubmissionPipeline(container) {
   // Agrupar por estado de submission
   const buckets = {};
   SUB_STATUSES.forEach(s => { buckets[s.key] = []; });
+  const _defKey = _defaultSubKey();
   paperProjects.forEach(p => {
-    const key = p.submissionStatus || 'preparacion';
+    const key = p.submissionStatus || _defKey;
     if (buckets[key]) buckets[key].push(p);
-    else              buckets['preparacion'].push(p);
+    else              buckets[_defKey]?.push(p);
   });
 
   const deadlineChip = p => {
@@ -4584,6 +4588,17 @@ async function showManageSubStagesModal() {
     });
 
     await _saveSubStages(stages);   // actualiza SUB_STATUSES, SUB_COLOR_MAP, SUB_SHORT_LABEL
+
+    // Limpiar claves huérfanas del mapping Submission→Kanban
+    const _curMap    = await _getSubColMapping();
+    const _validKeys = new Set(stages.map(s => s.key));
+    const _cleanMap  = Object.fromEntries(
+      Object.entries(_curMap).filter(([k]) => _validKeys.has(k))
+    );
+    if (Object.keys(_curMap).length !== Object.keys(_cleanMap).length) {
+      await _saveSubColMapping(_cleanMap);
+    }
+
     closeModal();
     showToast('Etapas guardadas ✓ — propagadas a Kanban, Hub y Submissions', 'success');
     renderView(App.view);           // refrescar la vista actual
@@ -4601,7 +4616,7 @@ async function renderSubmissions() {
   const counts = {};
   SUB_STATUSES.forEach(s => { counts[s.key] = 0; });
   paperProjects.forEach(p => {
-    const st = p.submissionStatus || 'preparacion';
+    const st = p.submissionStatus || _defaultSubKey();
     if (counts[st] !== undefined) counts[st]++;
   });
 
@@ -4642,7 +4657,7 @@ async function renderSubmissions() {
         ${mode === 'pipeline' ? '' : paperProjects.length ? `
           <div class="sub-list">
             ${paperProjects.map(p => {
-              const status = p.submissionStatus || 'preparacion';
+              const status = p.submissionStatus || _defaultSubKey();
               const col    = colMap[p.columnId];
               const today  = new Date(); today.setHours(0,0,0,0);
               const daysToDeadline = p.deadline
@@ -4754,7 +4769,7 @@ async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
           <label class="form-label">Estado</label>
           <select class="form-select" id="asub-status">
             ${SUB_STATUSES.map(s =>
-              `<option value="${s.key}" ${(p.submissionStatus||'preparacion')===s.key?'selected':''}>${s.label}</option>`
+              `<option value="${s.key}" ${(p.submissionStatus || _defaultSubKey())===s.key?'selected':''}>${s.label}</option>`
             ).join('')}
           </select>
         </div>
@@ -5868,7 +5883,7 @@ function _paperPipelineHTML(p, cols) {
   if (submissionStatus) {
     const idx = STAGES.findIndex(st => st.key !== 'draft' && st.key !== 'internal' && st.match(submissionStatus));
     if (idx >= 0) activeIdx = idx;
-    else if (submissionStatus === 'preparacion') activeIdx = 1;
+    else if (submissionStatus === _defaultSubKey()) activeIdx = 1;
   } else if (curCol) {
     const colTitle = (curCol.title || '').toLowerCase();
     const idx = STAGES.findIndex(st => st.colKeywords.some(kw => colTitle.includes(kw)));
@@ -6169,7 +6184,7 @@ async function renderProjectHub() {
       ${p.type === 'Paper' ? sectionToggle('subs', '📤 Submission', 0,
         `<div style="padding:10px 14px;display:flex;flex-direction:column;gap:6px">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            ${subStatusBadge(p.submissionStatus || 'preparacion')}
+            ${subStatusBadge(p.submissionStatus || _defaultSubKey())}
             ${p.targetVenue ? `<span style="font-size:.75rem;color:var(--text-2)">→ ${esc(p.targetVenue)}</span>` : ''}
           </div>
           ${p.deadline    ? `<div style="font-size:.74rem;font-family:var(--font-mono);color:var(--text-3)">⏱ Deadline: ${formatDate(p.deadline)}</div>` : ''}
@@ -6400,22 +6415,21 @@ async function renderFocusFeed() {
 
   const items = [];
 
-  // 0. Papers en pipeline activo — derivado del proyecto directamente
-  const FOCUS_SUB_SCORE = { enviado: 72, en_revision: 80, revision_solicitada: 88 };
-  const FOCUS_SUB_ICON  = { enviado: '📤', en_revision: '⏳', revision_solicitada: '✏' };
-  const FOCUS_SUB_LABEL = {
-    enviado:             'Enviado — esperando respuesta editorial',
-    en_revision:         'En revisión — seguimiento activo',
-    revision_solicitada: '¡Revisión solicitada — requiere acción inmediata!',
-  };
+  // 0. Papers en pipeline activo — derivado de SUB_STATUSES (respeta etapas customizadas)
+  const _defSubKey = _defaultSubKey();
+  const _totalSub  = SUB_STATUSES.length;
   projects
-    .filter(p => p.type === 'Paper' &&
-      ['enviado','en_revision','revision_solicitada'].includes(p.submissionStatus))
+    .filter(p => p.type === 'Paper' && p.submissionStatus && p.submissionStatus !== _defSubKey)
     .forEach(p => {
+      const stageInfo = SUB_STATUSES.find(s => s.key === p.submissionStatus);
+      if (!stageInfo) return;
+      const stageIdx  = SUB_STATUSES.findIndex(s => s.key === p.submissionStatus);
+      // Score: progresivo según posición en el pipeline (60–90)
+      const score = Math.round(60 + (stageIdx / Math.max(_totalSub - 1, 1)) * 30);
       items.push({
-        score: FOCUS_SUB_SCORE[p.submissionStatus] || 72,
-        icon:  FOCUS_SUB_ICON[p.submissionStatus]  || '📤',
-        label: FOCUS_SUB_LABEL[p.submissionStatus] || 'En pipeline activo',
+        score,
+        icon:  stageInfo.icon  || '📤',
+        label: `Pipeline: ${stageInfo.label}`,
         text:  `${p.title}${p.targetVenue ? ` → ${p.targetVenue}` : ''}`,
         type:  'project',
         ref:   p,
@@ -9113,7 +9127,7 @@ async function inspectProject(id) {
 
   // SUBMISSION (Paper only)
   const subHTML = p.type === 'Paper' ? (() => {
-    const st        = p.submissionStatus || 'preparacion';
+    const st        = p.submissionStatus || _defaultSubKey();
     const curIdx    = SUB_STATUSES.findIndex(s => s.key === st);
     const nextStage = SUB_STATUSES[curIdx + 1] || null;
     const prevStage = SUB_STATUSES[curIdx - 1] || null;
@@ -9760,9 +9774,8 @@ function _epSubFieldsHTML(p) {
           <label class="form-label">Estado de Submission</label>
           <select class="form-select" id="ep-sub-status">
             ${SUB_STATUSES.map(s =>
-              `<option value="${s.key}" ${(p.submissionStatus||'preparacion')===s.key?'selected':''}>
-                ${s.label}
-              </option>`).join('')}
+              `<option value="${s.key}" ${(p.submissionStatus || _defaultSubKey())===s.key?'selected':''}>${s.label}</option>`
+            ).join('')}
           </select>
         </div>
         <div class="form-group" style="grid-column:1/-1">
