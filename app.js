@@ -219,7 +219,6 @@ async function dbWrite(fn) {
     localStorage.setItem('ros-last-active', String(Date.now()));
     GoogleSync.scheduleAutoSave().catch(() => {});
     _scheduleSearchIndex();
-    _renderResearchStatus().catch(() => {});
     return r;
   } catch(e) {
     SaveIndicator.error();
@@ -2885,7 +2884,16 @@ async function renderIdeas() {
   });
 
   mainContent.querySelectorAll('.idea-item').forEach(el => {
-    el.addEventListener('click', () => inspectIdea(+el.dataset.ideaId));
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.idea-linked[data-inspect-project]')) return;
+      inspectIdea(+el.dataset.ideaId);
+    });
+  });
+  mainContent.querySelectorAll('.idea-linked[data-inspect-project]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      inspectProject(+el.dataset.inspectProject);
+    });
   });
 
   mainContent.querySelectorAll('.idea-delete-btn').forEach(btn => {
@@ -4203,9 +4211,8 @@ function subStatusBadge(status) {
 //  RESEARCH PIPELINE — vista Kanban por etapas de publicación
 // ==============================================================
 async function _renderSubmissionPipeline(container) {
-  const [paperProjects, cols, areas] = await Promise.all([
+  const [paperProjects, areas] = await Promise.all([
     db.projects.filter(p => p.type === 'Paper' && !p.archived).toArray(),
-    db.kanbanColumns.toArray(),
     _getAreas(),
   ]);
   const areaMap  = Object.fromEntries(areas.map(a => [a.id, a]));
@@ -4779,6 +4786,7 @@ async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
     $('asubSave').addEventListener('click', async () => {
       const newStatus = $('asub-status').value;
       const now = new Date().toISOString();
+      await snapshotProject(preProjectId);
       await dbWrite(() => db.projects.update(preProjectId, {
         submissionStatus: newStatus,
         targetVenue:      $('asub-venue').value.trim(),
@@ -5930,6 +5938,7 @@ async function _updatePipelineStage(projectId, newStatus) {
   upd.submissionStatusHistory = statusHistory;
 
   await dbWrite(() => db.projects.update(projectId, upd));
+  await _syncPaperColumn(projectId, newStatus);
 
   const label = newStatus
     ? (SUB_STATUSES.find(s => s.key === newStatus)?.label || newStatus)
@@ -6896,6 +6905,7 @@ async function renderIdeaTriage() {
       return;
     }
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (modalOverlay.classList.contains('visible')) return;
     if (e.key === 'ArrowRight' || e.key === 'l' || e.key === 'L') next(false);
     else if (e.key === 'a' || e.key === 'A') $('triageBtnArchive')?.click();
     else if (e.key === 'p' || e.key === 'P') $('triageBtnProject')?.click();
@@ -7393,7 +7403,16 @@ async function renderStarred() {
     el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject));
   });
   mainContent.querySelectorAll('.idea-item').forEach(el => {
-    el.addEventListener('click', () => inspectIdea(+el.dataset.ideaId));
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.idea-linked[data-inspect-project]')) return;
+      inspectIdea(+el.dataset.ideaId);
+    });
+  });
+  mainContent.querySelectorAll('.idea-linked[data-inspect-project]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      inspectProject(+el.dataset.inspectProject);
+    });
   });
   mainContent.querySelectorAll('pre code').forEach(b => hljs.highlightElement(b));
   mainContent.querySelectorAll('.copy-btn-float').forEach(btn => {
@@ -8531,6 +8550,7 @@ async function showEditIdeaModal(idea) {
     const title = $('ei-title').value.trim();
     if (!title) { showToast('El título es requerido', 'error'); return; }
     const _eIds = _getProjectPickerIds('eiProjectPicker');
+    await snapshotIdea(idea.id);
     await dbWrite(() => db.ideas.update(idea.id, {
       title,
       content:    $('ei-content').value.trim(),
@@ -8715,8 +8735,10 @@ function _attachInplaceEditors(onSave) {
         input.value = oldVal;
       }
 
+      let _committed = false;
       const commit = async () => {
-        if (_cancelled) return;
+        if (_cancelled || _committed) return;
+        _committed = true;
         const newVal  = input.value.trim();
         const sameVal = type === 'id-select'
           ? String(newVal) === String(oldVal)
@@ -10096,17 +10118,18 @@ function showToast(message, type = 'info') {
 //  BADGES & COUNTERS
 // ==============================================================
 async function updateBadges() {
-  const [unread, archived, starred] = await Promise.all([
+  const [unread, allProjects] = await Promise.all([
     db.ideas.where('status').equals('unread').count(),
-    db.projects.filter(p => !!p.archived).count(),
-    db.projects.filter(p => !!p.starred && !p.archived).count(),
+    db.projects.toArray(),
   ]);
-  const badge = $('ideasBadge');
-  if (badge) { badge.textContent = unread; badge.classList.toggle('visible', unread > 0); }
-  const subActive = await db.projects.filter(p =>
+  const archived  = allProjects.filter(p => !!p.archived).length;
+  const starred   = allProjects.filter(p => !!p.starred && !p.archived).length;
+  const subActive = allProjects.filter(p =>
     p.type === 'Paper' && !p.archived &&
     ['preparacion','enviado','en_revision','revision_solicitada'].includes(p.submissionStatus)
-  ).count();
+  ).length;
+  const badge = $('ideasBadge');
+  if (badge) { badge.textContent = unread; badge.classList.toggle('visible', unread > 0); }
   const subBadge = $('submissionsBadge');
   if (subBadge) {
     subBadge.textContent = subActive;
@@ -10418,7 +10441,7 @@ async function exportProjectAsMarkdown(projectId) {
     if (p.submissionNotes)  md += `\n${p.submissionNotes}\n`;
     if ((p.submissionRounds || []).length) {
       md += `\n**Rondas:**\n`;
-      p.submissionRounds.forEach(r => { md += `- ${r.date}: ${r.status} — ${r.notes || ''}\n`; });
+      p.submissionRounds.forEach(r => { md += `- ${r.submittedAt || '?'}: ${r.decision || '?'} — ${r.notes || ''}\n`; });
     }
     md += '\n';
   }

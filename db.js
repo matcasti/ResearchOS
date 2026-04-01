@@ -88,23 +88,22 @@ async function getProjectById(id) {
 }
 
 async function getRelatedIdeas(projectId) {
-  // Busca por projectId (legacy) O por projectIds (multi-proyecto)
-  const [all, multi] = await Promise.all([
-    db.ideas.where('projectId').equals(projectId).toArray(),
-    db.ideas.filter(i =>
-      Array.isArray(i.projectIds) && i.projectIds.includes(projectId) && i.projectId !== projectId
-    ).toArray(),
-  ]);
+  const all = await db.ideas.where('projectId').equals(projectId).toArray();
+  const allIds = new Set(all.map(i => i.id));
+  const multi = await db.ideas.filter(i =>
+    !allIds.has(i.id) &&
+    Array.isArray(i.projectIds) && i.projectIds.includes(projectId)
+  ).toArray();
   return [...all, ...multi];
 }
 
 async function getRelatedSnippets(projectId) {
-  const [all, multi] = await Promise.all([
-    db.snippets.where('projectId').equals(projectId).toArray(),
-    db.snippets.filter(s =>
-      Array.isArray(s.projectIds) && s.projectIds.includes(projectId) && s.projectId !== projectId
-    ).toArray(),
-  ]);
+  const all = await db.snippets.where('projectId').equals(projectId).toArray();
+  const allIds = new Set(all.map(s => s.id));
+  const multi = await db.snippets.filter(s =>
+    !allIds.has(s.id) &&
+    Array.isArray(s.projectIds) && s.projectIds.includes(projectId)
+  ).toArray();
   return [...all, ...multi];
 }
 
