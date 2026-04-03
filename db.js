@@ -83,10 +83,6 @@ async function getKanbanData() {
   }));
 }
 
-async function getProjectById(id) {
-  return db.projects.get(id);
-}
-
 async function getRelatedIdeas(projectId) {
   const all = await db.ideas.where('projectId').equals(projectId).toArray();
   const allIds = new Set(all.map(i => i.id));

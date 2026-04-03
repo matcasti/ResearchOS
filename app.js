@@ -19,7 +19,6 @@ const App = {
   bulkSelected:     new Set(),
   bulkMode:         false,
   projectHubId:     null,
-  savedViews:       null,
   triageIdx:        0,
   triageQueue:      [],
   _latexOpen:       false,
@@ -280,6 +279,11 @@ function navigate(view, addToHistory = true) {
   if (App._triageKeyHandler) {
     document.removeEventListener('keydown', App._triageKeyHandler);
     App._triageKeyHandler = null;
+  }
+  // Limpiar handler del menú "+ Agregar" del hub si existe
+  if (App._hubMenuClickHandler) {
+    document.removeEventListener('click', App._hubMenuClickHandler);
+    App._hubMenuClickHandler = null;
   }
   // Persiste el inspector si el panel está abierto al momento de navegar
   if (!document.body.classList.contains('inspector-closed') &&
@@ -1937,9 +1941,9 @@ async function renderProjects() {
   if (f.column           !== 'all') activePills.push({ key:'column',      label:`Columna: ${colMap[+f.column]?.title || f.column}` });
   if (App.filterResponsible !== 'all') activePills.push({ key:'responsible', label:`Responsable: ${App.filterResponsible}` });
 
+  const _areasCache = await _getAreas();   // una sola lectura, reutilizada abajo
   if (App.filterArea !== 'all') {
-    const _areas = await _getAreas();
-    const _area  = _areas.find(a => a.id === +App.filterArea);
+    const _area = _areasCache.find(a => a.id === +App.filterArea);
     activePills.push({ key:'area', label:`Área: ${_area?.name || App.filterArea}` });
   }
 
@@ -2127,10 +2131,11 @@ async function renderProjects() {
     }
 
     // -- Datos auxiliares: unread, áreas, hijos (rollup) ---
-    const [unreadIdeas, areas] = await Promise.all([
+    const [unreadIdeas] = await Promise.all([
       db.ideas.where('status').equals('unread').toArray(),
-      _getAreas(),
     ]);
+    const areas = _areasCache;   // reutilizar el fetch ya realizado
+
     // Estado de submission derivado directamente del proyecto (Papers)
     const activeSubForTable = {};
     projects.forEach(p => {
@@ -9882,10 +9887,9 @@ async function showEditProjectModal(p) {
   setTimeout(() => {
     const respInput   = $('ep-responsible');
     const coauthInput = $('ep-coauthors');
-    _attachCollaboratorAutocomplete(respInput);
-    _attachCollaboratorAutocomplete(coauthInput, { multi: true });
 
-    // restaurar IDs guardados previamente
+    // Fijar IDs canónicos antes de que _attachCollaboratorAutocomplete
+    // intente restaurar _idMap desde los data-attributes
     if (p.responsibleId)
       respInput.dataset.selectedCollabId = String(p.responsibleId);
     if ((p.coauthorIds || []).length && (p.coauthors || []).length) {
@@ -9895,6 +9899,9 @@ async function showEditProjectModal(p) {
       if (pairs.length)
         coauthInput.dataset.collabIdMap = JSON.stringify(pairs);
     }
+
+    _attachCollaboratorAutocomplete(respInput);
+    _attachCollaboratorAutocomplete(coauthInput, { multi: true });
   }, 80);
 
   $('epCancel').addEventListener('click', closeModal);
