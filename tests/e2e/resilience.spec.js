@@ -1,0 +1,82 @@
+// Dependencias externas, arranque en frío y responsive.
+const { test, expect } = require('@playwright/test');
+const { openApp, gotoView } = require('./helpers');
+
+test.describe('Dependencias externas', () => {
+  test('sin Google Identity Services ni Google Fonts la app funciona igual', async ({ page }) => {
+    const { errors } = await openApp(page); // en modo cache los hosts de Google se anulan
+    await gotoView(page, 'settings');
+    await expect(page.locator('#googleSyncSection')).toBeVisible();
+    await expect(page.locator('#saveIndicatorText')).toHaveText('Local Only');
+    expect(errors).toEqual([]);
+  });
+
+  test('el estado de sincronización se muestra como "Local Only" por defecto', async ({ page }) => {
+    await openApp(page);
+    await expect(page.locator('#saveIndicatorText')).toHaveText('Local Only');
+  });
+
+  test('con la CDN inaccesible la app explica el problema en vez de quedarse en "Iniciando…"', async ({ page }) => {
+    await page.route(/cdnjs\.cloudflare\.com/, r => r.abort());
+    await page.goto('/index.html');
+    await expect(page.locator('.boot-error')).toContainText('no pudo iniciar');
+    await expect(page.locator('.boot-error')).toContainText('Dexie');
+    await expect(page.locator('#mainContent')).not.toContainText('Iniciando ResearchOS');
+  });
+
+  test('con la CDN inaccesible db.js falla de forma controlada', async ({ page }) => {
+    const errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    await page.route(/cdnjs\.cloudflare\.com/, r => r.abort());
+    await page.goto('/index.html');
+    await expect(page.locator('.boot-error')).toBeVisible();
+    expect(errors.join('\n')).toMatch(/Dexie is not defined/);   // db.js falla, pero la app lo gestiona
+  });
+});
+
+test.describe('Arranque en frío', () => {
+  test('el HTML se abre por file:// (uso sin servidor, como promete el README)', async ({ page }) => {
+    const errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    await page.goto('file://' + require('path').resolve(__dirname, '../../index.html'));
+    await expect(page.locator('#mainContent')).not.toContainText('Iniciando ResearchOS', { timeout: 15000 });
+    expect(errors).toEqual([]);
+  });
+
+  test('cargar datos de ejemplo por file:// informa el error (fetch bloqueado)', async ({ page }) => {
+    await page.goto('file://' + require('path').resolve(__dirname, '../../index.html'));
+    await expect(page.locator('#welcomeLoadDemo')).toBeVisible({ timeout: 15000 });
+    await page.locator('#welcomeLoadDemo').click();
+    await expect(page.locator('.toast.error')).toContainText('No se pudo cargar el archivo de ejemplo');
+  });
+
+  test('tiempo hasta primera vista con 500 proyectos < 3 s', async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(async () => {
+      const col = (await db.kanbanColumns.toArray())[0];
+      const now = new Date().toISOString();
+      await db.projects.bulkAdd(Array.from({ length: 500 }, (_, i) => ({ title: `Proyecto ${i}`, type: 'Paper', columnId: col.id, priority: 'Media',
+        status: 'active', archived: false, starred: false, tags: ['t' + (i % 7)], coauthors: [], createdAt: now, updatedAt: now })));
+    });
+    const t0 = Date.now();
+    await gotoView(page, 'kanban');
+    await expect(page.locator('.kanban-card').first()).toBeVisible();
+    await gotoView(page, 'projects');
+    await expect(page.locator('#projectsContainer')).toContainText('Proyecto');
+    expect(Date.now() - t0).toBeLessThan(3000);
+  });
+});
+
+test.describe('Responsive', () => {
+  test.use({ viewport: { width: 375, height: 812 } });
+
+  for (const view of ['dashboard', 'projects', 'ideas', 'snippets', 'meetings', 'references', 'collaborators', 'settings']) {
+    test(`móvil: "${view}" no genera scroll horizontal de página`, async ({ page }) => {
+      await openApp(page);
+      await page.evaluate(v => navigate(v), view);
+      await page.waitForTimeout(400);
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      expect(overflow, `scrollWidth - innerWidth en ${view}`).toBeLessThanOrEqual(1);
+    });
+  }
+});

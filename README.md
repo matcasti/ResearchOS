@@ -2,7 +2,7 @@
 
 ResearchOS no es simplemente una herramienta de organización; es una infraestructura digital de vanguardia diseñada para la gestión integral de flujos de trabajo científicos. Concebida bajo el estricto paradigma local-first, esta Single-Page Application (SPA) de alto rendimiento permite a investigadores, académicos y desarrolladores de datos centralizar su producción intelectual en un ecosistema donde la soberanía del dato, la velocidad de respuesta y la resiliencia operativa no son opcionales, sino pilares fundacionales de la práctica científica moderna.
 
-En un panorama tecnológico dominado por el "Software como Servicio" (SaaS) que fragmenta la información en silos de terceros y compromete la privacidad, ResearchOS devuelve el control absoluto al investigador. La aplicación opera sin un backend centralizado tradicional, utilizando el motor IndexedDB del navegador para cifrar y almacenar de manera persistente notas de laboratorio, fragmentos de código, bibliografías y planificaciones de proyectos complejos, garantizando que su trabajo sea accesible incluso en las condiciones más extremas de conectividad.
+En un panorama tecnológico dominado por el "Software como Servicio" (SaaS) que fragmenta la información en silos de terceros y compromete la privacidad, ResearchOS devuelve el control absoluto al investigador. La aplicación opera sin un backend centralizado tradicional, utilizando el motor IndexedDB del navegador para almacenar de manera persistente (sin cifrado propio: la protección en reposo depende del cifrado de disco de tu sistema) notas de laboratorio, fragmentos de código, bibliografías y planificaciones de proyectos complejos, garantizando que su trabajo sea accesible incluso en las condiciones más extremas de conectividad.
 
 ## 🤚 Filosofía Local-First: Privacidad, Soberanía y Reproducibilidad
 
@@ -16,7 +16,7 @@ La decisión de implementar una arquitectura local-first no es solo una elecció
 
 <!-- -->
 
--   Resiliencia, Longevidad y "Future-Proofing": El software científico debe ser tan duradero como la investigación que soporta. ResearchOS es inmune a la obsolescencia de APIs externas, cambios en los términos de servicio de grandes corporaciones o la desaparición de proveedores de nube. Si conservas este archivo HTML y tienes acceso a un navegador, tu base de conocimientos permanece funcional y accesible décadas después, asegurando que su legado intelectual no dependa de una suscripción activa.
+-   Resiliencia, Longevidad y "Future-Proofing": El software científico debe ser tan duradero como la investigación que soporta. ResearchOS es inmune a la obsolescencia de APIs externas, cambios en los términos de servicio de grandes corporaciones o la desaparición de proveedores de nube. Si conservas estos archivos estáticos y tienes acceso a un navegador, tu base de conocimientos permanece funcional y accesible décadas después (las librerías de terceros se cargan desde cdnjs con comprobación de integridad SRI y se guardan en caché para uso sin conexión; ver abajo), asegurando que su legado intelectual no dependa de una suscripción activa.
 
 <!-- -->
 
@@ -97,12 +97,26 @@ Sirve los archivos: Debido a las estrictas políticas de seguridad de los navega
 
 Inicia tu Investigación: Abre tu navegador favorito y accede a <http://localhost:8000>. Experimenta inmediatamente el poder de una gestión científica local, privada y ultrarrápida.
 
+### 📴 Uso sin conexión
+
+Tras la **primera visita con conexión** (servida por `http://localhost` o `https://`), un *service worker* ([sw.js](sw.js)) guarda la app y sus librerías: las siguientes veces arranca sin Internet. Los archivos propios usan «red primero» (siempre ves tu última versión). Si abres `index.html` directamente (`file://`) la app funciona, pero necesita conexión la primera vez para descargar las librerías y no cachea nada. Si faltan librerías críticas, la app lo explica en pantalla en lugar de quedarse en blanco.
+
+### 🧪 Pruebas end-to-end
+
+```
+npm install
+npx playwright install chromium
+npm run test:e2e
+```
+
+La suite ([tests/e2e](tests/e2e)) usa Playwright, levanta su propio servidor estático y no necesita compilar nada. Las librerías de CDN se cachean en `tests/e2e/.cdn-cache` para que las pruebas sean rápidas y deterministas.
+
 ## Advertencia Crítica sobre la Gestión de Datos
 
 Al ser una aplicación Local-First, la responsabilidad de la seguridad física de la información recae enteramente en el usuario. Los datos residen exclusivamente en el almacenamiento persistente de su perfil de navegador.
 
 -   **Cuidado con la Limpieza Automática**: Las herramientas de "limpieza profunda" de sistema o extensiones que borran cookies y caché pueden eliminar la base de datos de IndexedDB si no se configuran excepciones para el dominio donde corre ResearchOS.
--   **Backups Periódicos Obligatorios**: Utilice la función integrada de Exportar JSON en el panel de configuración para realizar copias de seguridad de toda su base de conocimientos. Guarde estos archivos en almacenamiento físico externo o nubes privadas cifradas.
+-   **Backups Periódicos Obligatorios**: Utilice la función integrada de Exportar JSON en el panel de configuración para realizar copias de seguridad de toda su base de conocimientos. La app te avisa si llevas más de 14 días sin exportar, descarga una copia automática antes de «Reemplazar todo» o «Borrar todos los datos», y pide al navegador almacenamiento persistente para evitar que lo evacúe. Guarde estos archivos en almacenamiento físico externo o nubes privadas cifradas.
 -   **Seguridad de Acceso Físico**: Si utiliza computadoras compartidas, recuerde que cualquier persona con acceso a su sesión de usuario en el navegador podrá visualizar su base de datos local. Recomendamos usar perfiles de navegador protegidos por contraseña.
 
 ## Una herramienta para la mente libre

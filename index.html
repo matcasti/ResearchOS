@@ -3,16 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="ResearchOS — suite local-first para gestionar proyectos, ideas, snippets y referencias científicas. Tus datos nunca salen del navegador.">
+  <meta name="theme-color" content="#050810">
   <title>ResearchOS — Scientific Workflow Suite</title>
 
   <!-- Syntax highlighting (dark theme) -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css" integrity="sha384-PiLidnnRuzFgp4qiN8oGNmktrV8ETL+6a8heAxljUX4A+3XWlocwaMn9duBUepfK" crossorigin="anonymous">
   <!-- marked.js para render Markdown -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js" integrity="sha384-odPBjvtXVM/5hOYIr3A1dB+flh0c3wAT3bSesIOqEGmyUA4JoKf/YTWy0XKOYAY7" crossorigin="anonymous"></script>
   <!-- KaTeX para ecuaciones LaTeX -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
-  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
-  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js" integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
   <!-- Google Identity Services — Drive Sync -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <!-- App styles -->
@@ -20,8 +22,12 @@
 </head>
 <body class="inspector-closed">
 
+  <!-- Menú móvil (solo visible en pantallas ≤ 600 px) -->
+  <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Abrir menú de navegación" aria-expanded="false" aria-controls="sidebar">☰</button>
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
   <!-- ── SIDEBAR ─────────────────────────────────────────── -->
-  <aside class="sidebar" id="sidebar">
+  <aside class="sidebar" id="sidebar" aria-label="Navegación principal">
     <div class="sidebar-header" style="display:flex;align-items:center;justify-content:space-between">
       <div class="logo">
         <span class="logo-icon">⬡</span>
@@ -30,12 +36,12 @@
           <span class="logo-version">v1.0 · local-first</span>
         </div>
       </div>
-      <button class="sidebar-collapse-btn" id="sidebarCollapseBtn" title="Contraer sidebar">‹</button>
+      <button class="sidebar-collapse-btn" id="sidebarCollapseBtn" title="Contraer sidebar" aria-label="Contraer o expandir el menú lateral">‹</button>
     </div>
 
     <div id="researchStatus"></div>
 
-    <nav class="sidebar-nav">
+    <nav class="sidebar-nav" aria-label="Vistas">
       <div class="nav-section-label">Workspace</div>
       <a class="nav-item active" data-view="dashboard" data-tooltip="Dashboard">
         <span class="nav-icon">◈</span><span>Dashboard</span>
@@ -115,7 +121,7 @@
         <button class="nav-hist-btn" id="navBack"    title="Atrás (Alt+←)"    disabled>←</button>
         <button class="nav-hist-btn" id="navForward" title="Adelante (Alt+→)"  disabled>→</button>
       </div>
-      <button class="theme-toggle" id="themeToggle" title="Toggle theme">◑</button>
+      <button class="theme-toggle" id="themeToggle" title="Cambiar tema claro/oscuro" aria-label="Cambiar tema claro/oscuro">◑</button>
       <div class="accent-picker" id="accentPicker">
         <button class="accent-swatch" data-accent="blue"   title="Azul"    style="background:#38bdf8"></button>
         <button class="accent-swatch" data-accent="green"  title="Verde"   style="background:#34d399"></button>
@@ -132,7 +138,7 @@
   </aside>
 
   <!-- ── MAIN CONTENT ────────────────────────────────────── -->
-  <main class="main-content" id="mainContent">
+  <main class="main-content" id="mainContent" aria-live="polite">
     <!-- Views are rendered here by app.js -->
     <div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-3);font-family:var(--font-mono);font-size:.8rem;">
       Iniciando ResearchOS…
@@ -140,10 +146,10 @@
   </main>
 
   <!-- ── INSPECTOR PANEL ─────────────────────────────────── -->
-  <aside class="inspector-panel" id="inspectorPanel">
+  <aside class="inspector-panel" id="inspectorPanel" aria-label="Inspector">
     <div class="inspector-header">
       <span class="inspector-title">Inspector</span>
-      <button class="inspector-close" id="closeInspector">✕</button>
+      <button class="inspector-close" id="closeInspector" aria-label="Cerrar inspector">✕</button>
     </div>
     <div id="inspectorCrumb" class="inspector-crumb"></div>
     <div class="inspector-body" id="inspectorBody">
@@ -159,30 +165,42 @@
 
   <!-- ── MODAL ───────────────────────────────────────────── -->
   <div class="modal-overlay" id="modalOverlay">
-    <div class="modal" id="modal">
+    <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal-header">
         <h3 class="modal-title" id="modalTitle"></h3>
-        <button class="modal-close" id="modalClose">✕</button>
+        <button class="modal-close" id="modalClose" aria-label="Cerrar">✕</button>
       </div>
       <div id="modalContent"></div>
     </div>
   </div>
 
   <!-- ── TOASTS ──────────────────────────────────────────── -->
-  <div class="toast-container" id="toastContainer"></div>
+  <div class="toast-container" id="toastContainer" role="status" aria-live="polite"></div>
 
   <!-- ── SCRIPTS ─────────────────────────────────────────── -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/3.2.4/dexie.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/3.2.4/dexie.min.js" integrity="sha384-vG8R9Zn5YZHCeXt9gLNp8MnsUCqmIy7HPxhdOdLGa/30/c8uZXFrrN0iKGID/ZvC" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha384-F/bZzf7p3Joyp5psL90p/p89AZJsndkSoGwRpXcZhleCWhd8SnRuoYo4d0yirjJp" crossorigin="anonymous"></script>
   <script src="db.js"></script>
   <script src="app.js"></script>
+  <script>
+    // Caché offline (solo http/https; file:// no admite service workers).
+    if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(reg => {
+          // Entrega al SW las librerías que esta visita ya descargó, para dejarlas en caché sin pedirlas otra vez.
+          const urls = performance.getEntriesByType('resource').map(e => e.name).filter(u => /cdnjs\.cloudflare\.com|fonts\.(googleapis|gstatic)\.com/.test(u));
+          reg.active?.postMessage({ type: 'cache-cdn', urls });
+        }).catch(() => {});
+      });
+    }
+  </script>
 
   <!-- ── COMMAND PALETTE ─────────────────────────────────── -->
   <div class="palette-overlay" id="paletteOverlay">
-    <div class="palette">
+    <div class="palette" role="dialog" aria-modal="true" aria-label="Paleta de comandos">
       <div class="palette-search-row">
         <span class="palette-search-icon">⌕</span>
-        <input class="palette-input" id="paletteInput"
+        <input class="palette-input" id="paletteInput" aria-label="Buscar"
                placeholder="Buscar proyectos, ideas, snippets… o escribe una vista"
                autocomplete="off" spellcheck="false">
         <kbd class="palette-kbd">ESC</kbd>

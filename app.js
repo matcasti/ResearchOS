@@ -170,7 +170,7 @@ const DeadlineReminder = {
       const d = new Date(p.deadline + 'T00:00:00');
       const daysLeft = Math.ceil((d - today) / 86400000);
       // Notificar si vence hoy o mañana (y no se notificó ya hoy)
-      const notifKey = `notif_${p.id}_${today.toISOString().split('T')[0]}`;
+      const notifKey = `notif_${p.id}_${localDateISO(today)}`;
       if (daysLeft <= 1 && daysLeft >= 0 && !sessionStorage.getItem(notifKey)) {
         const label = daysLeft === 0 ? 'VENCE HOY' : 'vence mañana';
         new Notification(`⏱ ResearchOS — ${label}`, {
@@ -182,7 +182,7 @@ const DeadlineReminder = {
       }
       // Alerta de overdue (sólo una vez al día)
       if (daysLeft < 0) {
-        const overdueKey = `overdue_${p.id}_${today.toISOString().split('T')[0]}`;
+        const overdueKey = `overdue_${p.id}_${localDateISO(today)}`;
         if (!sessionStorage.getItem(overdueKey)) {
           new Notification(`🔴 ResearchOS — Proyecto vencido`, {
             body: `"${p.title}" venció hace ${Math.abs(daysLeft)} día(s).`,
@@ -205,6 +205,7 @@ const DeadlineReminder = {
 
 let _searchIdxTimer = null;
 function _scheduleSearchIndex() {
+  App._searchIdxDirty = true;           // la paleta reconstruye el índice al instante si lo encuentra sucio
   clearTimeout(_searchIdxTimer);
   _searchIdxTimer = setTimeout(() => _buildSearchIndex().catch(() => {}), 1500);
 }
@@ -240,18 +241,73 @@ function breadcrumbHTML(items) {
   </div>`;
 }
 
+// -- Sanitizador HTML (lista blanca) ---------------------------
+// El HTML que produce marked incluye cualquier HTML en crudo del texto, así que se filtra con una lista
+// blanca de etiquetas/atributos y de esquemas de URL. Se parsea con DOMParser (documento inerte: no ejecuta nada).
+const _SAFE_TAGS = new Set(['A','B','BLOCKQUOTE','BR','CODE','DEL','DETAILS','DIV','EM','H1','H2','H3','H4','H5','H6',
+  'HR','I','IMG','INPUT','KBD','LI','MARK','OL','P','PRE','S','SPAN','STRONG','SUB','SUMMARY','SUP','TABLE','TBODY',
+  'TD','TFOOT','TH','THEAD','TR','U','UL']);
+const _DROP_TAGS = new Set(['SCRIPT','STYLE','IFRAME','OBJECT','EMBED','LINK','META','BASE','FORM','TEMPLATE','NOSCRIPT',
+  'SVG','MATH','TEXTAREA','SELECT','BUTTON','AUDIO','VIDEO','SOURCE','FRAME','FRAMESET','APPLET','TITLE','HEAD']);
+const _SAFE_ATTRS = {
+  A: ['href', 'title'], IMG: ['src', 'alt', 'title', 'width', 'height'], INPUT: ['type', 'checked', 'disabled'],
+  TD: ['align', 'colspan', 'rowspan'], TH: ['align', 'colspan', 'rowspan'], OL: ['start'],
+  CODE: ['class'], PRE: ['class'], '*': ['title'],
+};
+
+function _safeUrl(value, { image = false } = {}) {
+  const v = String(value).replace(/[\u0000- \u007f-\u009f]/g, '');          // "java\tscript:" → "javascript:"
+  const m = v.match(/^([a-z][a-z0-9+.-]*):/i);
+  if (!m) return true;                                                           // relativa o #ancla
+  const scheme = m[1].toLowerCase();
+  if (['http', 'https'].includes(scheme)) return true;
+  if (!image && ['mailto', 'tel'].includes(scheme)) return true;
+  return image && scheme === 'data' && /^data:image\/(png|gif|jpe?g|webp);/i.test(v);
+}
+
+function sanitizeHTML(html) {
+  if (typeof DOMParser === 'undefined') return esc(html);
+  const doc = new DOMParser().parseFromString('<!doctype html><body>' + html, 'text/html');
+  const clean = node => {
+    for (const el of [...node.childNodes]) {
+      if (el.nodeType === 3) continue;                                           // texto
+      if (el.nodeType !== 1) { el.remove(); continue; }                          // comentarios, CDATA…
+      if (_DROP_TAGS.has(el.tagName)) { el.remove(); continue; }
+      clean(el);
+      if (!_SAFE_TAGS.has(el.tagName)) { el.replaceWith(...el.childNodes); continue; }   // etiqueta desconocida: conserva el texto
+      const allowed = [...(_SAFE_ATTRS[el.tagName] || []), ..._SAFE_ATTRS['*']];
+      for (const attr of [...el.attributes]) {
+        const n = attr.name.toLowerCase();
+        const ok = allowed.includes(n)
+          && !(n === 'href' && !_safeUrl(attr.value))
+          && !(n === 'src'  && !_safeUrl(attr.value, { image: true }))
+          && !(n === 'class' && !/^language-[\w+#-]+$/.test(attr.value));
+        if (!ok) el.removeAttribute(attr.name);
+      }
+      if (el.tagName === 'A' && el.hasAttribute('href')) { el.setAttribute('target', '_blank'); el.setAttribute('rel', 'noopener noreferrer'); }
+      if (el.tagName === 'INPUT') {
+        if (el.getAttribute('type') !== 'checkbox') { el.remove(); continue; }
+        el.setAttribute('disabled', '');
+      }
+    }
+  };
+  clean(doc.body);
+  return doc.body.innerHTML;
+}
+
 // -- Render Markdown seguro -------------------------
 function renderMd(text) {
   if (!text || typeof marked === 'undefined') return esc(text || '');
-  // Configurar marked para no escapar HTML ya escapado
   marked.setOptions({ breaks: true, gfm: true });
-  // Sanitizar: stripped de tags peligrosos
-  const raw = marked.parse(text);
-  return raw.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
-            .replace(/on\w+="[^"]*"/gi, '');
+  return sanitizeHTML(marked.parse(String(text)));
 }
 
 // -- Render LaTeX con KaTeX -------------------------
+/** Resalta un bloque de código si highlight.js cargó (si no, se muestra como texto plano). */
+function _highlightBlock(el) {
+  if (typeof hljs !== 'undefined') hljs.highlightElement(el);
+}
+
 function renderLatex(container) {
   if (typeof renderMathInElement === 'undefined') return;
   renderMathInElement(container, {
@@ -290,6 +346,7 @@ function navigate(view, addToHistory = true) {
       App.inspectedType && App.inspectedId) {
     App._savedInspector = { type: App.inspectedType, id: App.inspectedId };
   }
+  closeMobileMenu();
   App.view = view;
   // Resetear offset de agenda mensual al navegar explícitamente a la vista
   if (view === 'weekly' && addToHistory) App.agendaMonthOffset = 0;
@@ -305,6 +362,11 @@ function navigate(view, addToHistory = true) {
   });
   App._isNavigating = true;
   renderView(view);
+}
+
+function closeMobileMenu() {
+  document.body.classList.remove('sidebar-mobile-open');
+  $('mobileMenuBtn')?.setAttribute('aria-expanded', 'false');
 }
 
 function navBack() {
@@ -688,7 +750,7 @@ async function renderDashboard() {
                     <span class="dash-bar-label">${esc(c.title)}</span>
                     <div class="dash-bar-track">
                       <div class="dash-bar-fill" data-w="${((colCount[c.id]||0)/max*100).toFixed(1)}"
-                           style="width:0;background:${c.color}"></div>
+                           style="width:0;background:${cssColor(c.color)}"></div>
                     </div>
                     <span class="dash-bar-val">${colCount[c.id]||0}</span>
                   </div>`).join('') || '<span style="color:var(--text-3);font-size:.75rem">Sin datos</span>';
@@ -717,10 +779,10 @@ async function renderDashboard() {
                 .filter(s => counts[s.key] > 0)
                 .map(s => `
                   <div class="dash-bar-row">
-                    <span class="dash-bar-label" style="color:${s.color}">${s.shortLabel}</span>
+                    <span class="dash-bar-label" style="color:${cssColor(s.color)}">${s.shortLabel}</span>
                     <div class="dash-bar-track">
                       <div class="dash-bar-fill" data-w="${(counts[s.key]/max*100).toFixed(1)}"
-                           style="width:0;background:${s.color}"></div>
+                           style="width:0;background:${cssColor(s.color)}"></div>
                     </div>
                     <span class="dash-bar-val">${counts[s.key]}</span>
                   </div>`).join('') ||
@@ -842,7 +904,7 @@ async function renderActivityHeatmap() {
   while (cur <= today) {
     const week = [];
     for (let d = 0; d < 7; d++) {
-      const iso  = cur.toISOString().split('T')[0];
+      const iso  = localDateISO(cur);
       const cnt  = activityMap[iso] || 0;
       const lvl  = cnt === 0 ? 0 : cnt <= 2 ? 1 : cnt <= 4 ? 2 : cnt <= 7 ? 3 : 4;
       const future = cur > today;
@@ -1075,7 +1137,7 @@ function _kanbanBoardHTML(kanbanData, filterFn, unreadByProject, activeSubByProj
            ondragleave="kanbanDragLeave(event)"
            ondrop="kanbanDrop(event)">
       <div class="kanban-col-header">
-        <span class="kanban-col-dot" style="background:${col.color}"></span>
+        <span class="kanban-col-dot" style="background:${cssColor(col.color)}"></span>
         <span class="kanban-col-title">${esc(col.title)}</span>
         <span class="kanban-col-count ${col.wip && visibleCards.length > col.wip ? 'kanban-wip-exceeded' : ''}">
           ${visibleCards.length}${col.wip ? `<span class="kanban-wip-badge">/${col.wip}</span>` : ''}
@@ -1135,7 +1197,7 @@ function _kanbanSwimlaneHTML(kanbanData, filterFn, unreadByProject, activeSubByP
         ${kanbanData.map(col => `
           <div class="kanban-swim-col-header">
             <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;
-                         display:inline-block;background:${col.color}"></span>
+                         display:inline-block;background:${cssColor(col.color)}"></span>
             <span style="font-family:var(--font-display);font-size:.8rem;
                          font-weight:600;color:var(--text-1)">${esc(col.title)}</span>
             <span style="font-family:var(--font-mono);font-size:.65rem;color:var(--text-3);margin-left:auto">
@@ -1375,22 +1437,41 @@ async function renderKanban() {
 
 // -- Gestionar columnas Kanban -----------------------
 async function showManageColumnsModal() {
-  const cols = await db.kanbanColumns.orderBy('order').toArray();
+  // Cada fila lleva una clave propia (_k): las columnas nuevas aún no tienen id y no pueden compartir `null`.
+  let _newSeq = 0;
+  const cols = (await db.kanbanColumns.orderBy('order').toArray()).map(c => ({ ...c, _k: String(c.id) }));
+  const originalOrder = cols.map(c => c.id);
+
+  /** Vuelca lo escrito en los inputs a `cols` antes de cualquier re-render (si no, se pierden las ediciones). */
+  const syncFromInputs = () => {
+    document.querySelectorAll('.col-manage-title').forEach(inp => {
+      const col = cols.find(c => c._k === inp.dataset.colId);
+      if (col) col.title = inp.value.trim() || col.title;
+    });
+    document.querySelectorAll('.col-manage-color').forEach(inp => {
+      const col = cols.find(c => c._k === inp.dataset.colId);
+      if (col) col.color = inp.value;
+    });
+    document.querySelectorAll('.col-manage-wip').forEach(inp => {
+      const col = cols.find(c => c._k === inp.dataset.colId);
+      if (col) col.wip = +inp.value || null;
+    });
+  };
 
   const renderRows = () => cols.map((c, i) => `
-    <div class="col-manage-row" data-col-id="${c.id}" data-col-idx="${i}">
+    <div class="col-manage-row" data-col-id="${c._k}" data-col-idx="${i}">
       <span class="col-manage-handle" title="Reordenar" style="cursor:grab">⠿</span>
       <input class="form-input col-manage-title"
-             value="${esc(c.title)}" data-col-id="${c.id}"
+             value="${esc(c.title)}" data-col-id="${c._k}"
              style="flex:1;padding:5px 8px;font-size:.82rem">
       <input type="color" class="col-manage-color"
-             value="${c.color}" data-col-id="${c.id}"
+             value="${esc(cssColor(c.color, '#38bdf8'))}" data-col-id="${c._k}"
              style="width:32px;height:32px;border:none;background:none;cursor:pointer;border-radius:6px">
       <input type="number" class="form-input col-manage-wip"
-             value="${c.wip||''}" placeholder="WIP" data-col-id="${c.id}"
+             value="${c.wip||''}" placeholder="WIP" data-col-id="${c._k}"
              style="width:64px;padding:5px 8px;font-size:.82rem"
              title="Límite de trabajo en curso (dejar vacío = sin límite)">
-      <button class="btn btn-ghost btn-sm col-manage-del" data-col-id="${c.id}"
+      <button class="btn btn-ghost btn-sm col-manage-del" data-col-id="${c._k}"
               style="color:var(--red)" ${cols.length <= 1 ? 'disabled' : ''}>✕</button>
     </div>`).join('');
 
@@ -1412,8 +1493,9 @@ async function showManageColumnsModal() {
   $('colManageCancel').addEventListener('click', closeModal);
 
   $('colAddNew').addEventListener('click', () => {
+    syncFromInputs();
     cols.push({
-      id: null, title: 'Nueva columna',
+      id: null, _k: `new${++_newSeq}`, title: 'Nueva columna',
       order: cols.length, color: '#38bdf8', wip: null
     });
     $('colManageList').innerHTML = renderRows();
@@ -1424,13 +1506,19 @@ async function showManageColumnsModal() {
   const attachColRowHandlers = () => {
     document.querySelectorAll('.col-manage-del').forEach(btn => {
       btn.addEventListener('click', async () => {
-        const cid = +btn.dataset.colId;
-        if (!cid) { cols.splice(cols.findIndex(c => !c.id), 1); $('colManageList').innerHTML = renderRows(); attachColRowHandlers(); return; }
-        const count = await db.projects.where('columnId').equals(cid).count();
-        if (count > 0 && !confirm(`Esta columna tiene ${count} proyectos. ¿Eliminarla de todos modos?`)) return;
-        cols.splice(cols.findIndex(c => c.id === cid), 1);
+        syncFromInputs();
+        const idx = cols.findIndex(c => c._k === btn.dataset.colId);
+        if (idx < 0) return;
+        const col = cols[idx];
+        if (col.id) {
+          const count = await db.projects.where('columnId').equals(col.id).count();
+          const dest  = cols[idx > 0 ? idx - 1 : idx + 1];
+          if (count > 0 && !confirm(`Esta columna tiene ${count} proyecto(s). Se moverán a «${dest.title}». ¿Continuar?`)) return;
+        }
+        cols.splice(idx, 1);
         $('colManageList').innerHTML = renderRows();
         attachColRowHandlers();
+        attachDragToRows();
       });
     });
   };
@@ -1461,6 +1549,7 @@ async function showManageColumnsModal() {
         row.classList.remove('drag-over');
         const tgtIdx = +row.dataset.colIdx;
         if (dragSrcIdx === null || dragSrcIdx === tgtIdx) return;
+        syncFromInputs();
         const [moved] = cols.splice(dragSrcIdx, 1);
         cols.splice(tgtIdx, 0, moved);
         $('colManageList').innerHTML = renderRows();
@@ -1472,38 +1561,30 @@ async function showManageColumnsModal() {
   attachDragToRows();
 
   $('colManageSave').addEventListener('click', async () => {
-    // Leer valores editados
-    document.querySelectorAll('.col-manage-title').forEach(inp => {
-      const cid = +inp.dataset.colId || null;
-      const col = cols.find(c => c.id === (cid || null));
-      if (col) col.title = inp.value.trim() || col.title;
-    });
-    document.querySelectorAll('.col-manage-color').forEach(inp => {
-      const cid = +inp.dataset.colId || null;
-      const col = cols.find(c => c.id === (cid || null));
-      if (col) col.color = inp.value;
-    });
-    document.querySelectorAll('.col-manage-wip').forEach(inp => {
-      const cid = +inp.dataset.colId || null;
-      const col = cols.find(c => c.id === (cid || null));
-      if (col) col.wip = +inp.value || null;
-    });
+    syncFromInputs();
 
     await dbWrite(async () => {
-      // Calcular qué columnas borrar ANTES de insertar las nuevas,
-      // para no incluir sus IDs autogenerados en la lista de borrado.
-      const retainedIds  = new Set(cols.filter(c => c.id).map(c => c.id));
-      const originalIds  = (await db.kanbanColumns.toArray()).map(c => c.id);
-      const toDelete     = originalIds.filter(id => !retainedIds.has(id));
+      const retainedIds = new Set(cols.filter(c => c.id).map(c => c.id));
+      const toDelete    = originalOrder.filter(id => !retainedIds.has(id));
 
+      // 1) Crear/actualizar (las nuevas reciben su id aquí)
       for (let i = 0; i < cols.length; i++) {
         const c = cols[i];
         c.order = i;
         if (c.id) {
           await db.kanbanColumns.update(c.id, { title: c.title, color: c.color, order: c.order, wip: c.wip });
         } else {
-          await db.kanbanColumns.add({ title: c.title, color: c.color, order: c.order, wip: c.wip, isDefault: false });
+          c.id = await db.kanbanColumns.add({ title: c.title, color: c.color, order: c.order, wip: c.wip, isDefault: false });
         }
+      }
+
+      // 2) Los proyectos de columnas eliminadas pasan a la columna anterior (o a la siguiente si era la primera).
+      //    Sin esto quedarían apuntando a una columna inexistente y desaparecerían del tablero.
+      for (const gone of toDelete) {
+        const pos  = originalOrder.indexOf(gone);
+        const dest = originalOrder.slice(0, pos).reverse().concat(originalOrder.slice(pos + 1)).find(id => retainedIds.has(id)) ?? cols[0].id;
+        for (const p of await db.projects.where('columnId').equals(gone).toArray())
+          await recordColumnChange(p.id, dest);
       }
       if (toDelete.length) await db.kanbanColumns.bulkDelete(toDelete);
     });
@@ -1747,6 +1828,7 @@ async function kanbanDrop(e) {
   try {
     const proj = await db.projects.get(draggedId);
     const oldColId = proj?.columnId;
+    if (oldColId === newColId && !swimCell) { _kanbanSurgicalMove(draggedId, newColId); return; }   // misma columna: no es un movimiento
     const groupUpdates = {};
 
     if (swimCell && App.kanbanGroupBy === 'type') {
@@ -1928,6 +2010,7 @@ async function renderProjects() {
     (App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible) &&
     (App.filterArea        === 'all' || p.areaId === +App.filterArea)
   );
+  App._filteredProjectIds = projects.map(p => p.id);     // "Seleccionar todos" actúa solo sobre lo filtrado
 
   const types        = ['all','Proyecto','Grant','Paper','Análisis','Dataset','Presentación'];
   const prios        = ['all','Alta','Media','Baja'];
@@ -2260,12 +2343,12 @@ async function renderProjects() {
                 title="Clic para editar responsable"
                 style="color:var(--text-2);font-size:.74rem">${esc(p.responsible||'—')}</td>
             ${area
-              ? `<td class="ptd"><span class="area-chip" style="border-color:${area.color};color:${area.color}">⊡ ${esc(area.name)}</span></td>`
+              ? `<td class="ptd"><span class="area-chip" style="border-color:${cssColor(area.color)};color:${cssColor(area.color)}">⊡ ${esc(area.name)}</span></td>`
               : `<td class="ptd" style="color:var(--text-3);font-size:.72rem">—</td>`}
             <td class="ptd tbl-editable"
                 data-cell-type="deadline"
                 data-proj-id="${p.id}"
-                data-cell-val="${p.deadline||''}"
+                data-cell-val="${esc(p.deadline||'')}"
                 title="Clic para editar deadline"
                 style="color:${dlColor};font-family:var(--font-mono);font-size:.72rem">
               ${p.deadline ? formatDate(p.deadline) : '—'}
@@ -2435,22 +2518,21 @@ async function renderProjects() {
       }
 
       $('bkSelectAll')?.addEventListener('click', async () => {
-        const all = await db.projects.toArray();
-        all.filter(p => !p.archived).forEach(p => App.bulkSelected.add(p.id));
+        (App._filteredProjectIds || []).forEach(id => App.bulkSelected.add(id));
         mainContent.querySelectorAll('.bulk-check').forEach(cb => cb.checked = true);
         updateBulkCount();
       });
 
       $('bkArchive')?.addEventListener('click', async () => {
         if (!App.bulkSelected.size) return showToast('Selecciona al menos un proyecto', 'error');
-        await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).modify({ archived: true }));
+        await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).modify({ archived: true, updatedAt: new Date().toISOString() }));
         showToast(`${App.bulkSelected.size} proyectos archivados`, 'success');
         App.bulkSelected.clear(); App.bulkMode = false; renderView('projects');
       });
 
       $('bkStar')?.addEventListener('click', async () => {
         if (!App.bulkSelected.size) return showToast('Selecciona al menos un proyecto', 'error');
-        await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).modify({ starred: true }));
+        await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).modify({ starred: true, updatedAt: new Date().toISOString() }));
         showToast(`${App.bulkSelected.size} marcados como favorito`, 'success');
         App.bulkSelected.clear(); App.bulkMode = false; renderView('projects');
       });
@@ -2458,8 +2540,14 @@ async function renderProjects() {
       $('bkDelete')?.addEventListener('click', async () => {
         if (!App.bulkSelected.size) return showToast('Selecciona al menos un proyecto', 'error');
         if (!confirm(`¿Eliminar ${App.bulkSelected.size} proyectos permanentemente?`)) return;
-        await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).delete());
-        showToast(`${App.bulkSelected.size} proyectos eliminados`, 'success');
+        const n = App.bulkSelected.size;
+        const undos = [];
+        await dbWrite(async () => { for (const pid of [...App.bulkSelected]) undos.push(await deleteProjectCascade(pid)); });
+        UndoStack.push({
+          label: `Eliminar ${n} proyectos`,
+          undo: async () => { await dbWrite(async () => { for (const u of undos.reverse()) await u(); }); }
+        });
+        showToastWithUndo(`${n} proyectos eliminados`, 'success');
         App.bulkSelected.clear(); App.bulkMode = false; renderView('projects');
       });
 
@@ -2479,7 +2567,7 @@ async function renderProjects() {
         $('bkColCancel').addEventListener('click', closeModal);
         $('bkColOk').addEventListener('click', async () => {
           const colId = +$('bkColSel').value;
-          await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).modify({ columnId: colId }));
+          await dbWrite(async () => { for (const pid of [...App.bulkSelected]) await recordColumnChange(pid, colId); });
           closeModal();
           showToast(`${App.bulkSelected.size} proyectos movidos`, 'success');
           App.bulkSelected.clear(); App.bulkMode = false; renderView('projects');
@@ -2501,7 +2589,7 @@ async function renderProjects() {
         $('bkPrioCancel').addEventListener('click', closeModal);
         $('bkPrioOk').addEventListener('click', async () => {
           const prio = $('bkPrioSel').value;
-          await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).modify({ priority: prio }));
+          await dbWrite(() => db.projects.where('id').anyOf([...App.bulkSelected]).modify({ priority: prio, updatedAt: new Date().toISOString() }));
           closeModal();
           showToast(`Prioridad actualizada en ${App.bulkSelected.size} proyectos`, 'success');
           App.bulkSelected.clear(); App.bulkMode = false; renderView('projects');
@@ -2529,7 +2617,7 @@ function projectCardHTML(p, col, completeness = null, zombie = false, area = nul
   return `
     <div class="card clickable" data-inspect-project="${p.id}">
       ${zombie ? `<span class="zombie-badge" title="Sin actividad >30 días">⊘ zombie</span>` : ''}
-      ${area   ? `<span class="area-chip" style="border-color:${area.color};color:${area.color}"
+      ${area   ? `<span class="area-chip" style="border-color:${cssColor(area.color)};color:${cssColor(area.color)}"
                         title="Área: ${esc(area.name)}">⊡ ${esc(area.name)}</span>` : ''}
       ${rollup ? `<span class="rollup-badge" title="${rollup.count} subproyecto(s)">
                     ⊕ ${rollup.count} sub${rollup.unread ? ` · ${rollup.unread} ◎` : ''}${rollup.nearest ? ` · ⏱ ${formatDate(rollup.nearest)}` : ''}
@@ -2883,8 +2971,12 @@ async function renderIdeas() {
       e.stopPropagation();
       const id = +btn.dataset.ideaId;
       const idea = await db.ideas.get(id);
-      await db.ideas.update(id, { status: idea.status === 'reviewed' ? 'unread' : 'reviewed' });
+      await dbWrite(() => db.ideas.update(id, {
+        status: idea.status === 'reviewed' ? 'unread' : 'reviewed',
+        updatedAt: new Date().toISOString()
+      }));
       renderIdeas();
+      updateBadges();
     });
   });
 
@@ -2905,9 +2997,9 @@ async function renderIdeas() {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (confirm('¿Eliminar esta idea?')) {
-        await db.ideas.delete(+btn.dataset.ideaId);
+        await deleteWithUndo('ideas', +btn.dataset.ideaId, 'Eliminar idea', 'Idea eliminada');
         renderIdeas();
-        showToast('Idea eliminada', 'info');
+        updateBadges();
       }
     });
   });
@@ -3031,7 +3123,7 @@ async function renderSnippets() {
           </button>
           ${collections.map(c => `
             <button class="snip-col-item ${activeColId==c.id?'active':''}" data-col-filter="${c.id}">
-              <span style="width:8px;height:8px;border-radius:50%;background:${c.color};flex-shrink:0;display:inline-block"></span>
+              <span style="width:8px;height:8px;border-radius:50%;background:${cssColor(c.color)};flex-shrink:0;display:inline-block"></span>
               ${esc(c.name)}
               <span style="margin-left:auto">${allSnippets.filter(s=>s.collectionId===c.id).length}</span>
             </button>`).join('')}
@@ -3053,7 +3145,7 @@ async function renderSnippets() {
       </div>
     </div>`;
 
-  mainContent.querySelectorAll('pre code').forEach(b => hljs.highlightElement(b));
+  mainContent.querySelectorAll('pre code').forEach(_highlightBlock);
   $('addSnippetBtn').addEventListener('click', showAddSnippetModal);
   $('addCollectionBtn').addEventListener('click', showAddCollectionModal);
 
@@ -3074,9 +3166,9 @@ async function renderSnippets() {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (confirm('¿Eliminar este snippet?')) {
-        await db.snippets.delete(+btn.dataset.id);
+        await deleteWithUndo('snippets', +btn.dataset.id, 'Eliminar snippet', 'Snippet eliminado');
         renderSnippets();
-        showToast('Snippet eliminado', 'info');
+        updateBadges();
       }
     });
   });
@@ -3086,6 +3178,7 @@ async function renderSnippets() {
       const s = await db.snippets.get(+btn.dataset.id);
       await db.snippets.update(+btn.dataset.id, { starred: !s.starred });
       renderSnippets();
+      updateBadges();
     });
   });
 
@@ -3109,7 +3202,7 @@ async function renderSnippets() {
 function snippetCardHTML(s, projMap, colMap = {}) {
   const proj     = s.projectId    ? projMap[s.projectId]    : null;
   const snipCol  = s.collectionId ? colMap[s.collectionId]  : null;
-  const langCls  = `lang-${s.language || 'Other'}`;
+  const langCls  = `lang-${_langClass(s.language)}`;
   const encoded  = encodeURIComponent(s.code || '');
   const hlLang   = s.language === 'R' ? 'r'
                  : s.language === 'Python' ? 'python'
@@ -3135,7 +3228,7 @@ function snippetCardHTML(s, projMap, colMap = {}) {
       </div>
       <div class="snippet-footer">
         ${(s.tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join('')}
-        ${snipCol ? `<span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--font-mono);font-size:.65rem;color:var(--text-2)"><span style="width:7px;height:7px;border-radius:50%;background:${snipCol.color}"></span>${esc(snipCol.name)}</span>` : ''}
+        ${snipCol ? `<span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--font-mono);font-size:.65rem;color:var(--text-2)"><span style="width:7px;height:7px;border-radius:50%;background:${cssColor(snipCol.color)}"></span>${esc(snipCol.name)}</span>` : ''}
         ${proj ? `<span class="idea-linked" style="margin-left:auto">⬡ ${esc(proj.title)}</span>` : ''}
       </div>
     </div>`;
@@ -3362,7 +3455,7 @@ async function writeFile(parentHandle, name, content) {
 async function createProjectStructure(rootHandle, { name, desc, author }, templateKey = 'rstudio') {
   const tree  = $('fsTree');
   const safe  = name.replace(/[^a-zA-Z0-9_\-]/g, '_');
-  const date  = new Date().toISOString().split('T')[0];
+  const date  = localDateISO();
   const ctx   = { name: safe, desc, author, date };
   const steps = [];
 
@@ -4040,7 +4133,7 @@ async function renderWeeklyAgenda() {
             ${evs.length
               ? evs.map(ev => `
                   <div class="weekly-event" ${actionAttr(ev)}>
-                    <span class="weekly-event-dot" style="background:${ev.color}"></span>
+                    <span class="weekly-event-dot" style="background:${cssColor(ev.color)}"></span>
                     <span class="weekly-event-text">${esc(ev.label)}</span>
                   </div>`).join('')
               : `<div class="weekly-free">—</div>`}
@@ -4088,7 +4181,7 @@ async function renderWeeklyAgenda() {
           <div class="monthly-cell-num ${isToday ? 'monthly-cell-num-today' : ''}">${cell.date.getDate()}</div>
           ${shown.map(ev => `
             <span class="monthly-event-pill" ${actionAttr(ev)}
-                  style="border-left-color:${ev.color}"
+                  style="border-left-color:${cssColor(ev.color)}"
                   title="${esc(ev.label.replace(/^[\S]+\s/,''))}">${esc(ev.label)}</span>`).join('')}
           ${more > 0 ? `<span class="monthly-more" data-month-day="${iso}">+${more} más</span>` : ''}
         </div>`;
@@ -4158,7 +4251,7 @@ async function renderWeeklyAgenda() {
               style="display:flex;align-items:center;gap:10px;padding:9px 16px;
                      border-bottom:1px solid var(--border);cursor:pointer">
               <span style="width:9px;height:9px;border-radius:50%;
-                           background:${ev.color};flex-shrink:0"></span>
+                           background:${cssColor(ev.color)};flex-shrink:0"></span>
               <span style="font-size:.82rem;color:var(--text-1);flex:1">${esc(ev.label)}</span>
               <span style="font-size:.7rem;color:var(--text-3)">›</span>
             </div>`).join('')}
@@ -4204,6 +4297,16 @@ async function _saveSubStages(stages) {
 }
 
 function _applySubStages(stages) {
+  // Los datos pueden venir de un backup ajeno: se limpian claves, etiquetas y colores antes de usarlos en HTML.
+  const plain = v => String(v ?? '').replace(/[<>"'`]/g, '');
+  stages = (Array.isArray(stages) ? stages : []).filter(s => s && typeof s === 'object').map((s, i) => ({
+    ...s,
+    key:        String(s.key ?? '').replace(/[^\w-]/g, '') || `etapa_${i}`,
+    label:      plain(s.label ?? s.key),
+    shortLabel: plain(s.shortLabel ?? s.label ?? s.key),
+    color:      cssColor(s.color),
+  }));
+  if (!stages.length) stages = DEFAULT_SUB_STAGES.map(s => ({ ...s }));
   SUB_STATUSES    = stages;
   SUB_COLOR_MAP   = Object.fromEntries(stages.map(s => [s.key, s.color]));
   SUB_SHORT_LABEL = Object.fromEntries(stages.map(s => [s.key, s.shortLabel]));
@@ -4211,8 +4314,8 @@ function _applySubStages(stages) {
 
 function subStatusBadge(status) {
   const s = SUB_STATUSES.find(s => s.key === status) || SUB_STATUSES[0];
-  return `<span class="badge" style="background:color-mix(in srgb,${s.color} 18%,transparent);
-          color:${s.color};border:1px solid color-mix(in srgb,${s.color} 35%,transparent); margin-top: 5px">${s.label}</span>`;
+  return `<span class="badge" style="background:color-mix(in srgb,${cssColor(s.color)} 18%,transparent);
+          color:${cssColor(s.color)};border:1px solid color-mix(in srgb,${cssColor(s.color)} 35%,transparent); margin-top: 5px">${s.label}</span>`;
 }
 
 // ==============================================================
@@ -4259,7 +4362,7 @@ async function _renderSubmissionPipeline(container) {
   const areaChip = p => {
     const a = p.areaId ? areaMap[p.areaId] : null;
     if (!a) return '';
-    return `<span class="area-chip" style="border-color:${a.color};color:${a.color};font-size:.55rem">
+    return `<span class="area-chip" style="border-color:${cssColor(a.color)};color:${cssColor(a.color)};font-size:.55rem">
       ⊡ ${esc(a.name)}</span>`;
   };
 
@@ -4293,20 +4396,20 @@ async function _renderSubmissionPipeline(container) {
           .filter(([,cards]) => cards.length)
           .map(([key, cards]) => {
             const s = SUB_STATUSES.find(s => s.key === key);
-            return `<span style="color:${s.color}">${s.shortLabel} ${cards.length}</span>`;
+            return `<span style="color:${cssColor(s.color)}">${s.shortLabel} ${cards.length}</span>`;
           }).join(' · ')}
       </div>
     </div>
     <div class="sub-pipe-board">
       ${SUB_STATUSES.map(s => `
         <div class="sub-pipe-col"
-          data-sub-stage="${s.key}"
+          data-sub-stage="${esc(s.key)}"
           ondragover="kanbanDragOver(event)"
           ondragleave="kanbanDragLeave(event)"
           ondrop="subPipelineDrop(event)">
           <div class="sub-pipe-col-header">
             <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;
-                         display:inline-block;background:${s.color}"></span>
+                         display:inline-block;background:${cssColor(s.color)}"></span>
             <span class="sub-pipe-col-title">${s.label}</span>
             <span class="sub-pipe-col-count">${buckets[s.key].length}</span>
           </div>
@@ -4355,7 +4458,7 @@ async function showSubmissionRoundsModal(projectId) {
         <div class="form-group" style="margin:0">
           <label class="form-label">Enviado</label>
           <input class="form-input rd-submitted" data-ri="${i}" type="date"
-                 value="${r.submittedAt || ''}" style="font-size:.78rem;padding:5px 8px">
+                 value="${esc(r.submittedAt || '')}" style="font-size:.78rem;padding:5px 8px">
         </div>
         <div class="form-group" style="margin:0">
           <label class="form-label">Decisión</label>
@@ -4369,7 +4472,7 @@ async function showSubmissionRoundsModal(projectId) {
         <div class="form-group" style="margin:0">
           <label class="form-label">Fecha decisión</label>
           <input class="form-input rd-decdate" data-ri="${i}" type="date"
-                 value="${r.decisionDate || ''}" style="font-size:.78rem;padding:5px 8px">
+                 value="${esc(r.decisionDate || '')}" style="font-size:.78rem;padding:5px 8px">
         </div>
         <div class="form-group" style="margin:0">
           <label class="form-label">Venue</label>
@@ -4417,7 +4520,7 @@ async function showSubmissionRoundsModal(projectId) {
   $('rdAddBtn').addEventListener('click', () => {
     rounds.push({
       id:           Date.now(),
-      submittedAt:  new Date().toISOString().split('T')[0],
+      submittedAt:  localDateISO(),
       decision:     'pending',
       decisionDate: '',
       venue:        p.targetVenue || '',
@@ -4651,8 +4754,8 @@ async function renderSubmissions() {
       <div class="sub-pipeline" style="margin-bottom:${mode==='pipeline'?'8':'20'}px">
         ${SUB_STATUSES.map(s => `
           <div class="sub-pipeline-stage" style="cursor:pointer"
-               data-sub-filter="${s.key}" title="Filtrar: ${s.label}">
-            <div class="sub-pipeline-count" style="color:${s.color}">${counts[s.key]}</div>
+               data-sub-filter="${esc(s.key)}" title="Filtrar: ${esc(s.label)}">
+            <div class="sub-pipeline-count" style="color:${cssColor(s.color)}">${counts[s.key]}</div>
             <div class="sub-pipeline-label">${s.label}</div>
           </div>`).join('')}
       </div>
@@ -4676,8 +4779,8 @@ async function renderSubmissions() {
                   <div class="sub-card-meta">
                     ${p.targetVenue ? `<span style="color:var(--text-2);font-size:.75rem">→ ${esc(p.targetVenue)}</span>` : ''}
                     ${col ? `<span style="font-family:var(--font-mono);font-size:.6rem;
-                        background:color-mix(in srgb,${col.color} 14%,transparent);
-                        color:${col.color};border:1px solid color-mix(in srgb,${col.color} 28%,transparent);
+                        background:color-mix(in srgb,${cssColor(col.color)} 14%,transparent);
+                        color:${cssColor(col.color)};border:1px solid color-mix(in srgb,${cssColor(col.color)} 28%,transparent);
                         padding:1px 6px;border-radius:99px">⊞ ${esc(col.title)}</span>` : ''}
                     ${p.responsible ? `<span style="font-size:.72rem;color:var(--text-3)">👤 ${esc(p.responsible)}</span>` : ''}
                   </div>
@@ -4760,6 +4863,8 @@ function _openNewPaperModal() {
 }
 
 async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
+  if (typeof prefillDate !== 'string') prefillDate = null;
+  if (typeof preProjectId !== 'number') preProjectId = null;
   if (preProjectId) {
     // Editar campos de submission sobre un proyecto existente
     const p = await db.projects.get(preProjectId);
@@ -4774,7 +4879,7 @@ async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
           <label class="form-label">Estado</label>
           <select class="form-select" id="asub-status">
             ${SUB_STATUSES.map(s =>
-              `<option value="${s.key}" ${(p.submissionStatus || _defaultSubKey())===s.key?'selected':''}>${s.label}</option>`
+              `<option value="${esc(s.key)}" ${(p.submissionStatus || _defaultSubKey())===s.key?'selected':''}>${esc(s.label)}</option>`
             ).join('')}
           </select>
         </div>
@@ -4786,11 +4891,11 @@ async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
         <div class="form-group">
           <label class="form-label">Deadline de envío</label>
           <input class="form-input" type="date" id="asub-deadline"
-                 value="${prefillDate || p.deadline || ''}">
+                 value="${esc(prefillDate || p.deadline || '')}">
         </div>
         <div class="form-group">
           <label class="form-label">Fecha de envío efectivo</label>
-          <input class="form-input" type="date" id="asub-submitted" value="${p.submittedAt||''}">
+          <input class="form-input" type="date" id="asub-submitted" value="${esc(p.submittedAt||'')}">
         </div>
         <div class="form-group">
           <label class="form-label">Notas de submission</label>
@@ -4877,6 +4982,8 @@ async function renderMeetings() {
 }
 
 async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
+  if (typeof prefillDate !== 'string') prefillDate = null;      // puede llegar un MouseEvent desde un handler de click
+  if (typeof preProjectId !== 'number') preProjectId = null;
   const projects = await db.projects.toArray();
   showModal('🗓 Nueva Reunión', `
     <div class="modal-body">
@@ -4886,7 +4993,7 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
       </div>
       <div class="form-group">
         <label class="form-label">Fecha *</label>
-        <input class="form-input" type="date" id="am-date" value="${prefillDate || new Date().toISOString().split('T')[0]}">
+        <input class="form-input" type="date" id="am-date" value="${prefillDate || localDateISO()}">
       </div>
       <div class="form-group">
         <label class="form-label">Participantes</label>
@@ -4996,7 +5103,7 @@ async function inspectMeeting(id) {
       <div class="subtask-list">
         ${ais.map(a => `
           <div class="subtask-item">
-            <button class="subtask-check ${a.done?'done':''}" data-toggle-ai="${a.id}">${a.done?'✓':''}</button>
+            <button class="subtask-check ${a.done?'done':''}" data-toggle-ai="${esc(a.id)}">${a.done?'✓':''}</button>
             <span class="subtask-text ${a.done?'done':''}">${esc(a.text)}</span>
           </div>`).join('')}
       </div>
@@ -5032,7 +5139,7 @@ async function inspectMeeting(id) {
         </div>
         <div class="form-group">
           <label class="form-label">Fecha *</label>
-          <input class="form-input" type="date" id="em-date" value="${m.date}">
+          <input class="form-input" type="date" id="em-date" value="${esc(m.date)}">
         </div>
         <div class="form-group">
           <label class="form-label">Participantes</label>
@@ -5074,9 +5181,10 @@ async function inspectMeeting(id) {
 
   $('meetDeleteBtn').addEventListener('click', async () => {
     if (!confirm(`¿Eliminar esta reunión?`)) return;
-    await db.meetings.delete(id);
-    closeInspector(); showToast('Reunión eliminada', 'info');
+    await deleteWithUndo('meetings', id, 'Eliminar reunión', 'Reunión eliminada');
+    closeInspector();
     if (App.view === 'meetings') renderMeetings();
+    updateBadges();
   });
 }
 
@@ -5085,7 +5193,7 @@ async function inspectMeeting(id) {
 // ==============================================================
 async function renderReferences() {
   const [refs, projects] = await Promise.all([
-    db.references.orderBy('year').reverse().toArray(),
+    getReferences(),            // ordena en JS: orderBy('year') omitiría las referencias sin año
     db.projects.toArray()
   ]);
   const projMap = Object.fromEntries(projects.map(p => [p.id, p]));
@@ -5126,7 +5234,7 @@ async function renderReferences() {
                 ${r.journal ? `<div class="ref-card-journal">${esc(r.journal)}</div>` : ''}
               </div>
               <div class="ref-card-side">
-                ${r.doi ? `<a class="ref-doi-link" href="https://doi.org/${r.doi}" target="_blank"
+                ${r.doi ? `<a class="ref-doi-link" href="https://doi.org/${esc(encodeURI(r.doi))}" target="_blank" rel="noopener noreferrer"
                   onclick="event.stopPropagation()">DOI ↗</a>` : ''}
                 ${proj ? `<span style="font-size:.65rem;color:var(--accent)">⬡ ${esc(proj.title)}</span>` : ''}
               </div>
@@ -5149,7 +5257,7 @@ async function renderReferences() {
     const blob = new Blob([bib], { type: 'text/plain' });
     const url  = URL.createObjectURL(blob);
     const a    = Object.assign(document.createElement('a'), {
-      href: url, download: `references-${new Date().toISOString().split('T')[0]}.bib`
+      href: url, download: `references-${localDateISO()}.bib`
     });
     a.click(); URL.revokeObjectURL(url);
     showToast('.bib exportado ✓', 'success');
@@ -5186,6 +5294,7 @@ async function _lookupDOI(doi) {
 }
 
 async function showAddReferenceModal(preProjectId = null) {
+  if (typeof preProjectId !== 'number') preProjectId = null;
   const projects = await db.projects.toArray();
   showModal('📚 Nueva Referencia', `
     <div class="modal-body">
@@ -5401,7 +5510,7 @@ async function inspectReference(id) {
           <input class="form-input" id="er-authors" value="${esc(r.authors||'')}"></div>
         <div class="form-group" style="display:flex;gap:10px">
           <div style="flex:1"><label class="form-label">Año</label>
-            <input class="form-input" type="number" id="er-year" value="${r.year||''}"></div>
+            <input class="form-input" type="number" id="er-year" value="${esc(r.year||'')}"></div>
           <div style="flex:2"><label class="form-label">Journal</label>
             <input class="form-input" id="er-journal" value="${esc(r.journal||'')}"></div>
         </div>
@@ -5415,7 +5524,7 @@ async function inspectReference(id) {
         <div class="form-group"><label class="form-label">Notas</label>
           <textarea class="form-textarea" id="er-notes" rows="2">${esc(r.notes||'')}</textarea></div>
         <div class="form-group"><label class="form-label">Etiquetas</label>
-          <input class="form-input" id="er-tags" value="${(r.tags||[]).join(', ')}"></div>
+          <input class="form-input" id="er-tags" value="${esc((r.tags||[]).join(', '))}"></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost" id="erCancel">Cancelar</button>
@@ -5442,8 +5551,8 @@ async function inspectReference(id) {
   });
   $('refDeleteBtn').addEventListener('click', async () => {
     if (!confirm(`¿Eliminar "${r.title}"?`)) return;
-    await db.references.delete(id);
-    closeInspector(); showToast('Referencia eliminada', 'info');
+    await deleteWithUndo('references', id, 'Eliminar referencia', 'Referencia eliminada');
+    closeInspector();
     if (App.view === 'references') renderReferences();
   });
 }
@@ -6037,7 +6146,7 @@ async function renderProjectHub() {
         <div class="hub-meta-row">
           ${col ? `
             <span class="hub-meta-chip">
-              <span class="hub-meta-dot" style="background:${col.color}"></span>
+              <span class="hub-meta-dot" style="background:${cssColor(col.color)}"></span>
               ${esc(col.title)}
             </span>` : ''}
           ${p.responsible ? `
@@ -6154,7 +6263,7 @@ async function renderProjectHub() {
             <div class="hub-activity-track">
               ${sorted.map(e => `
                 <div class="hub-activity-event" title="${esc(e.label)} · ${relativeDate(e.ts)}">
-                  <span class="hub-activity-dot" style="background:${e.color}"></span>
+                  <span class="hub-activity-dot" style="background:${cssColor(e.color)}"></span>
                   <span class="hub-activity-text">${e.icon} ${esc(e.label)}</span>
                   <span class="hub-activity-ts">${relativeDate(e.ts)}</span>
                 </div>`).join('')}
@@ -6237,7 +6346,7 @@ async function renderProjectHub() {
       ${sectionToggle('snips', '⟨/⟩ Snippets', snippets.length,
         snippets.length ? snippets.map(s => `
           <div class="hub-list-item" data-inspect-snip="${s.id}">
-            <span class="snippet-lang-badge lang-${s.language||'Other'}" style="font-size:.6rem">${esc(s.language||'Other')}</span>
+            <span class="snippet-lang-badge lang-${_langClass(s.language)}" style="font-size:.6rem">${esc(s.language||'Other')}</span>
             <span class="hub-item-text">${esc(s.title)}</span>
             <span class="hub-item-date">${relativeDate(s.updatedAt)}</span>
           </div>`).join('')
@@ -6563,10 +6672,13 @@ async function renderOrphans() {
     db.meetings.toArray(),
   ]);
 
-  const orphanIdeas    = ideas.filter(i => !i.projectId && !((i.projectIds||[]).length));
-  const orphanSnippets = snippets.filter(s => !s.projectId && !((s.projectIds||[]).length));
-  const orphanRefs     = refs.filter(r => !r.projectId);
-  const orphanMeets    = meets.filter(m => !m.projectId);
+  // Un elemento también es huérfano si apunta a un proyecto que ya no existe (datos de versiones anteriores).
+  const live   = new Set(projects.map(p => p.id));
+  const linked = (...ids) => ids.flat().filter(Boolean).some(id => live.has(id));
+  const orphanIdeas    = ideas.filter(i => !linked(i.projectId, i.projectIds || []));
+  const orphanSnippets = snippets.filter(s => !linked(s.projectId, s.projectIds || []));
+  const orphanRefs     = refs.filter(r => !linked(r.projectId));
+  const orphanMeets    = meets.filter(m => !linked(m.projectId));
   const total = orphanIdeas.length + orphanSnippets.length + orphanRefs.length + orphanMeets.length;
 
   App.orphanBulkSelected = new Map(); // reset
@@ -6882,7 +6994,7 @@ async function renderIdeaTriage() {
   $('triageBtnDone').addEventListener('click', () => next(false));
   $('triageBtnArchive').addEventListener('click', async () => {
     if (confirm('¿Eliminar esta idea?')) {
-      await dbWrite(() => db.ideas.delete(idea.id));
+      await deleteWithUndo('ideas', idea.id, 'Eliminar idea', 'Idea eliminada');
       App.triageIdx = Math.max(0, App.triageIdx - 1);
       renderIdeaTriage();
     }
@@ -7433,7 +7545,7 @@ async function renderStarred() {
       inspectProject(+el.dataset.inspectProject);
     });
   });
-  mainContent.querySelectorAll('pre code').forEach(b => hljs.highlightElement(b));
+  mainContent.querySelectorAll('pre code').forEach(_highlightBlock);
   mainContent.querySelectorAll('.copy-btn-float').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -7453,6 +7565,7 @@ async function renderStarred() {
         updatedAt: new Date().toISOString()
       });
       renderStarred();
+      updateBadges();
     });
   });
   mainContent.querySelectorAll('.idea-star-btn').forEach(btn => {
@@ -7468,9 +7581,9 @@ async function renderStarred() {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (confirm('¿Eliminar esta idea?')) {
-        await db.ideas.delete(+btn.dataset.ideaId);
+        await deleteWithUndo('ideas', +btn.dataset.ideaId, 'Eliminar idea', 'Idea eliminada');
         renderStarred();
-        showToast('Idea eliminada', 'info');
+        updateBadges();
       }
     });
   });
@@ -7510,9 +7623,7 @@ async function _syncPaperColumn(projectId, newStatus) {
   if (!colId || proj.columnId === colId) return;
   const col = await db.kanbanColumns.get(colId);
   if (!col) return;
-  await dbWrite(() => db.projects.update(proj.id, {
-    columnId: colId, updatedAt: new Date().toISOString()
-  }));
+  await dbWrite(() => recordColumnChange(proj.id, colId));
   showToast(`📄 "${proj.title.slice(0,28)}" → "${col.title}"`, 'success');
   if (App.view === 'kanban') renderKanban();
 }
@@ -7577,7 +7688,7 @@ async function renderSettings() {
           ].map(row => `
             <div class="settings-row">
               <div class="settings-row-label">${row.label}</div>
-              <span style="font-family:var(--font-mono);font-size:.9rem;color:${row.color}">${row.val}</span>
+              <span style="font-family:var(--font-mono);font-size:.9rem;color:${cssColor(row.color)}">${row.val}</span>
             </div>`).join('')}
           ${storageHTML}
         </div>
@@ -7591,6 +7702,12 @@ async function renderSettings() {
             <div>
               <div class="settings-row-label">Exportar a JSON</div>
               <div class="settings-row-desc">Descarga un backup completo de todos tus datos</div>
+              <div class="settings-row-desc" id="backupStatus" style="margin-top:4px;color:${
+                BackupMeta.last() === null || BackupMeta.daysSince() >= BackupMeta.BACKUP_DAYS ? 'var(--amber)' : 'var(--text-3)'}">
+                ${BackupMeta.last() === null ? '⚠ Aún no has exportado ningún backup desde este navegador'
+                  : BackupMeta.daysSince() === 0 ? '✓ Último backup: hoy'
+                  : `Último backup: hace ${BackupMeta.daysSince()} día(s)`}
+              </div>
             </div>
             <button class="btn btn-primary btn-sm" id="exportJsonBtn">Exportar</button>
           </div>
@@ -7604,7 +7721,7 @@ async function renderSettings() {
           <div class="settings-row">
             <div>
               <div class="settings-row-label">Importar desde JSON</div>
-              <div class="settings-row-desc">⚠ Reemplaza TODOS los datos actuales</div>
+              <div class="settings-row-desc">Elige entre añadir lo nuevo (merge) o reemplazar todo — antes de reemplazar se descarga una copia</div>
             </div>
             <label class="btn btn-ghost btn-sm" style="cursor:pointer">
               Importar
@@ -7699,16 +7816,9 @@ async function renderSettings() {
   renderGoogleSyncSection(); // poblar sección Google Sync
 
   $('exportJsonBtn').addEventListener('click', async () => {
-    const json = await exportAllData();
-    const blob = new Blob([json], { type: 'application/json' });
-    const url  = URL.createObjectURL(blob);
-    const a    = Object.assign(document.createElement('a'), {
-      href: url,
-      download: `researchos-backup-${new Date().toISOString().split('T')[0]}.json`
-    });
-    a.click();
-    URL.revokeObjectURL(url);
+    await downloadBackup();
     showToast('Backup exportado ✓', 'success');
+    renderSettings();
   });
 
   // -- Import con opción merge vs. reemplazar ---------
@@ -7719,12 +7829,8 @@ async function renderSettings() {
 
     try {
       const text = await file.text();
-      const data = JSON.parse(text);
-      const counts = {
-        projects:  (data.projects  || []).length,
-        ideas:     (data.ideas     || []).length,
-        snippets:  (data.snippets  || []).length,
-      };
+      const data = sanitizeBackup(JSON.parse(text));     // valida el formato antes de mostrar nada
+      const counts = { projects: data.projects.length, ideas: data.ideas.length, snippets: data.snippets.length };
 
       showModal('📥 Importar datos', `
         <div class="modal-body">
@@ -7740,7 +7846,7 @@ async function renderSettings() {
               <div>
                 <strong style="color:var(--text-1)">⊕ Merge (recomendado)</strong>
                 <p style="font-size:.75rem;color:var(--text-3);margin:2px 0 0">
-                  Añade sólo los registros nuevos. No borra ni modifica los datos existentes.
+                  Añade sólo los registros nuevos y reconecta sus referencias. No borra ni modifica los datos existentes.
                 </p>
               </div>
             </label>
@@ -7749,7 +7855,7 @@ async function renderSettings() {
               <div>
                 <strong style="color:var(--red)">⚠ Reemplazar todo</strong>
                 <p style="font-size:.75rem;color:var(--text-3);margin:2px 0 0">
-                  Borra todos los datos actuales y los sustituye. Esta acción es irreversible.
+                  Borra todos los datos actuales y los sustituye. Antes se descarga una copia automática de tus datos actuales.
                 </p>
               </div>
             </label>
@@ -7763,15 +7869,24 @@ async function renderSettings() {
       $('importModeCancel').addEventListener('click', closeModal);
       $('importModeOk').addEventListener('click', async () => {
         const mode = document.querySelector('input[name="importMode"]:checked')?.value;
-        if (mode === 'replace') {
-          if (!confirm('⚠ ¿Seguro? Esto eliminará TODOS tus datos actuales.')) return;
-          await importAllData(text);
-        } else {
-          await mergeAllData(text);
+        try {
+          let msg;
+          if (mode === 'replace') {
+            if (!confirm('⚠ ¿Seguro? Esto eliminará TODOS tus datos actuales (se descargará antes una copia).')) return;
+            await downloadBackup('researchos-antes-de-reemplazar');
+            const n = await importAllData(text);
+            msg = `Datos reemplazados: ${n.projects} proyectos, ${n.ideas} ideas, ${n.snippets} snippets`;
+          } else {
+            msg = 'Importado (merge): ' + describeMerge(await mergeAllData(text));
+          }
+          await _afterDataReplaced();
+          closeModal();
+          showToast(msg + ' ✓', 'success');
+          navigate('dashboard');
+        } catch (err) {
+          showToast('No se pudo importar: ' + err.message, 'error');
+          console.error(err);
         }
-        closeModal();
-        showToast(`Datos importados en modo "${mode}" ✓`, 'success');
-        navigate('dashboard');
       });
     } catch (err) {
       showToast('Error al leer el archivo: ' + err.message, 'error');
@@ -7781,15 +7896,12 @@ async function renderSettings() {
   $('exportCsvBtn').addEventListener('click', exportProjectsCSV);
   $('importCsvInput').addEventListener('change', e => previewImportCSV(e.target.files[0]));
   $('clearAllBtn').addEventListener('click', async () => {
-    if (!confirm('⚠ ¿Borrar TODOS los datos permanentemente?')) return;
+    if (!confirm('⚠ ¿Borrar TODOS los datos permanentemente? Se descargará antes una copia de seguridad.')) return;
     if (!confirm('Esta acción no se puede deshacer. ¿Confirmas?')) return;
-    await db.transaction('rw', [db.projects, db.ideas, db.snippets, db.resources, db.collaborators], async () => {
-      await Promise.all([
-        db.projects.clear(), db.ideas.clear(), db.snippets.clear(),
-        db.resources.clear(), db.collaborators.clear()
-      ]);
-    });
-    showToast('Datos eliminados', 'info');
+    await downloadBackup('researchos-antes-de-borrar');
+    await clearAllData();
+    await _afterDataReplaced();
+    showToast('Datos eliminados (copia descargada)', 'info');
     navigate('dashboard');
   });
 
@@ -8279,6 +8391,9 @@ async function _collectProjectPersonFields(respInputId, coauthInputId) {
 }
 
 async function showAddProjectModal(defaultColId, defaultParentId = null) {
+  // Los botones lo registran como handler de click: el primer argumento puede ser un MouseEvent.
+  if (typeof defaultColId !== 'number') defaultColId = undefined;
+  if (typeof defaultParentId !== 'number') defaultParentId = null;
   // -- Paso 0: elegir template ------------------------
   if (!App._skipTemplateStep) {
     showModal('Nuevo Proyecto — Plantilla', `
@@ -8328,7 +8443,7 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
       <div class="form-group">
         <label class="form-label">Columna Kanban</label>
         <select class="form-select" id="mp-col">
-          ${cols.map(c => `<option value="${c.id}" ${c.id === defaultColId ? 'selected':''}>${c.title}</option>`).join('')}
+          ${cols.map(c => `<option value="${c.id}" ${c.id === defaultColId ? 'selected':''}>${esc(c.title)}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -8425,6 +8540,7 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
       createdAt:     new Date().toISOString(),
       updatedAt:     new Date().toISOString(),
       customFields:  _readCustomFields() || {},
+      columnHistory: [{ colId: +$('mp-col').value, enteredAt: new Date().toISOString(), exitedAt: null }],
     }));
     closeModal();
     showToast('Proyecto creado ✓', 'success');
@@ -8540,11 +8656,11 @@ async function showEditIdeaModal(idea) {
       </div>
       <div class="form-group">
         <label class="form-label">Etiquetas (separadas por coma)</label>
-        <input class="form-input" id="ei-tags" value="${(idea.tags || []).join(', ')}">
+        <input class="form-input" id="ei-tags" value="${esc((idea.tags || []).join(', '))}">
       </div>
       <div class="form-group">
         <label class="form-label">Deadline (opcional)</label>
-        <input type="date" class="form-input" id="ei-deadline" value="${idea.deadline || ''}">
+        <input type="date" class="form-input" id="ei-deadline" value="${esc(idea.deadline || '')}">
       </div>
       <div class="form-group">
         <label class="form-label">Estado</label>
@@ -8589,6 +8705,7 @@ async function showEditIdeaModal(idea) {
 }
 
 async function showAddSnippetModal(preProjectId = null) {
+  if (typeof preProjectId !== 'number') preProjectId = null;
   const projects = await db.projects.toArray();
   const body = `
     <div class="modal-body">
@@ -9058,7 +9175,7 @@ async function inspectProject(id) {
         <span class="inspector-meta-key">Deadline</span>
         <span class="inspector-meta-val"
               data-inplace="deadline" data-inplace-type="date"
-              data-inplace-value="${p.deadline||''}">
+              data-inplace-value="${esc(p.deadline||'')}">
           ${p.deadline ? formatDate(p.deadline) : '—'}
         </span>
       </div>
@@ -9076,7 +9193,7 @@ async function inspectProject(id) {
         <span class="inspector-meta-val"
               data-inplace="columnId" data-inplace-type="id-select"
               data-inplace-value="${p.columnId}"
-              data-inplace-map="${colMapStr}">
+              data-inplace-map="${esc(colMapStr)}">
           ${esc(col?.title ?? '—')}
         </span>
       </div>
@@ -9084,10 +9201,10 @@ async function inspectProject(id) {
         <span class="inspector-meta-key">Área</span>
         <span class="inspector-meta-val"
               data-inplace="areaId" data-inplace-type="id-select"
-              data-inplace-value="${p.areaId??''}"
-              data-inplace-map="${areaMapStr}">
+              data-inplace-value="${esc(p.areaId??'')}"
+              data-inplace-map="${esc(areaMapStr)}">
           ${currentArea
-            ? `<span class="area-chip" style="border-color:${currentArea.color};color:${currentArea.color}">⊡ ${esc(currentArea.name)}</span>`
+            ? `<span class="area-chip" style="border-color:${cssColor(currentArea.color)};color:${cssColor(currentArea.color)}">⊡ ${esc(currentArea.name)}</span>`
             : `<span style="color:var(--text-3);font-size:.74rem">— Sin área —</span>`}
         </span>
       </div>
@@ -9168,8 +9285,8 @@ async function inspectProject(id) {
         ${nextStage ? `
           <button class="btn btn-primary btn-sm" id="insp-next-stage-btn"
                   data-status="${nextStage.key}"
-                  style="font-size:.68rem;background:color-mix(in srgb,${nextStage.color} 20%,transparent);
-                         color:${nextStage.color};border:1px solid color-mix(in srgb,${nextStage.color} 40%,transparent)">
+                  style="font-size:.68rem;background:color-mix(in srgb,${cssColor(nextStage.color)} 20%,transparent);
+                         color:${cssColor(nextStage.color)};border:1px solid color-mix(in srgb,${cssColor(nextStage.color)} 40%,transparent)">
             → ${nextStage.label}
           </button>` : ''}
         ${prevStage ? `
@@ -9231,8 +9348,8 @@ async function inspectProject(id) {
               return `<div style="display:flex;align-items:center;gap:6px;padding:2px 0 2px 8px;
                                   font-size:.68rem;color:var(--text-2);position:relative">
                 <span style="position:absolute;left:-4px;width:7px;height:7px;border-radius:50%;
-                             background:${s.color};border:1.5px solid var(--bg-elevated)"></span>
-                <span style="color:${s.color}">${s.label}</span>
+                             background:${cssColor(s.color)};border:1.5px solid var(--bg-elevated)"></span>
+                <span style="color:${cssColor(s.color)}">${s.label}</span>
                 <span style="color:var(--text-3);font-family:var(--font-mono);margin-left:auto">
                   ${relativeDate(h.date)}
                 </span>
@@ -9257,7 +9374,7 @@ async function inspectProject(id) {
   const snipsHTML = relSnips.length ? relSnips.slice(0,4).map(s => `
     <div class="inspector-related-item" data-goto-snip="${s.id}"
          style="cursor:pointer;display:flex;align-items:center;gap:5px">
-      <span class="snippet-lang-badge lang-${s.language||'Other'}" style="font-size:.55rem;flex-shrink:0">
+      <span class="snippet-lang-badge lang-${_langClass(s.language)}" style="font-size:.55rem;flex-shrink:0">
         ${esc(s.language||'Other')}</span>
       <span style="flex:1">${esc(s.title)}</span>
     </div>`).join('')
@@ -9406,7 +9523,12 @@ async function inspectProject(id) {
     const upd = { updatedAt: new Date().toISOString() };
     switch (field) {
       case 'deadline': upd.deadline = newVal || null; break;
-      case 'columnId': upd.columnId = +newVal || null; break;
+      case 'columnId': {
+        const target = +newVal || null;
+        if (target) { await recordColumnChange(id, target); }   // registra el historial como el drag & drop
+        else upd.columnId = null;
+        break;
+      }
       case 'areaId':   upd.areaId   = newVal ? +newVal : null; break;
       case 'tags':     upd.tags     = newVal.split(',').map(s=>s.trim()).filter(Boolean); break;
       default:         upd[field]   = newVal;
@@ -9571,13 +9693,10 @@ async function inspectProject(id) {
 
   $('inspDeleteBtn').addEventListener('click', async () => {
     if (!confirm(`¿Eliminar "${p.title}"?`)) return;
-    const snapshot = { ...p };
-    await db.projects.delete(id);
+    const restore = await dbWrite(() => deleteProjectCascade(id));   // desvincula ideas/snippets/reuniones…
     UndoStack.push({
       label: `Eliminar "${p.title.slice(0,30)}"`,
-      undo: async () => {
-        await dbWrite(() => db.projects.add(snapshot));
-      }
+      undo: async () => { await dbWrite(() => restore()); }
     });
     closeInspector();
     showToastWithUndo('Proyecto eliminado', 'info');
@@ -9610,7 +9729,7 @@ async function inspectSnippet(s) {
         ${snipCol ? `<div class="inspector-meta-row">
           <span class="inspector-meta-key">Colección</span>
           <span class="inspector-meta-val" style="display:flex;align-items:center;gap:5px">
-            <span style="width:8px;height:8px;border-radius:50%;background:${snipCol.color}"></span>
+            <span style="width:8px;height:8px;border-radius:50%;background:${cssColor(snipCol.color)}"></span>
             ${esc(snipCol.name)}
           </span>
         </div>` : ''}
@@ -9641,7 +9760,7 @@ async function inspectSnippet(s) {
     </div>`;
 
   openInspector();
-  inspectorBody.querySelectorAll('pre code').forEach(b => hljs.highlightElement(b));
+  inspectorBody.querySelectorAll('pre code').forEach(_highlightBlock);
 
   // "Usado en" — backlink al hub del proyecto
   if (s.projectId) {
@@ -9683,10 +9802,10 @@ async function inspectSnippet(s) {
   });
   $('snipDeleteBtn').addEventListener('click', async () => {
     if (confirm(`¿Eliminar "${s.title}"?`)) {
-      await db.snippets.delete(s.id);
+      await deleteWithUndo('snippets', s.id, 'Eliminar snippet', 'Snippet eliminado');
       closeInspector();
-      showToast('Snippet eliminado', 'info');
       if (App.view === 'snippets') renderSnippets();
+      updateBadges();
     }
   });
 }
@@ -9728,7 +9847,7 @@ async function showEditSnippetModal(s) {
       </div>
       <div class="form-group">
         <label class="form-label">Etiquetas (separadas por coma)</label>
-        <input class="form-input" id="es-tags" value="${(s.tags||[]).join(', ')}">
+        <input class="form-input" id="es-tags" value="${esc((s.tags||[]).join(', '))}">
       </div>
       <div class="form-group">
         <label class="form-label">Colección</label>
@@ -9779,7 +9898,7 @@ function _epSubFieldsHTML(p) {
           <label class="form-label">Estado de Submission</label>
           <select class="form-select" id="ep-sub-status">
             ${SUB_STATUSES.map(s =>
-              `<option value="${s.key}" ${(p.submissionStatus || _defaultSubKey())===s.key?'selected':''}>${s.label}</option>`
+              `<option value="${esc(s.key)}" ${(p.submissionStatus || _defaultSubKey())===s.key?'selected':''}>${esc(s.label)}</option>`
             ).join('')}
           </select>
         </div>
@@ -9792,7 +9911,7 @@ function _epSubFieldsHTML(p) {
         <div class="form-group">
           <label class="form-label">Fecha de envío efectivo</label>
           <input class="form-input" type="date" id="ep-sub-submitted"
-                 value="${p.submittedAt||''}">
+                 value="${esc(p.submittedAt||'')}">
         </div>
         <div class="form-group">
           <label class="form-label">Notas de submission</label>
@@ -9824,7 +9943,7 @@ async function showEditProjectModal(p) {
       <div class="form-group">
         <label class="form-label">Columna Kanban</label>
         <select class="form-select" id="ep-col">
-          ${cols.map(c => `<option value="${c.id}" ${c.id===p.columnId?'selected':''}>${c.title}</option>`).join('')}
+          ${cols.map(c => `<option value="${c.id}" ${c.id===p.columnId?'selected':''}>${esc(c.title)}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -9833,11 +9952,11 @@ async function showEditProjectModal(p) {
       </div>
       <div class="form-group">
         <label class="form-label">Coautores (separados por coma)</label>
-        <input class="form-input" id="ep-coauthors" value="${(p.coauthors||[]).join(', ')}">
+        <input class="form-input" id="ep-coauthors" value="${esc((p.coauthors||[]).join(', '))}">
       </div>
       <div class="form-group">
         <label class="form-label">Fecha límite</label>
-        <input class="form-input" type="date" id="ep-deadline" value="${p.deadline || ''}">
+        <input class="form-input" type="date" id="ep-deadline" value="${esc(p.deadline || '')}">
       </div>
       <div class="form-group">
         <label class="form-label">Prioridad</label>
@@ -9851,7 +9970,7 @@ async function showEditProjectModal(p) {
       </div>
       <div class="form-group">
         <label class="form-label">Etiquetas</label>
-        <input class="form-input" id="ep-tags" value="${(p.tags||[]).join(', ')}">
+        <input class="form-input" id="ep-tags" value="${esc((p.tags||[]).join(', '))}">
       </div>
       <div class="form-group">
         <label class="form-label">Área de investigación</label>
@@ -9920,10 +10039,12 @@ async function showEditProjectModal(p) {
       submissionNotes:  ($('ep-sub-notes')?.value   || '').trim(),
     } : {};
 
+    const newCol = +$('ep-col').value;
+    if (newCol && newCol !== p.columnId) await dbWrite(() => recordColumnChange(p.id, newCol));
     await dbWrite(() => db.projects.update(p.id, {
       title:         $('ep-title').value.trim(),
       type:          newType,
-      columnId:      +$('ep-col').value,
+      columnId:      newCol,
       responsible,
       responsibleId: responsibleId || null,
       coauthors:     coauthorNames,
@@ -10042,6 +10163,7 @@ async function inspectIdea(id) {
     }));
     inspectIdea(id);
     if (App.view === 'ideas') renderIdeas();
+    updateBadges();
   });
 
   // Subtask handlers
@@ -10112,14 +10234,65 @@ async function inspectIdea(id) {
 // ==============================================================
 //  MODAL SYSTEM
 // ==============================================================
+let _modalReturnFocus = null;
 function showModal(title, bodyHTML) {
+  if (!modalOverlay.classList.contains('visible')) _modalReturnFocus = document.activeElement;
   modalTitle.textContent = title;
   modalContent.innerHTML = bodyHTML;
   modalOverlay.classList.add('visible');
 }
 function closeModal() {
+  const wasOpen = modalOverlay.classList.contains('visible');
   modalOverlay.classList.remove('visible');
   modalContent.innerHTML = '';
+  // Devuelve el foco al elemento que abrió el modal (accesibilidad por teclado).
+  if (wasOpen && _modalReturnFocus && _modalReturnFocus.isConnected && _modalReturnFocus !== document.body) _modalReturnFocus.focus?.();
+  _modalReturnFocus = null;
+}
+
+/**
+ * Elimina un registro y muestra un aviso con «Deshacer» (reinserta el registro con su mismo id).
+ * `message` es el texto del aviso (p. ej. 'Idea eliminada').
+ */
+async function deleteWithUndo(tableName, id, undoLabel, message) {
+  const rec = await db[tableName].get(id);
+  if (!rec) return;
+  await dbWrite(() => db[tableName].delete(id));
+  UndoStack.push({ label: undoLabel, undo: async () => { await dbWrite(() => db[tableName].put(rec)); } });
+  showToastWithUndo(message, 'info');
+}
+
+// ==============================================================
+//  DESCARGAS Y BACKUPS
+// ==============================================================
+/** Descarga un texto como archivo (el <a> se añade al DOM: Firefox ignora clics sobre anclas sueltas). */
+function downloadFile(filename, content, mime = 'application/json') {
+  const url = URL.createObjectURL(new Blob([content], { type: mime }));
+  const a   = Object.assign(document.createElement('a'), { href: url, download: filename });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const BackupMeta = {
+  BACKUP_DAYS: 14,
+  mark()  { try { localStorage.setItem('ros-last-export', String(Date.now())); } catch {} },
+  last()  { try { return +localStorage.getItem('ros-last-export') || null; } catch { return null; } },
+  daysSince() { const t = this.last(); return t ? Math.floor((Date.now() - t) / 86400000) : null; },
+};
+
+/** Descarga un backup completo y lo anota como "último backup". */
+async function downloadBackup(prefix = 'researchos-backup') {
+  downloadFile(`${prefix}-${localDateISO()}.json`, await exportAllData());
+  BackupMeta.mark();
+}
+
+/** Tras reemplazar/fusionar datos en bloque: reconstruye lo que vive en memoria. */
+async function _afterDataReplaced() {
+  _applySubStages(await _getSubStages());
+  UndoStack.clear();
+  await _buildSearchIndex().catch(() => {});
 }
 
 // ==============================================================
@@ -10143,7 +10316,12 @@ async function updateBadges() {
     db.projects.toArray(),
   ]);
   const archived  = allProjects.filter(p => !!p.archived).length;
-  const starred   = allProjects.filter(p => !!p.starred && !p.archived).length;
+  // La vista Favoritos lista proyectos, ideas y snippets: el badge cuenta lo mismo.
+  const [starredIdeas, starredSnips] = await Promise.all([
+    db.ideas.filter(i => !!i.starred).count(),
+    db.snippets.filter(sn => !!sn.starred).count(),
+  ]);
+  const starred   = allProjects.filter(p => !!p.starred && !p.archived).length + starredIdeas + starredSnips;
   const subActive = allProjects.filter(p =>
     p.type === 'Paper' && !p.archived &&
     ['preparacion','enviado','en_revision','revision_solicitada'].includes(p.submissionStatus)
@@ -10153,7 +10331,7 @@ async function updateBadges() {
   const subBadge = $('submissionsBadge');
   if (subBadge) {
     subBadge.textContent = subActive;
-    subBadge.style.display = subActive > 0 ? '' : 'none';
+    subBadge.classList.toggle('visible', subActive > 0);   // el CSS oculta .nav-badge salvo con .visible
   }
   const abadge = $('archivedBadge');
   if (abadge) { abadge.textContent = archived; abadge.classList.toggle('visible', archived > 0); }
@@ -10184,6 +10362,11 @@ function esc(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+/** Nombre de lenguaje apto para una clase CSS (`C++` → `C`). */
+function _langClass(lang) {
+  return String(lang || 'Other').replace(/[^A-Za-z0-9_-]/g, '') || 'Other';
 }
 
 function typeBadgeClass(type) {
@@ -10263,57 +10446,69 @@ function relativeDate(iso) {
 // ==============================================================
 //  CSV IMPORT / EXPORT
 // ==============================================================
-const CSV_COLS = ['title','type','responsible','priority','deadline','description','tags','status','parentId'];
+const CSV_COLS = ['title','type','responsible','priority','deadline','description','tags','status','column','parent'];
 
-function toCSVRow(vals) {
+function toCSVRow(vals, delim = ',') {
   return vals.map(v => {
     const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
+    return s.includes(delim) || s.includes('"') || s.includes('\n') || s.includes('\r')
       ? `"${s.replace(/"/g, '""')}"` : s;
-  }).join(',');
+  }).join(delim);
 }
 
 async function exportProjectsCSV() {
-  const projects = await db.projects.toArray();
+  const [projects, cols] = await Promise.all([db.projects.toArray(), db.kanbanColumns.toArray()]);
+  const colName  = Object.fromEntries(cols.map(c => [c.id, c.title]));
+  const projName = Object.fromEntries(projects.map(p => [p.id, p.title]));
   const header   = toCSVRow(CSV_COLS);
-  const rows     = projects.map(p =>
-    toCSVRow(CSV_COLS.map(k => k === 'tags' ? (p.tags || []).join('|') : p[k]))
-  );
-  const csv  = [header, ...rows].join('\n');
-  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url  = URL.createObjectURL(blob);
-  Object.assign(document.createElement('a'), {
-    href: url,
-    download: `researchos-projects-${new Date().toISOString().split('T')[0]}.csv`
-  }).click();
-  URL.revokeObjectURL(url);
+  const rows     = projects.map(p => toCSVRow(CSV_COLS.map(k =>
+    k === 'tags'   ? (p.tags || []).join('|')
+  : k === 'column' ? (colName[p.columnId] || '')
+  : k === 'parent' ? (projName[p.parentId] || '')
+  : p[k])));
+  const csv = [header, ...rows].join('\n');
+  downloadFile(`researchos-projects-${localDateISO()}.csv`, '﻿' + csv, 'text/csv;charset=utf-8;');
   showToast(`${projects.length} proyectos exportados ✓`, 'success');
 }
 
+/**
+ * Parser CSV (RFC 4180): campos entre comillas con comas, saltos de línea y comillas dobladas.
+ * Detecta `;` como separador (Excel en configuración regional española) y descarta el BOM.
+ */
 function parseCSV(text) {
-  const lines  = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(Boolean);
-  if (lines.length < 2) return { headers: [], rows: [] };
+  text = String(text ?? '').replace(/^﻿/, '');
+  const firstLine = text.split(/\r\n|\n|\r/, 1)[0] || '';
+  const delim = (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length ? ';' : ',';
 
-  const parseRow = (line) => {
-    const vals = []; let cur = ''; let inQ = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') {
-        if (inQ && line[i+1] === '"') { cur += '"'; i++; }
-        else inQ = !inQ;
-      } else if (ch === ',' && !inQ) { vals.push(cur.trim()); cur = ''; }
+  const records = [];
+  let row = [], cur = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQ) {
+      if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else inQ = false; }
       else cur += ch;
-    }
-    vals.push(cur.trim());
-    return vals;
-  };
+    } else if (ch === '"') inQ = true;
+    else if (ch === delim) { row.push(cur); cur = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(cur); cur = ''; records.push(row); row = [];
+    } else cur += ch;
+  }
+  if (cur !== '' || row.length) { row.push(cur); records.push(row); }
 
-  const headers = parseRow(lines[0]).map(h => h.toLowerCase().trim());
-  const rows    = lines.slice(1).map(l => {
-    const vals = parseRow(l);
-    return Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? '']));
-  });
+  const filled = records.filter(r => r.some(c => c.trim() !== ''));
+  if (filled.length < 2) return { headers: [], rows: [] };
+  const headers = filled[0].map(h => h.trim().toLowerCase());
+  const rows    = filled.slice(1).map(r => Object.fromEntries(headers.map((h, i) => [h, (r[i] ?? '').trim()])));
   return { headers, rows };
+}
+
+/** Acepta 2026-12-31 y 31/12/2026 (día primero, como en es-CL); cualquier otra cosa → null. */
+function _csvDate(v) {
+  const t = String(v || '').trim();
+  if (isoDateOrNull(t)) return t;
+  const m = t.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+  return m ? `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : null;
 }
 
 async function previewImportCSV(file) {
@@ -10330,23 +10525,37 @@ async function previewImportCSV(file) {
 
   const VALID_TYPES    = ['Proyecto','Grant','Paper','Análisis','Dataset','Presentación'];
   const VALID_PRIORITY = ['Alta','Media','Baja'];
+  const fold = foldText;
+  const [cols, existing] = await Promise.all([db.kanbanColumns.orderBy('order').toArray(), db.projects.toArray()]);
+  const colByName = Object.fromEntries(cols.map(c => [fold(c.title), c.id]));
+  const seen = new Set(existing.map(p => `${fold(p.title)}|${p.type}|${p.deadline || ''}`));
 
-  const toImport = rows.filter(r => r.title?.trim()).map(r => ({
-    title:       r.title.trim(),
-    type:        VALID_TYPES.includes(r.type) ? r.type : 'Paper',
-    responsible: r.responsible?.trim() || '',
-    priority:    VALID_PRIORITY.includes(r.priority) ? r.priority : 'Media',
-    deadline:    r.deadline?.trim() || null,
-    description: r.description?.trim() || '',
-    tags:        r.tags ? r.tags.split('|').map(t => t.trim()).filter(Boolean) : [],
-    status:      r.status?.trim() || 'active',
-    archived:    false, starred: false, coauthors: [],
-    createdAt:   new Date().toISOString(),
-    updatedAt:   new Date().toISOString(),
-  }));
+  let duplicates = 0;
+  const toImport = [];
+  for (const r of rows.filter(r => r.title?.trim())) {
+    const type = VALID_TYPES.find(t => fold(t) === fold(r.type)) || 'Proyecto';
+    const rec = {
+      title:       r.title.trim(),
+      type,
+      responsible: r.responsible?.trim() || '',
+      priority:    VALID_PRIORITY.find(t => fold(t) === fold(r.priority)) || 'Media',
+      deadline:    _csvDate(r.deadline),
+      description: r.description?.trim() || '',
+      tags:        r.tags ? r.tags.split('|').map(t => t.trim()).filter(Boolean) : [],
+      status:      r.status?.trim() || 'active',
+      archived:    false, starred: false, coauthors: [],
+      createdAt:   new Date().toISOString(),
+      updatedAt:   new Date().toISOString(),
+      _columnName: r.column || '', _parentName: r.parent || '',
+    };
+    const key = `${fold(rec.title)}|${rec.type}|${rec.deadline || ''}`;
+    if (seen.has(key)) { duplicates++; continue; }     // reimportar el mismo CSV no duplica proyectos
+    seen.add(key);
+    toImport.push(rec);
+  }
 
   if (!toImport.length) {
-    preview.innerHTML = `<div class="fs-unsupported" style="margin-top:10px">⚠ No se encontraron filas válidas.</div>`;
+    preview.innerHTML = `<div class="fs-unsupported" style="margin-top:10px">⚠ ${duplicates ? `Las ${duplicates} fila(s) ya existen como proyectos.` : 'No se encontraron filas válidas.'}</div>`;
     return;
   }
 
@@ -10356,7 +10565,7 @@ async function previewImportCSV(file) {
       <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;
                   align-items:center;justify-content:space-between">
         <span style="font-size:.82rem;color:var(--text-1)">
-          Vista previa: <strong>${toImport.length}</strong> proyectos a importar
+          Vista previa: <strong>${toImport.length}</strong> proyectos a importar${duplicates ? ` · ${duplicates} duplicado(s) omitido(s)` : ''}
         </span>
         <button class="btn btn-primary btn-sm" id="confirmCsvImport">Importar ${toImport.length} proyectos</button>
       </div>
@@ -10390,13 +10599,25 @@ async function previewImportCSV(file) {
     </div>`;
 
   $('confirmCsvImport').addEventListener('click', async () => {
-    // Columna por defecto: primera columna Kanban
-    const cols = await db.kanbanColumns.orderBy('order').toArray();
+    // Columna: la del CSV si existe en el tablero; si no, la primera.
     const defaultColId = cols[0]?.id ?? 1;
-    const withCol = toImport.map(p => ({ ...p, columnId: defaultColId }));
-    await dbWrite(() => db.projects.bulkAdd(withCol));
+    const now = new Date().toISOString();
+    const records = toImport.map(({ _columnName, _parentName, ...p }) => {
+      const columnId = colByName[fold(_columnName)] ?? defaultColId;
+      return { ...p, columnId, columnHistory: [{ colId: columnId, enteredAt: now, exitedAt: null }] };
+    });
+    await dbWrite(async () => {
+      const ids = await db.projects.bulkAdd(records, { allKeys: true });
+      // Subproyectos: se enlazan por título del padre (entre los importados o los ya existentes).
+      const byTitle = new Map(existing.map(p => [fold(p.title), p.id]));
+      toImport.forEach((r, i) => byTitle.set(fold(r.title), ids[i]));
+      for (let i = 0; i < toImport.length; i++) {
+        const parentId = byTitle.get(fold(toImport[i]._parentName));
+        if (toImport[i]._parentName && parentId && parentId !== ids[i]) await db.projects.update(ids[i], { parentId });
+      }
+    });
     preview.innerHTML = '';
-    showToast(`${withCol.length} proyectos importados ✓`, 'success');
+    showToast(`${records.length} proyectos importados ✓`, 'success');
     renderView(App.view);
   });
 }
@@ -10504,7 +10725,7 @@ async function exportProjectAsMarkdown(projectId) {
   const url  = URL.createObjectURL(blob);
   const a    = Object.assign(document.createElement('a'), {
     href: url,
-    download: `${p.title.replace(/[^a-z0-9]/gi,'_').toLowerCase()}_${new Date().toISOString().split('T')[0]}.md`
+    download: `${p.title.replace(/[^a-z0-9]/gi,'_').toLowerCase()}_${localDateISO()}.md`
   });
   a.click();
   URL.revokeObjectURL(url);
@@ -10594,6 +10815,7 @@ function _showWelcomeModal() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
       await mergeAllData(text);
+      await _afterDataReplaced();
       if ($('welcomeDontShow')?.checked) {
         localStorage.setItem('ros-welcomed', '1');
       }
@@ -10801,10 +11023,11 @@ const GoogleSync = (() => {
       const text = await res.text();
 
       if (mode === 'replace') {
-        await importAllData(text);  // ← función existente en db.js
+        await importAllData(text);
       } else {
-        await mergeAllData(text);   // ← función existente en db.js
+        await mergeAllData(text);
       }
+      await _afterDataReplaced();
 
       await saveSetting('google_sync_last', new Date().toISOString());
       setStatus('ok');
@@ -11233,9 +11456,35 @@ async function _checkSessionResume() {
 // ==============================================================
 //  INIT
 // ==============================================================
+function _showBootError() {
+  mainContent.innerHTML = `
+    <div class="boot-error" role="alert" style="max-width:560px;margin:12vh auto;padding:0 24px;line-height:1.55">
+      <div style="font-size:1.1rem;font-weight:700;margin-bottom:10px">⚠ ResearchOS no pudo iniciar</div>
+      <p style="color:var(--text-2);margin-bottom:10px">
+        No se cargó <strong>Dexie.js</strong>, la librería de la base de datos local. Suele ocurrir al abrir la app
+        por primera vez <em>sin conexión</em> o con un bloqueador que impide cargar <code>cdnjs.cloudflare.com</code>.
+      </p>
+      <ul style="color:var(--text-2);margin:0 0 16px 18px">
+        <li>Conéctate a Internet y recarga: las librerías quedarán guardadas para uso sin conexión.</li>
+        <li>Si usas un bloqueador de contenido, permite <code>cdnjs.cloudflare.com</code> para este sitio.</li>
+        <li>Tus datos no se han perdido: siguen en el almacenamiento de este navegador.</li>
+      </ul>
+      <button class="btn btn-primary" onclick="location.reload()">Reintentar</button>
+    </div>`;
+}
+
 async function init() {
+  if (typeof Dexie === 'undefined') { _showBootError(); return; }
+
+  // Librerías opcionales: la app funciona sin ellas, con menos funciones.
+  const _optional = [['marked', 'Markdown'], ['hljs', 'resaltado de código'], ['katex', 'LaTeX']]
+    .filter(([g]) => typeof window[g] === 'undefined').map(([, n]) => n);
+  if (_optional.length) setTimeout(() => showToast(`No se cargaron: ${_optional.join(', ')}. La app funciona con funciones reducidas.`, 'info'), 600);
+
   // Seed database defaults
   await seedDefaults();
+  navigator.storage?.persist?.().catch(() => {});      // pide almacenamiento persistente: evita que el navegador evacúe la BD
+  if (!localStorage.getItem('ros-first-seen')) localStorage.setItem('ros-first-seen', String(Date.now()));
 
   // Cargar etapas del pipeline desde settings (reconstruye SUB_STATUSES, maps derivados)
   const _initStages = await _getSubStages();
@@ -11280,9 +11529,21 @@ async function init() {
   };
 
 
-  if (localStorage.getItem('ros-sidebar-collapsed') === '1')
-    document.body.classList.add('sidebar-collapsed');
-  _updateCollapseBtn();
+  // El colapso de escritorio no aplica al drawer móvil (≤ 600 px): allí el sidebar siempre se ve completo.
+  const mobileMQ = window.matchMedia('(max-width: 600px)');
+  const applyCollapsed = () => {
+    const pref = localStorage.getItem('ros-sidebar-collapsed') === '1';
+    document.body.classList.toggle('sidebar-collapsed', pref && !mobileMQ.matches);
+    if (!mobileMQ.matches) closeMobileMenu();
+    _updateCollapseBtn();
+  };
+  applyCollapsed();
+  mobileMQ.addEventListener?.('change', applyCollapsed);
+  $('mobileMenuBtn')?.addEventListener('click', () => {
+    const open = document.body.classList.toggle('sidebar-mobile-open');
+    $('mobileMenuBtn').setAttribute('aria-expanded', String(open));
+  });
+  $('sidebarBackdrop')?.addEventListener('click', closeMobileMenu);
   $('sidebarCollapseBtn')?.addEventListener('click', () => {
     // En móvil (<600px): toggle drawer lateral, no colapsar
     if (window.innerWidth <= 600) {
@@ -11339,7 +11600,23 @@ async function init() {
 
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { closePalette(); closeModal(); closeInspector(); }
+    if (e.key === 'Escape') {
+      // Una sola capa por pulsación: paleta → modal → inspector.
+      if ($('paletteOverlay').classList.contains('open')) closePalette();
+      else if (modalOverlay.classList.contains('visible')) closeModal();
+      else closeInspector();
+    }
+    // Atrapa el foco dentro del modal abierto (Tab / Shift+Tab)
+    if (e.key === 'Tab' && modalOverlay.classList.contains('visible')) {
+      const focusables = [...$('modal').querySelectorAll('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+        .filter(el => el.offsetParent !== null);
+      if (focusables.length) {
+        const first = focusables[0], last = focusables[focusables.length - 1];
+        if (!$('modal').contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+        else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    }
     if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
       e.preventDefault();
       $('paletteOverlay').classList.contains('open') ? closePalette() : openPalette();
@@ -11436,7 +11713,7 @@ async function renderAreas() {
         ${areas.length ? areas.map(area => {
           const count = projects.filter(p => p.areaId === area.id).length;
           return `
-            <div class="area-card" style="border-top:3px solid ${area.color}">
+            <div class="area-card" style="border-top:3px solid ${cssColor(area.color)}">
               <div class="area-card-header">
                 <span class="area-card-title">${esc(area.name)}</span>
                 <span class="area-card-count">${count} proyecto(s)</span>
@@ -11507,7 +11784,7 @@ function showAreaModal(area = null) {
             <span class="area-color-swatch ${(area?.color||AREA_COLORS[0])===c?'selected':''}"
                   data-color="${c}" style="background:${c}"></span>`).join('')}
         </div>
-        <input type="hidden" id="am-color" value="${area?.color||AREA_COLORS[0]}">
+        <input type="hidden" id="am-color" value="${esc(cssColor(area?.color, AREA_COLORS[0]))}">
       </div>
     </div>
     <div class="modal-footer">
@@ -11604,6 +11881,16 @@ async function _evalAlerts() {
         msg: `⚑ "${p.title}" (Alta) sin cambios hace ${Math.floor(idleMs/86400000)}d` });
   });
 
+  // Recordatorio de backup: los datos viven solo en este navegador.
+  if (all.length) {
+    const sinceFirst = Math.floor((Date.now() - (+localStorage.getItem('ros-first-seen') || Date.now())) / 86400000);
+    const days = BackupMeta.daysSince();
+    if (days === null && sinceFirst >= 3)
+      alerts.push({ id: 'bk-never', severity: 'warn', msg: '💾 Tus datos solo existen en este navegador y nunca has exportado un backup (Settings → Exportar)' });
+    else if (days !== null && days >= BackupMeta.BACKUP_DAYS)
+      alerts.push({ id: 'bk-old', severity: 'warn', msg: `💾 Tu último backup fue hace ${days} días (Settings → Exportar)` });
+  }
+
   return alerts;
 }
 
@@ -11664,7 +11951,7 @@ async function _buildSearchIndex() {
   ]);
 
   const idx = new Map();
-  const tokenize = str => (str || '').toLowerCase()
+  const tokenize = str => foldText(str)
     .split(/[\s,;:/\-_()\[\].]+/).filter(t => t.length >= 2);
   const add = (type, id, toks) => {
     [...new Set(toks)].forEach(tok => {
@@ -11691,6 +11978,7 @@ async function _buildSearchIndex() {
   ]));
 
   App._searchIdx = idx;
+  App._searchIdxDirty = false;
 }
 
 // ==============================================================
@@ -11726,7 +12014,7 @@ function _scoreMatch(lq, fields) {
   let score = 0;
   for (const { text, weight } of fields) {
     if (!text) continue;
-    const t = String(text).toLowerCase();
+    const t = foldText(text);
     if (t === lq)               score += weight * 1.0;
     else if (t.startsWith(lq)) score += weight * 0.8;
     else if (t.includes(lq))   score += weight * 0.5;
@@ -11735,7 +12023,8 @@ function _scoreMatch(lq, fields) {
 }
 
 async function _searchPalette(q) {
-  const lq = q.trim().toLowerCase();
+  if (App._searchIdxDirty) await _buildSearchIndex();      // hubo escrituras desde el último índice
+  const lq = foldText(q).trim();
   let projects, ideas, snippets, refs, meets;
 
   if (lq.length >= 2 && App._searchIdx.size > 0) {
@@ -11779,7 +12068,7 @@ async function _searchPalette(q) {
     { icon:'🗓', label:'Reuniones',     sub:'Vista', action: () => { closePalette(); navigate('meetings'); } },
     { icon:'📚', label:'Referencias',   sub:'Vista', action: () => { closePalette(); navigate('references'); } },
     { icon:'👥', label:'Colaboradores', sub:'Vista', action: () => { closePalette(); navigate('collaborators'); } },
-  ].filter(n => !lq || n.label.toLowerCase().includes(lq));
+  ].filter(n => !lq || foldText(n.label).includes(lq));
   if (navItems.length) groups.push({ label: 'Vistas', items: navItems });
 
   // -- Sugerencias contextuales: proyecto abierto en el Inspector --
@@ -11983,7 +12272,7 @@ function subtaskListHTML(entity, entityType = 'idea') {
       ${tasks.map(t => `
         <div class="subtask-item">
           <button class="subtask-check ${t.done ? 'done' : ''}"
-                  data-toggle-st="${t.id}"
+                  data-toggle-st="${esc(t.id)}"
                   data-entity-type="${entityType}">
             ${t.done ? '✓' : ''}
           </button>
