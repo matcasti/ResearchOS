@@ -1,11 +1,11 @@
 // ResearchOS — Service Worker
 // Hace que la app arranque sin conexión después de la primera visita.
-//  · Archivos propios: red primero (siempre ves tu última versión); si no hay red, copia en caché.
+//  · Archivos propios: red primero (siempre ves tu última versión); sin red, o si tarda más de 3,5 s, copia en caché.
 //  · Librerías de CDN (versiones fijadas en la URL): caché primero.
 //  · Todo lo demás (Google Drive, CrossRef…) pasa sin tocar.
-const SHELL_CACHE = 'researchos-shell-v1';
+const SHELL_CACHE = 'researchos-shell-v7';
 const CDN_CACHE   = 'researchos-cdn-v1';
-const SHELL = ['./', 'index.html', 'style.css', 'db.js', 'app.js', 'researchos-tutorial.json'];
+const SHELL = ['./', 'index.html', 'style.css', 'db.js', 'icons.js', 'app.js', 'today.js', 'network.js', 'planner.js', 'academic.js', 'vault.js', 'shell.js', 'sync.js', 'integrations.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'researchos-tutorial.json'];
 const CDN_HOSTS = ['cdnjs.cloudflare.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', event => {
@@ -24,17 +24,20 @@ self.addEventListener('activate', event => {
   );
 });
 
+const NETWORK_TIMEOUT = 3500;      // con copia en caché, una red lenta o intermitente no puede dejar la app colgada
 async function networkFirst(request) {
   const cache = await caches.open(SHELL_CACHE);
+  const cached = (await cache.match(request, { ignoreSearch: true })) || (request.mode === 'navigate' ? await cache.match('index.html') : null);
+  const fetching = fetch(request, { cache: 'no-cache' }).then(res => {     // revalida: nunca sirve un app.js viejo del caché HTTP
+    if (res.ok) cache.put(request, res.clone());
+    return res;
+  });
+  if (!cached) return fetching.catch(() => Response.error());
   try {
-    const fresh = await fetch(request, { cache: 'no-cache' });     // revalida: nunca sirve un app.js viejo del caché HTTP
-    if (fresh.ok) cache.put(request, fresh.clone());
-    return fresh;
+    return await Promise.race([fetching, new Promise((_, reject) => setTimeout(reject, NETWORK_TIMEOUT))]);
   } catch {
-    const hit = await cache.match(request, { ignoreSearch: true });
-    if (hit) return hit;
-    if (request.mode === 'navigate') return (await cache.match('index.html')) || Response.error();
-    return Response.error();
+    fetching.catch(() => {});                                              // si la red responde tarde, al menos deja la caché al día
+    return cached;
   }
 }
 

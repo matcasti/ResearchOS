@@ -43,9 +43,26 @@ const exercise = page => page.evaluate(async () => {
     await new Promise(r => setTimeout(r, 12));
     if (window.__xss.length > before) where.push(label);
   };
-  const views = ['dashboard', 'kanban', 'projects', 'timeline', 'areas', 'nested', 'ideas', 'snippets', 'starred', 'focus',
-                 'orphans', 'submissions', 'meetings', 'references', 'collaborators', 'weekly', 'archived', 'settings'];
+  // Datos que activan las superficies nuevas: «Mi día», seguimiento de personas y un informe que abarca todo
+  await db.tasks.toCollection().modify(t => { if (!t.done) { t.planDate = localDateISO(); t.effort = 30; } else t.doneAt = new Date().toISOString(); });
+  await db.collaborators.toCollection().modify(c => { c.followUpDays = 7; c.lastContact = '2020-01-01'; c.email = c.email || 'a@b.cl'; });
+  App._report = { key: 'custom', from: '2000-01-01', to: localDateISO() };
+  const views = ['dashboard', 'kanban', 'projects', 'timeline', 'areas', 'nested', 'ideas', 'snippets', 'starred', 'review',
+                 'orphans', 'submissions', 'meetings', 'references', 'collaborators', 'weekly', 'archived', 'settings', 'network', 'report'];
   for (const v of views) await probe(`vista:${v}`, async () => { navigate(v); await new Promise(r => setTimeout(r, 60)); });
+  await probe('hoy:seguimiento+mi-día', async () => { await renderView('dashboard'); await new Promise(r => setTimeout(r, 250)); });
+  await probe('modal:planificar-día', async () => { await openDayPlanner(); }); closeModal();
+  await probe('modal:captura-rápida', async () => { await openQuickCapture(); document.getElementById('qcInput').value = 'x'; document.getElementById('qcInput').dispatchEvent(new Event('input')); }); closeModal();
+  await probe('red:tooltip', async () => {                         // pasa el ratón por cada nodo: la ficha flotante usa su título
+    await renderView('network');
+    const c = document.getElementById('netCanvas'), r = c.getBoundingClientRect();
+    for (const n of window.__graph.nodes) { const p = window.__graph.screenPos(n.key); c.dispatchEvent(new PointerEvent('pointermove', { clientX: p.x, clientY: p.y, bubbles: true })); }
+  });
+  for (const p of await db.projects.toArray()) {
+    await probe('modal:clases', () => showClassGenerator(p.id)); closeModal();
+    await probe('modal:evaluación', () => showEvaluationModal(p.id)); closeModal();
+    await probe('modal:revisores', () => { showReviewerResponseModal(p.id); const t = document.getElementById('rv-text'); t.value = '1. <img src=x onerror=window.__xss.push(7)>'; t.dispatchEvent(new Event('input')); }); closeModal();
+  }
   for (const p of await db.projects.toArray()) {
     await probe('inspector:proyecto', () => inspectProject(p.id));
     await probe('hub:proyecto', async () => { App.projectHubId = p.id; await renderView('project-hub'); });

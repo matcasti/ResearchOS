@@ -31,7 +31,7 @@ test.describe('Kanban — crear proyectos', () => {
     expect(await page.evaluate(() => db.projects.count())).toBe(0);
   });
 
-  test('botón "+ Add card" de una columna preselecciona esa columna', async ({ page }) => {
+  test('botón "+ Añadir tarjeta" de una columna preselecciona esa columna', async ({ page }) => {
     await openApp(page);
     await gotoView(page, 'kanban');
     const thirdCol = page.locator('.kanban-col').nth(2);
@@ -157,7 +157,6 @@ test.describe('Kanban — interacción', () => {
     await seed(page);
     await gotoView(page, 'kanban');
     await page.locator('.kanban-card', { hasText: 'Grant Gamma' }).click();
-    page.once('dialog', d => d.accept());
     await page.locator('#inspDeleteBtn').click();
     await expect.poll(() => page.evaluate(() => db.projects.where('title').equals('Grant Gamma').count())).toBe(0);
   });

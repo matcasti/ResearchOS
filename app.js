@@ -81,7 +81,7 @@ const SaveIndicator = {
     clearTimeout(this._timer);
     this._timer = setTimeout(() => {
       el.className = 'save-indicator';
-      if (tx) tx.textContent = 'Local Only';
+      if (tx) tx.textContent = 'Solo local';
     }, 2200);
   },
   error() {
@@ -125,12 +125,10 @@ function showToastWithUndo(message, type = 'info') {
     <span>${icons[type] || '•'}</span>
     <span style="flex:1">${esc(message)}</span>
     <button class="toast-undo-btn">↩ Deshacer</button>`;
-  $('toastContainer').appendChild(toast);
-
-  const timer = setTimeout(() => toast.remove(), 5500);
+  const stop = _mountToast(toast, 6500);
 
   toast.querySelector('.toast-undo-btn').addEventListener('click', async () => {
-    clearTimeout(timer);
+    stop();
     toast.remove();
     try {
       const label = await UndoStack.pop();
@@ -219,12 +217,81 @@ async function dbWrite(fn) {
     localStorage.setItem('ros-last-active', String(Date.now()));
     GoogleSync.scheduleAutoSave().catch(() => {});
     _scheduleSearchIndex();
+    if (typeof AutoBackup !== 'undefined') AutoBackup.schedule();     // integrations.js
+    if (typeof SyncFolder !== 'undefined') SyncFolder.schedule();     // sync.js
     return r;
   } catch(e) {
     SaveIndicator.error();
     throw e;
   }
 }
+
+// ==============================================================
+//  REFRESCO INMEDIATO
+//  Cualquier cambio en los datos (venga del inspector, de un modal, de una tarjeta o de un atajo) se refleja en la vista
+//  abierta y en el inspector sin que cada manejador tenga que acordarse de repintar. Si el manejador ya repintó, no se
+//  repite; si la persona está escribiendo, se espera a que suelte el campo para no pisarle el texto.
+// ==============================================================
+const Live = {
+  ready: false,                 // true cuando termina el arranque (antes pinta init)
+  dirtyAt: 0, timer: 0, waiting: false,
+  DELAY: 70,
+  SKIP_VIEWS: new Set(['network', 'tutorial', 'settings', 'filesystem']),   // vistas con estado propio que un repintado reiniciaría
+
+  touch() {
+    if (!Live.ready) return;
+    Live.dirtyAt = performance.now();
+    clearTimeout(Live.timer);
+    Live.timer = setTimeout(Live.flush, Live.DELAY);
+  },
+
+  /** ¿Hay algo a medias que un repintado destruiría? */
+  editing() {
+    const a = document.activeElement;
+    if (a && a !== document.body && (mainContent.contains(a) || inspectorBody.contains(a)) &&
+        a.matches('input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=file]):not([type=range]):not([type=color]), textarea, [contenteditable="true"]')) return true;
+    return !!document.querySelector('.kanban-card.dragging, .sub-pipe-card.dragging, .inplace-input');
+  },
+
+  async flush() {
+    if (!Live.ready || !App.view || Live.SKIP_VIEWS.has(App.view)) { Live.waiting = false; return; }
+    if (App._renderStartedAt >= Live.dirtyAt) { Live.waiting = false; return; }      // el manejador ya repintó con el dato nuevo
+    if (document.hidden) { Live.waiting = true; return; }                             // se retoma al volver a la pestaña
+    if (Live.editing()) {                                                              // se retoma al soltar el campo (Firefox y Safari no avisan si el campo se quita con el foco puesto: se vuelve a mirar)
+      Live.waiting = true; clearTimeout(Live.timer); Live.timer = setTimeout(Live.flush, 400); return;
+    }
+    Live.waiting = false;
+    // Freno: si un repintado escribiera en la base de datos (y eso provocara otro repintado), no se encadena sin fin.
+    const now = performance.now();
+    Live.runs = (Live.runs || []).filter(t => now - t < 4000);
+    if (Live.runs.length >= 8) { console.warn('Refresco automático en pausa: demasiados repintados seguidos'); return; }
+    Live.runs.push(now);
+    if (Live.settingsDirty) { Live.settingsDirty = false; renderContextSwitcher().catch(() => {}); }     // el selector de área del menú lateral
+    try { await renderView(App.view); } catch (e) { console.error('Refresco', e); }
+  },
+
+  resume() { if (Live.waiting) { clearTimeout(Live.timer); Live.timer = setTimeout(Live.flush, 120); } },
+};
+// Las áreas, los presets de columnas, las etapas y los campos por tipo viven en `settings` y también cambian lo que se ve.
+const _LIVE_SETTINGS = /^ros-(areas|col-presets|sub-stages|sub-col-map|type-schemas|auto-sync-paper-col)$/;
+/** Se llama desde init() una vez comprobado que Dexie cargó (sin Dexie, db.js no define ni `db` ni `SyncState`). */
+function _wireLive() {
+  // Con la app abierta en dos pestañas (o la instalada y una pestaña) comparten la misma base de datos: cada cambio local
+  // avisa a las demás, que se ponen al día solas. Lo que llega de fuera no se reenvía (no hay eco) ni toca copias/sincronización.
+  let bc = null, posted = 0;
+  try { bc = 'BroadcastChannel' in window ? new BroadcastChannel('researchos-live') : null; } catch { /* sin soporte: solo esta pestaña */ }
+  if (bc) bc.onmessage = () => { _scheduleSearchIndex(); Live.touch(); };
+  SyncState.listeners.push(() => {                       // cualquier cambio local en la base de datos, pase o no por dbWrite
+    Live.touch();
+    if (bc && !posted) posted = setTimeout(() => { posted = 0; try { bc.postMessage(1); } catch {} }, 120);   // un aviso por ráfaga de escrituras
+  });
+  const touchSetting = key => { if (_LIVE_SETTINGS.test(key)) { Live.settingsDirty = true; Live.touch(); } };
+  db.settings.hook('creating', key => { touchSetting(key); });
+  db.settings.hook('updating', (mods, key) => { touchSetting(key); });
+  db.settings.hook('deleting', key => { touchSetting(key); });
+}
+document.addEventListener('focusout', () => Live.resume());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) Live.resume(); });
 
 // -- Breadcrumbs ----------------------------------------------
 
@@ -265,7 +332,7 @@ function _safeUrl(value, { image = false } = {}) {
   return image && scheme === 'data' && /^data:image\/(png|gif|jpe?g|webp);/i.test(v);
 }
 
-function sanitizeHTML(html) {
+function sanitizeHTML(html, { wikilinks = false } = {}) {
   if (typeof DOMParser === 'undefined') return esc(html);
   const doc = new DOMParser().parseFromString('<!doctype html><body>' + html, 'text/html');
   const clean = node => {
@@ -292,6 +359,7 @@ function sanitizeHTML(html) {
     }
   };
   clean(doc.body);
+  if (wikilinks && typeof _linkifyWikilinks === 'function') _linkifyWikilinks(doc.body);   // today.js
   return doc.body.innerHTML;
 }
 
@@ -299,17 +367,53 @@ function sanitizeHTML(html) {
 function renderMd(text) {
   if (!text || typeof marked === 'undefined') return esc(text || '');
   marked.setOptions({ breaks: true, gfm: true });
-  return sanitizeHTML(marked.parse(String(text)));
+  return sanitizeHTML(marked.parse(String(text)), { wikilinks: true });
 }
 
 // -- Render LaTeX con KaTeX -------------------------
 /** Resalta un bloque de código si highlight.js cargó (si no, se muestra como texto plano). */
 function _highlightBlock(el) {
-  if (typeof hljs !== 'undefined') hljs.highlightElement(el);
+  if (typeof hljs !== 'undefined') return hljs.highlightElement(el);
+  loadLib('hljs').then(() => el.isConnected && hljs.highlightElement(el)).catch(() => {});      // se descarga la primera vez que hay código
+}
+
+// -- Librerías pesadas y opcionales: se descargan solo cuando se necesitan ------------------------------
+// (highlight.js ~120 KB, KaTeX ~300 KB + fuentes, Google Identity: un arranque sin código, fórmulas ni Drive no los pide).
+const LAZY_LIBS = {
+  hljs: [
+    { css: 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css', integrity: 'sha384-PiLidnnRuzFgp4qiN8oGNmktrV8ETL+6a8heAxljUX4A+3XWlocwaMn9duBUepfK' },
+    { js: 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js', integrity: 'sha384-F/bZzf7p3Joyp5psL90p/p89AZJsndkSoGwRpXcZhleCWhd8SnRuoYo4d0yirjJp' },
+  ],
+  katex: [
+    { css: 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css', integrity: 'sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV' },
+    { js: 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js', integrity: 'sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8' },
+    { js: 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js', integrity: 'sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05' },
+  ],
+  gsi: [{ js: 'https://accounts.google.com/gsi/client' }],          // sin SRI: Google no publica una versión fija
+};
+const _libLoads = {};
+/** Descarga una librería (una sola vez). Los scripts se cargan en orden; las hojas de estilo no bloquean. */
+function loadLib(name) {
+  if (_libLoads[name]) return _libLoads[name];
+  const p = (async () => {
+    for (const part of LAZY_LIBS[name]) {
+      const el = document.createElement(part.css ? 'link' : 'script');
+      if (part.css) { el.rel = 'stylesheet'; el.href = part.css; } else { el.src = part.js; el.async = false; }
+      if (part.integrity) { el.integrity = part.integrity; el.crossOrigin = 'anonymous'; }
+      if (part.css) { document.head.appendChild(el); continue; }
+      await new Promise((ok, fail) => { el.onload = ok; el.onerror = () => fail(new Error(`No se pudo cargar ${name}`)); document.head.appendChild(el); });
+    }
+  })();
+  p.catch(() => { delete _libLoads[name]; });                    // un fallo (sin red) no impide reintentar luego
+  return _libLoads[name] = p;
 }
 
 function renderLatex(container) {
-  if (typeof renderMathInElement === 'undefined') return;
+  if (!container || !/\$|\\\(|\\\[/.test(container.textContent || '')) return;      // sin fórmulas: ni se carga KaTeX ni se recorre el DOM
+  if (typeof renderMathInElement === 'undefined') {
+    loadLib('katex').then(() => container.isConnected && renderLatex(container)).catch(() => {});
+    return;
+  }
   renderMathInElement(container, {
     delimiters: [
       { left: '$$', right: '$$', display: true },
@@ -321,11 +425,203 @@ function renderLatex(container) {
   });
 }
 
+/** Enfoca un campo recién creado de inmediato (sin carreras con quien escribe rápido); si aún no es visible, reintenta en el siguiente fotograma. */
+function focusField(el, { select = false } = {}) {
+  if (!el) return;
+  const go = () => { el.focus({ preventScroll: true }); if (select) el.select?.(); return document.activeElement === el; };
+  if (!go()) requestAnimationFrame(go);
+}
+
+/**
+ * Red de seguridad de accesibilidad: todo campo sin etiqueta recibe un nombre (placeholder, la etiqueta de su grupo o el texto de su fila),
+ * para que los lectores de pantalla no anuncien «cuadro de edición» a secas. Se aplica a vistas, modales e inspector.
+ */
+function autoLabelControls(root) {
+  if (!root) return;
+  for (const el of root.querySelectorAll('input:not([type=hidden]), select, textarea')) {
+    if (el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || el.title || el.closest('label') ||
+        (el.id && root.querySelector(`label[for="${CSS.escape(el.id)}"]`))) continue;
+    const box = el.closest('.form-group, .settings-row');
+    let text = el.placeholder || box?.querySelector('.form-label, .settings-row-label')?.textContent || '';
+    if (!text.trim() && /^(checkbox|radio)$/.test(el.type)) text = 'Seleccionar: ' + (el.parentElement?.textContent || '');
+    if (!text.trim()) text = el.previousElementSibling?.textContent || '';
+    text = text.replace(/\s+/g, ' ').trim().replace(/[*:]+$/, '').slice(0, 80);
+    if (text) el.setAttribute('aria-label', text);
+  }
+  // Botones que son solo un símbolo (✕, ⋯, ⊞…): el tooltip pasa a ser su nombre accesible y, si solo tenían nombre, también tooltip
+  for (const el of root.querySelectorAll('button')) {
+    if (/[A-Za-zÁ-ú]{2,}/.test(el.textContent) || el.querySelector('svg')) continue;
+    const label = el.getAttribute('aria-label'), tip = el.title;
+    if (!label && tip) el.setAttribute('aria-label', tip);
+    else if (label && !tip) el.title = label;
+  }
+  enableKeyboardClicks(root);
+}
+
+/** Filas y tarjetas que se abren con un clic: también con Tab + Enter/Espacio (el manejador global está en init()). */
+const KB_CLICKABLE = '.tw-row, .bc-item.link, .tut-mod-card, .card.clickable, .nested-node-row, .idea-item, .sub-pipeline-stage, .snippet-card, .ref-card, .meeting-card, .collab-card, .kanban-card, .alert-msg';
+function enableKeyboardClicks(root) {
+  for (const el of root.querySelectorAll(KB_CLICKABLE)) {
+    if (el.hasAttribute('data-kb')) continue;
+    el.setAttribute('data-kb', '');
+    if (!el.hasAttribute('tabindex')) el.tabIndex = 0;
+    // Con controles dentro (casilla, menú…) no se declara «botón»: sería un control dentro de otro control
+    if (!el.hasAttribute('role') && !el.querySelector('a, button, input, select, textarea, summary'))
+      el.setAttribute('role', el.classList.contains('bc-item') ? 'link' : 'button');
+  }
+}
+
+const MOD_KEY = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '') ? '⌘' : 'Ctrl';
+
+/** Ventana con los atajos de teclado (tecla «?»). */
+function openShortcutsHelp() {
+  const row = (keys, text) => `<div class="kb-row"><span class="kb-keys">${keys.map(k => `<kbd>${esc(k)}</kbd>`).join('<span class="kb-plus">+</span>')}</span><span class="kb-text">${esc(text)}</span></div>`;
+  const sec = (title, rows) => `<div class="kb-sec"><div class="kb-title">${esc(title)}</div>${rows.join('')}</div>`;
+  showModal('Atajos de teclado', `
+    <div class="modal-body kb-help">
+      ${sec('En cualquier lugar', [
+        row([MOD_KEY, 'K'], 'Buscar y ejecutar acciones (paleta de comandos)'),
+        row([MOD_KEY, 'Shift', 'K'], 'Ir al tablero de proyectos'),
+        row(['Alt', '←'], 'Vista anterior'), row(['Alt', '→'], 'Vista siguiente'),
+        row(['Esc'], 'Cerrar lo que esté abierto: paleta, ventana o inspector'),
+        row(['?'], 'Mostrar esta ayuda')])}
+      ${sec('Sin estar escribiendo en un campo', [
+        row(['C'], 'Capturar una tarea o idea'), row(['N'], 'Crear un elemento nuevo en la vista actual'),
+        row(['E'], 'Editar el elemento abierto en el inspector'), row(['S'], 'Marcar o quitar favorito'),
+        row(['/'], 'Filtrar la lista que estás viendo'), row([MOD_KEY, 'Z'], 'Deshacer lo último (borrar, archivar, mover…)'),
+        row(['F5'], 'Modo presentación del tablero')])}
+      ${sec('Inspector', [
+        row(['Clic'], 'Editar un campo (con teclado: Tab hasta el campo y Enter)'),
+        row(['Enter'], 'Guardar la edición'), row(['Esc'], 'Cancelar la edición')])}
+      ${sec('Listas y tarjetas', [
+        row(['Tab'], 'Moverte entre filas y tarjetas'), row(['Enter'], 'Abrir la fila o tarjeta enfocada')])}
+      ${sec('Revisión rápida de ideas', [
+        row(['→'], 'Marcar como revisada y pasar a la siguiente'), row(['A'], 'Eliminar la idea'),
+        row(['P'], 'Asignar a un proyecto'), row(['E'], 'Editar'), row(['Esc'], 'Salir')])}
+    </div>
+    <div class="modal-footer"><button class="btn btn-primary" id="kbClose">Entendido</button></div>`);
+  $('kbClose').addEventListener('click', closeModal);
+  focusField($('kbClose'));
+}
+
+
+/** Deshace la última acción registrada (la misma que ofrece el aviso «Deshacer»). */
+async function undoLast() {
+  if (!UndoStack.peek()) { showToast('No hay nada que deshacer', 'info'); return; }
+  try {
+    const label = await UndoStack.pop();
+    if (label) { showToast(`↩ Deshecho: ${label}`, 'success'); updateBadges(); }
+  } catch (err) { showToast('No se pudo deshacer', 'error'); console.error(err); }
+}
+
+// ==============================================================
+//  FILTRO DENTRO DE LAS LISTAS (Ideas, Snippets, Referencias, Reuniones, Colaboradores)
+//  Se superpone a lo ya pintado, así que no depende de cada vista; el texto escrito sobrevive a los repintados.
+// ==============================================================
+const LIST_FILTERS = {
+  ideas:         { item: '.idea-item',    noun: 'ideas' },
+  snippets:      { item: '.snippet-card', noun: 'snippets' },
+  references:    { item: '.ref-card',     noun: 'referencias' },
+  meetings:      { item: '.meeting-card', noun: 'reuniones' },
+  collaborators: { item: '.collab-card',  noun: 'colaboradores' },
+};
+App._listFilter = App._listFilter || {};
+
+function _applyListFilter(view, items) {
+  const q = foldText(App._listFilter[view] || '').trim();
+  const words = q.split(/\s+/).filter(Boolean);
+  let shown = 0;
+  for (const el of items) {
+    const ok = !words.length || words.every(w => foldText(el.textContent).includes(w));
+    el.classList.toggle('lf-hide', !ok);
+    if (ok) shown++;
+  }
+  const count = $('listFilterCount');
+  if (count) count.textContent = words.length ? `${shown} de ${items.length}` : '';
+  mainContent.querySelector('.list-filter-empty')?.remove();
+  if (words.length && !shown) {
+    const none = document.createElement('div');
+    none.className = 'list-filter-empty';
+    none.textContent = `Ninguna coincide con «${App._listFilter[view].trim()}».`;
+    $('listFilterInput').closest('.list-filter').after(none);
+  }
+}
+
+/** Añade (o repone tras repintar) el filtro de la vista, si es una de las listas y tiene suficientes elementos. */
+function setupListFilter(view) {
+  const cfg = LIST_FILTERS[view];
+  if (!cfg) return;
+  const items = [...mainContent.querySelectorAll(cfg.item)];
+  if (items.length < 4) return;
+  const header = mainContent.querySelector('.view-header');
+  if (!header || $('listFilterInput')) return;
+  const anchor = view === 'ideas' ? items[0].parentElement : null;       // Ideas: el formulario de captura ocupa la parte alta; el filtro va sobre la lista
+  const bar = document.createElement('div');
+  bar.className = 'list-filter'; bar.setAttribute('role', 'search');
+  bar.innerHTML = `<span class="list-filter-ico" aria-hidden="true">${uiIcon('search', 15)}</span>
+    <input type="search" id="listFilterInput" class="list-filter-input" autocomplete="off" aria-label="Filtrar ${cfg.noun}" placeholder="Filtrar ${cfg.noun}…   ( / )">
+    <span class="list-filter-count" id="listFilterCount" aria-live="polite"></span>`;
+  if (anchor) anchor.before(bar); else header.after(bar);
+  const input = $('listFilterInput');
+  input.value = App._listFilter[view] || '';
+  input.addEventListener('input', () => { App._listFilter[view] = input.value; _applyListFilter(view, [...mainContent.querySelectorAll(cfg.item)]); });
+  input.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    e.stopPropagation();
+    if (input.value) { input.value = ''; App._listFilter[view] = ''; _applyListFilter(view, [...mainContent.querySelectorAll(cfg.item)]); } else input.blur();
+  });
+  if (input.value) _applyListFilter(view, items);
+}
+
 function attachBreadcrumbHandlers() {
   mainContent.querySelectorAll('[data-bc-nav]').forEach(el => {
     el.addEventListener('click', () => navigate(el.dataset.bcNav));
   });
 }
+
+// ==============================================================
+//  PROYECTOS: una sola pantalla con pestañas (Tablero · Lista · Línea de tiempo · Jerarquía)
+// ==============================================================
+const PROJECT_TABS = [
+  { view: 'kanban',   label: 'Tablero' },
+  { view: 'projects', label: 'Lista' },
+  { view: 'timeline', label: 'Línea de tiempo' },
+  { view: 'nested',   label: 'Jerarquía' },
+];
+
+/** Inserta (o repone) la barra de pestañas al principio del contenido cuando la vista activa es de proyectos. */
+function ensureProjectTabs() {
+  const isTab = PROJECT_TABS.some(t => t.view === App.view);
+  const existing = mainContent.querySelector(':scope > .proj-tabs');
+  if (!isTab) { existing?.remove(); return; }
+  if (existing?.dataset.active === App.view) return;
+  existing?.remove();
+  const bar = document.createElement('nav');
+  bar.className = 'proj-tabs';
+  bar.dataset.active = App.view;
+  bar.setAttribute('aria-label', 'Vistas de proyectos');
+  bar.innerHTML = PROJECT_TABS.map(t =>
+    `<button class="proj-tab ${t.view === App.view ? 'active' : ''}" data-tab="${t.view}" ${t.view === App.view ? 'aria-current="page"' : ''}>${t.label}</button>`).join('');
+  bar.addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b && b.dataset.tab !== App.view) navigate(b.dataset.tab); });
+  mainContent.insertBefore(bar, mainContent.firstChild);
+}
+new MutationObserver(ensureProjectTabs).observe(mainContent, { childList: true });
+
+// ==============================================================
+//  USO LOCAL (qué vistas se abren) — nunca sale del navegador; sirve para decidir qué sobra
+// ==============================================================
+const Usage = {
+  KEY: 'ros-usage',
+  read() { try { return JSON.parse(localStorage.getItem(this.KEY) || '{}'); } catch { return {}; } },
+  hit(view) {
+    if (!view) return;
+    const u = this.read();
+    u[view] = (u[view] || 0) + 1;
+    u._since = u._since || localDateISO();
+    try { localStorage.setItem(this.KEY, JSON.stringify(u)); } catch {}
+  },
+  reset() { try { localStorage.removeItem(this.KEY); } catch {} },
+};
 
 // ==============================================================
 //  ROUTER
@@ -347,6 +643,7 @@ function navigate(view, addToHistory = true) {
     App._savedInspector = { type: App.inspectedType, id: App.inspectedId };
   }
   closeMobileMenu();
+  revealNavItem(view);
   App.view = view;
   // Resetear offset de agenda mensual al navegar explícitamente a la vista
   if (view === 'weekly' && addToHistory) App.agendaMonthOffset = 0;
@@ -357,9 +654,14 @@ function navigate(view, addToHistory = true) {
     App.navIndex = App.navHistory.length - 1;
   }
   _updateNavHistoryBtns();
+  if (PROJECT_TABS.some(t => t.view === view)) { try { localStorage.setItem('ros-proj-tab', view); } catch {} }
+  Usage.hit(view);
   document.querySelectorAll('.nav-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.view === view);
+    el.classList.toggle('active', (el.dataset.views || el.dataset.view).split(' ').includes(view));
   });
+  // Si el menú tiene scroll, el elemento activo no puede quedar escondido (se espera a que el grupo termine de abrirse)
+  requestAnimationFrame(() => document.querySelector('.sidebar-nav .nav-item.active')?.scrollIntoView({ block: 'nearest' }));
+  setTimeout(() => document.querySelector('.sidebar-nav .nav-item.active')?.scrollIntoView({ block: 'nearest' }), 260);
   App._isNavigating = true;
   renderView(view);
 }
@@ -388,50 +690,121 @@ function _updateNavHistoryBtns() {
   const f = $('navForward'); if (f) f.disabled = App.navIndex >= App.navHistory.length - 1;
 }
 
-async function renderView(view) {
+/**
+ * Pinta una vista. Si ya hay un pintado en curso de la misma vista (p. ej. un cambio de datos que llega mientras
+ * se está repintando), no se lanza otro en paralelo: se repite una sola vez al terminar, con los datos más recientes.
+ */
+function renderView(view) {
+  if (App._rendering && !App._isNavigating && view === App.view) {
+    App._renderAgain = true;
+    return App._rendering;
+  }
+  const run = (async () => {
+    let v = view;
+    await _renderViewNow(v);
+    // Se repinta si pidieron otro pintado mientras tanto o si, al terminar, ya se estaba en otra vista
+    // (el pintado lento de la vista anterior habría pisado a la nueva).
+    while (App._renderAgain || App.view !== v) { App._renderAgain = false; v = App.view; await _renderViewNow(v); }
+  })().finally(() => { if (App._rendering === run) App._rendering = null; });
+  App._rendering = run;
+  return run;
+}
+
+/** Posición de scroll de la vista y de sus listas internas (columnas del tablero…), para devolverla tras repintar. */
+function _viewSnapshot() {
+  const snap = { top: mainContent.scrollTop, left: mainContent.scrollLeft, inner: [], focusId: null };
+  for (const el of mainContent.querySelectorAll('*')) {
+    if (!el.scrollTop && !el.scrollLeft) continue;
+    const first = typeof el.className === 'string' ? el.className.trim().split(/\s+/)[0] : '';
+    const sel = el.id ? `#${CSS.escape(el.id)}` : first ? `.${CSS.escape(first)}` : '';
+    if (!sel) continue;
+    snap.inner.push({ sel, idx: [...mainContent.querySelectorAll(sel)].indexOf(el), top: el.scrollTop, left: el.scrollLeft });
+  }
+  const a = document.activeElement;
+  if (a && a.id && mainContent.contains(a)) snap.focusId = a.id;
+  return snap;
+}
+function _viewRestore(snap) {
+  if (!snap) return;
+  mainContent.scrollTop = snap.top; mainContent.scrollLeft = snap.left;
+  for (const s of snap.inner) {
+    const el = mainContent.querySelectorAll(s.sel)[s.idx];
+    if (el) { el.scrollTop = s.top; el.scrollLeft = s.left; }
+  }
+  if (snap.focusId && (!document.activeElement || document.activeElement === document.body)) $(snap.focusId)?.focus({ preventScroll: true });
+}
+
+/** Vuelve a pintar el elemento abierto en el inspector con los datos actuales (sin vaciarlo ni perder el scroll). */
+async function refreshInspector() {
+  const type = App.inspectedType, id = App.inspectedId;
+  if (!type || id == null || document.body.classList.contains('inspector-closed')) return;
+  const a = document.activeElement;
+  if (inspectorBody.querySelector('#mdDescEditor') ||                          // hay texto a medio escribir
+      (a && inspectorBody.contains(a) && a.matches('input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=range]):not([type=color]), textarea'))) return;
+  const table = { project: 'projects', idea: 'ideas', snippet: 'snippets', meeting: 'meetings', reference: 'references', collaborator: 'collaborators' }[type];
+  if (!table) return;
+  if (!(await db[table].get(id))) { closeInspector(); return; }                // el elemento ya no existe
+  const top = inspectorBody.scrollTop;
+  await _restoreInspector({ type, id });
+  inspectorBody.scrollTop = top;
+}
+
+async function _renderViewNow(view) {
   const _wasNavigating = App._isNavigating;
   App._isNavigating = false;
+  App._renderStartedAt = performance.now();
+  // Repintar la vista en la que ya se está (tras un cambio de datos) no es navegar: conserva scroll, foco e inspector.
+  const isRefresh = !_wasNavigating && view === App.view;
+  const snap = isRefresh ? _viewSnapshot() : null;
+  mainContent.removeAttribute('data-view');      // se vuelve a poner al terminar de pintar (ver abajo)
+  if (view !== 'ideas') App._ideasLimit = 0;       // al salir de Ideas, la próxima vez vuelve a empezar por las primeras
 
   // Preservar inspector en refresh data-only (sort/inline edit), sin pasar por navigate()
-  if (view === 'projects' && App._projDataOnly && App.view === 'projects' &&
+  if (!isRefresh && view === 'projects' && App._projDataOnly && App.view === 'projects' &&
       App.inspectedType && App.inspectedId && !App._savedInspector) {
     App._savedInspector = { type: App.inspectedType, id: App.inspectedId };
   }
 
-  _softResetInspector();
+  if (!isRefresh) _softResetInspector();
 
   // ── Refresh data-only: no blanquear mainContent, solo repoblar #projectsContainer ──
   if (view === 'projects' && App._projDataOnly && App.view === 'projects') {
     await renderProjects();           // lee y resetea _projDataOnly internamente
     await updateBadges();
     if (App._savedInspector) await _restoreInspector(App._savedInspector);
+    else if (isRefresh) await refreshInspector();
+    _viewRestore(snap);
+    mainContent.dataset.view = view;
     return;
   }
 
   const bcMap = {
-    dashboard:  [{label:'Dashboard', view:'dashboard'}],
-    kanban:     [{label:'Dashboard', view:'dashboard'}, {label:'Kanban', view:'kanban'}],
-    projects:   [{label:'Dashboard', view:'dashboard'}, {label:'Proyectos', view:'projects'}],
-    ideas:      [{label:'Dashboard', view:'dashboard'}, {label:'Ideas Inbox', view:'ideas'}],
-    snippets:   [{label:'Dashboard', view:'dashboard'}, {label:'Snippets', view:'snippets'}],
-    filesystem: [{label:'Dashboard', view:'dashboard'}, {label:'FS Bridge', view:'filesystem'}],
-    settings:   [{label:'Dashboard', view:'dashboard'}, {label:'Settings', view:'settings'}],
-    timeline:   [{label:'Dashboard', view:'dashboard'}, {label:'Timeline', view:'timeline'}],
-    archived:   [{label:'Dashboard', view:'dashboard'}, {label:'Archivados', view:'archived'}],
-    starred:      [{label:'Dashboard', view:'dashboard'}, {label:'Favoritos',   view:'starred'}],
-    nested:       [{label:'Dashboard', view:'dashboard'}, {label:'Anidados',    view:'nested'}],
-    weekly:       [{label:'Dashboard', view:'dashboard'}, {label:'Agenda',      view:'weekly'}],
-    submissions:  [{label:'Dashboard', view:'dashboard'}, {label:'Submissions', view:'submissions'}],
-    meetings:     [{label:'Dashboard', view:'dashboard'}, {label:'Reuniones',   view:'meetings'}],
-    references:   [{label:'Dashboard', view:'dashboard'}, {label:'Referencias', view:'references'}],
-    collaborators: [{label:'Dashboard', view:'dashboard'}, {label:'Colaboradores',view:'collaborators'}],
-    'project-hub': [{label:'Dashboard', view:'dashboard'}, {label:'Proyectos',    view:'projects'}, {label:'Hub',view:'project-hub'}],
-    focus:         [{label:'Dashboard', view:'dashboard'}, {label:'Focus Feed',   view:'focus'}],
-    orphans:       [{label:'Dashboard', view:'dashboard'}, {label:'Huérfanos',    view:'orphans'}],
-    triage:        [{label:'Dashboard', view:'dashboard'}, {label:'Ideas Inbox',  view:'ideas'}, {label:'Revisión rápida', view:'triage'}],
-    areas:         [{label:'Dashboard', view:'dashboard'}, {label:'Áreas', view:'areas'}],
-    tutorial: [{label:'Dashboard', view:'dashboard'}, {label:'Tutorial', view:'tutorial'}],
-    'collaborator-hub': [{label:'Dashboard', view:'dashboard'}, {label:'Colaboradores', view:'collaborators'}, {label:'Perfil', view:'collaborator-hub'}],
+    dashboard:  [],     // Hoy es la raíz: sin migas de pan
+    kanban: [],
+    projects: [],
+    ideas:      [{label:'Hoy', view:'dashboard'}, {label:'Ideas', view:'ideas'}],
+    snippets:   [{label:'Hoy', view:'dashboard'}, {label:'Snippets', view:'snippets'}],
+    filesystem: [{label:'Hoy', view:'dashboard'}, {label:'FS Bridge', view:'filesystem'}],
+    settings:   [{label:'Hoy', view:'dashboard'}, {label:'Ajustes', view:'settings'}],
+    timeline: [],
+    archived:   [{label:'Hoy', view:'dashboard'}, {label:'Archivados', view:'archived'}],
+    starred:      [{label:'Hoy', view:'dashboard'}, {label:'Favoritos',   view:'starred'}],
+    nested: [],
+    weekly:       [{label:'Hoy', view:'dashboard'}, {label:'Calendario',  view:'weekly'}],
+    submissions:  [{label:'Hoy', view:'dashboard'}, {label:'Submissions', view:'submissions'}],
+    meetings:     [{label:'Hoy', view:'dashboard'}, {label:'Reuniones',   view:'meetings'}],
+    references:   [{label:'Hoy', view:'dashboard'}, {label:'Referencias', view:'references'}],
+    collaborators: [{label:'Hoy', view:'dashboard'}, {label:'Colaboradores',view:'collaborators'}],
+    'project-hub': [{label:'Hoy', view:'dashboard'}, {label:'Proyectos',    view:'projects'}, {label:'Hub',view:'project-hub'}],
+    focus:         [{label:'Hoy', view:'dashboard'}, {label:'Hoy',   view:'focus'}],
+    orphans:       [{label:'Hoy', view:'dashboard'}, {label:'Huérfanos',    view:'orphans'}],
+    triage:        [{label:'Hoy', view:'dashboard'}, {label:'Ideas',  view:'ideas'}, {label:'Revisión rápida', view:'triage'}],
+    areas:         [{label:'Hoy', view:'dashboard'}, {label:'Áreas', view:'areas'}],
+    tutorial: [{label:'Hoy', view:'dashboard'}, {label:'Tutorial', view:'tutorial'}],
+    'collaborator-hub': [{label:'Hoy', view:'dashboard'}, {label:'Colaboradores', view:'collaborators'}, {label:'Perfil', view:'collaborator-hub'}],
+    review:        [{label:'Hoy', view:'dashboard'}, {label:'Revisión semanal', view:'review'}],
+    network:       [],
+    report:        [{label:'Hoy', view:'dashboard'}, {label:'Informe de avance', view:'report'}],
   };
 
   // Render first, then inject BC at top so innerHTML overwrites don't destroy it
@@ -453,14 +826,19 @@ async function renderView(view) {
     case 'references':   await renderReferences();      break;
     case 'collaborators':await renderCollaborators();   break;
     case 'project-hub':  await renderProjectHub();      break;
-    case 'focus':        await renderFocusFeed();       break;
+    case 'focus':        await renderDashboard();       break;   // «Hoy» quedó integrado en Hoy
     case 'orphans':      await renderOrphans();         break;
     case 'triage':       await renderIdeaTriage();      break;
     case 'areas':        await renderAreas();           break;
     case 'tutorial':     await renderTutorial();        break;
     case 'collaborator-hub': await renderCollaboratorHub(); break;
+    case 'review':       await renderWeeklyReview();    break;
+    case 'network':      await renderNetwork();         break;
+    case 'report':       await renderReport();          break;
     default:             await renderDashboard();
   }
+
+  setupListFilter(view);                   // antes de devolver el scroll: la barra del filtro ocupa sitio arriba
 
   const bcHTML = breadcrumbHTML(bcMap[view] || []);
   if (bcHTML) {
@@ -474,11 +852,15 @@ async function renderView(view) {
 
   attachBreadcrumbHandlers();
   await updateBadges();
+  _viewRestore(snap);
 
   // Restaurar inspector si estaba abierto cuando se inició la navegación
   if (App._savedInspector) {
     await _restoreInspector(App._savedInspector);
+  } else if (isRefresh) {
+    await refreshInspector();
   }
+  if (isRefresh) requestAnimationFrame(() => { if (App.view === view) _viewRestore(snap); });   // algunas vistas ajustan su altura un frame después
 
   // ── Animación de entrada solo en navegaciones reales, no en refreshes de datos ──
   if (_wasNavigating) {
@@ -486,139 +868,22 @@ async function renderView(view) {
     void mainContent.offsetWidth;          // fuerza reflow para reiniciar animación
     mainContent.classList.add('view-enter');
   }
-}
-
-async function _renderDailyBriefing() {
-  const today   = new Date(); today.setHours(0,0,0,0);
-  const [projects, unreadIdeas, meetings] = await Promise.all([
-    db.projects.filter(p => !p.archived).toArray(),
-    db.ideas.where('status').equals('unread').toArray(),
-    db.meetings.toArray(),
-  ]);
-
-  const overdue  = projects
-    .filter(p => p.deadline && new Date(p.deadline + 'T00:00:00') < today)
-    .sort((a,b) => a.deadline.localeCompare(b.deadline));
-
-  const thisWeek = projects
-    .filter(p => {
-      if (!p.deadline) return false;
-      const d = Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000);
-      return d >= 0 && d <= 7;
-    })
-    .sort((a,b) => a.deadline.localeCompare(b.deadline));
-
-  const pendingAIs = meetings.flatMap(m =>
-    (m.actionItems||[]).filter(a => !a.done)
-      .map(a => ({ ...a, meetingTitle: m.title, meetingId: m.id }))
-  );
-
-  const hour      = new Date().getHours();
-  const greeting  = hour < 12 ? 'Buenos días' : hour < 19 ? 'Buenas tardes' : 'Buenas noches';
-  const dayLabel  = new Date().toLocaleDateString('es-CL', { weekday: 'long' });
-  const icon      = hour < 12 ? '🌤' : hour < 19 ? '☀' : '🌙';
-  const allClear  = !overdue.length && !thisWeek.length && !pendingAIs.length && !unreadIdeas.length;
-  const isExpanded = localStorage.getItem('ros-briefing-expanded') !== 'false';
-
-  const chips = [];
-  if (overdue.length)
-    chips.push(`<span class="db-chip db-chip-red">🔴 ${overdue.length} vencido${overdue.length>1?'s':''}</span>`);
-  if (thisWeek.length)
-    chips.push(`<span class="db-chip db-chip-amber">⏱ ${thisWeek.length} deadline${thisWeek.length>1?'s':''} esta semana</span>`);
-  if (pendingAIs.length)
-    chips.push(`<span class="db-chip db-chip-orange">⚑ ${pendingAIs.length} acción${pendingAIs.length>1?'es':''} pendiente${pendingAIs.length>1?'s':''}</span>`);
-  if (unreadIdeas.length)
-    chips.push(`<span class="db-chip db-chip-purple">◎ ${unreadIdeas.length} idea${unreadIdeas.length>1?'s':''} sin revisar</span>`);
-
-  const allDeadlines = [
-    ...overdue.map(p  => ({ ...p, _overdue: true })),
-    ...thisWeek
-  ];
-
-  return `
-    <div class="daily-briefing-card" id="dailyBriefing">
-      <div class="db-header" id="dbToggleHeader">
-        <span class="db-greeting">
-          <span class="db-icon">${icon}</span>
-          <span class="db-title">${esc(greeting)} · <em>${esc(dayLabel)}</em></span>
-        </span>
-        <div class="db-chips">
-          ${allClear
-            ? `<span class="db-chip db-chip-green">✓ Todo al día</span>`
-            : chips.join('')}
-        </div>
-        <button class="db-toggle-btn" id="dbToggleBtn">${isExpanded ? '▴' : '▾'}</button>
-      </div>
-
-      <div class="db-details ${isExpanded ? '' : 'db-details-hidden'}" id="dbDetails">
-
-        ${allDeadlines.length ? `
-          <div class="db-section-label">📅 Deadlines${overdue.length ? ` · <span style="color:var(--red)">${overdue.length} vencido${overdue.length>1?'s':''}</span>` : ''}</div>
-          ${allDeadlines.slice(0, 6).map(p => {
-            const days  = Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000);
-            const color = p._overdue ? 'var(--red)' : days === 0 ? 'var(--amber)' : days <= 3 ? 'var(--orange)' : 'var(--text-2)';
-            const label = p._overdue
-              ? `Vencido hace ${Math.abs(days)}d`
-              : days === 0 ? '¡Hoy!'
-              : days === 1 ? 'Mañana'
-              : `en ${days}d`;
-            return `<div class="db-row" data-db-inspect-project="${p.id}">
-              <span style="width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;display:inline-block;margin-top:1px"></span>
-              <span class="db-row-text">${esc(p.title)}</span>
-              <span class="badge ${typeBadgeClass(p.type)}" style="font-size:.58rem;flex-shrink:0">${esc(p.type)}</span>
-              <span class="db-row-meta" style="color:${color}">${label}</span>
-              <span class="db-row-arrow">›</span>
-            </div>`;
-          }).join('')}
-        ` : ''}
-
-        ${pendingAIs.length ? `
-          <div class="db-section-label">⚑ Acciones pendientes de reuniones</div>
-          ${pendingAIs.slice(0, 5).map(ai => `
-            <div class="db-row" data-db-inspect-meeting="${ai.meetingId}">
-              <span style="color:var(--amber);flex-shrink:0">⚑</span>
-              <span class="db-row-text">${esc(ai.text)}</span>
-              <span class="db-row-meta">${esc(ai.meetingTitle.slice(0, 24))}</span>
-              <span class="db-row-arrow">›</span>
-            </div>`).join('')}
-        ` : ''}
-
-        ${unreadIdeas.length ? `
-          <div class="db-section-label">◎ Ideas sin revisar</div>
-          ${unreadIdeas.slice(0, 3).map(i => `
-            <div class="db-row" data-db-inspect-idea="${i.id}">
-              <span style="color:var(--purple);flex-shrink:0">◎</span>
-              <span class="db-row-text">${esc(i.title)}</span>
-              <span class="db-row-meta">${relativeDate(i.createdAt)}</span>
-              <span class="db-row-arrow">›</span>
-            </div>`).join('')}
-          ${unreadIdeas.length > 3 ? `
-            <div class="db-row" data-db-triage style="color:var(--accent)">
-              <span style="flex-shrink:0">◎</span>
-              <span class="db-row-text">Revisar ${unreadIdeas.length} ideas en modo rápido</span>
-              <span class="db-row-arrow">›</span>
-            </div>` : ''}
-        ` : ''}
-
-        ${allClear ? `
-          <div style="padding:16px 18px;text-align:center;color:var(--green);font-size:.82rem;font-family:var(--font-mono)">
-            ✓ Sin pendientes — buen momento para capturar ideas nuevas
-          </div>` : ''}
-
-      </div>
-    </div>`;
+  autoLabelControls(mainContent);
+  mainContent.dataset.view = view;         // «esta vista ya está pintada» (lo usan los tests y las lectoras de pantalla)
 }
 
 // ==============================================================
-//  VIEW: DASHBOARD
+//  VIEW: HOY (landing) + PANORAMA (métricas, plegadas)
 // ==============================================================
-async function renderDashboard() {
+async function renderDashboard() { await renderToday(); }      // today.js
+
+/** Métricas y actividad: lo que antes era todo el dashboard. Solo se calcula si el usuario abre «Panorama». */
+async function renderPanorama(host) {
   const today = new Date(); today.setHours(0,0,0,0);
-  const [statsResult, cols, allProjects, briefingHTML] = await Promise.all([
+  const [statsResult, cols, allProjects] = await Promise.all([
     getDashboardStats(),
     db.kanbanColumns.orderBy('order').toArray(),
     db.projects.toArray(),
-    _renderDailyBriefing()
   ]);
   const { projects, ideas, snippets, ideaUnread, recentProjects } = statsResult;
   const colMap = Object.fromEntries(cols.map(c => [c.id, c]));
@@ -646,73 +911,8 @@ async function renderDashboard() {
     return `<span class="deadline-urgency urgency-ok">${p.daysLeft}d</span>`;
   };
 
-  mainContent.innerHTML = `
-    <div class="view">
-      <div class="view-header">
-        <div>
-          <div class="view-title">Dashboard</div>
-          <div class="view-subtitle">${new Date().toLocaleDateString('es-CL', {weekday:'long', year:'numeric', month:'long', day:'numeric'})}</div>
-        </div>
-        <button class="btn btn-primary" id="dashAddProject">+ Nuevo Proyecto</button>
-      </div>
-
-      ${briefingHTML}
-
-      <div class="stats-grid-v2">
-        <div class="stat-card-v2">
-          <div class="stat-card-v2-bg" style="--sc:var(--accent)"></div>
-          <div class="stat-card-v2-icon">◉</div>
-          <div class="stat-card-v2-content">
-            <div class="stat-card-v2-value">${projects}</div>
-            <div class="stat-card-v2-label">Proyectos</div>
-          </div>
-          <svg class="stat-card-v2-arc" viewBox="0 0 40 40">
-            <circle class="anim-arc" cx="20" cy="20" r="16" fill="none" stroke="var(--accent)"
-                    stroke-width="2" stroke-dasharray="0 100" data-dash="${Math.min(projects*10,100)}"
-                    stroke-linecap="round" transform="rotate(-90 20 20)" opacity=".35"/>
-          </svg>
-        </div>
-        <div class="stat-card-v2">
-          <div class="stat-card-v2-bg" style="--sc:#a78bfa"></div>
-          <div class="stat-card-v2-icon" style="color:#a78bfa">◎</div>
-          <div class="stat-card-v2-content">
-            <div class="stat-card-v2-value" style="color:#a78bfa">${ideas}</div>
-            <div class="stat-card-v2-label">Ideas</div>
-          </div>
-          <svg class="stat-card-v2-arc" viewBox="0 0 40 40">
-            <circle class="anim-arc" cx="20" cy="20" r="16" fill="none" stroke="#a78bfa"
-                    stroke-width="2" stroke-dasharray="0 100" data-dash="${Math.min(ideas*8,100)}"
-                    stroke-linecap="round" transform="rotate(-90 20 20)" opacity=".35"/>
-          </svg>
-        </div>
-        <div class="stat-card-v2">
-          <div class="stat-card-v2-bg" style="--sc:var(--amber)"></div>
-          <div class="stat-card-v2-icon" style="color:var(--amber)">⚠</div>
-          <div class="stat-card-v2-content">
-            <div class="stat-card-v2-value" style="color:var(--amber)">${ideaUnread}</div>
-            <div class="stat-card-v2-label">Sin revisar</div>
-          </div>
-          <svg class="stat-card-v2-arc" viewBox="0 0 40 40">
-            <circle class="anim-arc" cx="20" cy="20" r="16" fill="none" stroke="var(--amber)"
-                    stroke-width="2" stroke-dasharray="0 100" data-dash="${Math.min(ideaUnread*20,100)}"
-                    stroke-linecap="round" transform="rotate(-90 20 20)" opacity=".35"/>
-          </svg>
-        </div>
-        <div class="stat-card-v2">
-          <div class="stat-card-v2-bg" style="--sc:var(--green)"></div>
-          <div class="stat-card-v2-icon" style="color:var(--green)">⟨/⟩</div>
-          <div class="stat-card-v2-content">
-            <div class="stat-card-v2-value" style="color:var(--green)">${snippets}</div>
-            <div class="stat-card-v2-label">Snippets</div>
-          </div>
-          <svg class="stat-card-v2-arc" viewBox="0 0 40 40">
-            <circle class="anim-arc" cx="20" cy="20" r="16" fill="none" stroke="var(--green)"
-                    stroke-width="2" stroke-dasharray="0 100" data-dash="${Math.min(snippets*10,100)}"
-                    stroke-linecap="round" transform="rotate(-90 20 20)" opacity=".35"/>
-          </svg>
-        </div>
-      </div>
-
+  host.innerHTML = `
+    <div class="panorama-inner">
       <!-- Mini chart distribución por tipo y por columna -->
       <div class="dash-charts-row">
         <div class="dash-chart-card">
@@ -792,244 +992,24 @@ async function renderDashboard() {
         </div>
       </div>
 
-      <div class="section-title">Proyectos Recientes</div>
-      <div class="recent-list">
-        ${recentProjects.length ? recentProjects.map(p => `
-          <div class="recent-item" data-inspect-project="${p.id}">
-            <span class="recent-dot" style="background:${colMap[p.columnId]?.color ?? '#888'}"></span>
-            <span class="recent-title">${esc(p.title)}</span>
-            <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
-            <span class="recent-meta">${esc(colMap[p.columnId]?.title ?? '—')}</span>
-          </div>
-        `).join('') : `<div class="empty-state"><span class="empty-state-icon">◉</span>
-          <h3>Sin proyectos aún</h3><p>Crea tu primer proyecto para comenzar</p></div>`}
-      </div>
-
-      ${overdue.length ? `
-      <div class="workload-alert">
-        ⚠ <strong>${overdue.length} proyecto(s) vencido(s)</strong>
-        — requieren atención inmediata.
-      </div>` : ''}
-
-      ${allAlert.length ? `
-      <div class="section-title mt-16">Carga de Trabajo — Próximos 30 días</div>
-      <div class="deadline-list" id="deadlineList">
-        ${allAlert.map(p => `
-          <div class="deadline-item" data-inspect-project="${p.id}">
-            ${urgencyBadge(p)}
-            <span class="deadline-title">${esc(p.title)}</span>
-            <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
-            <span class="deadline-date">${formatDate(p.deadline)}</span>
-          </div>`).join('')}
-      </div>` : ''}
-
-      <div class="section-title mt-16">Acciones Rápidas</div>
-      <div class="quick-actions">
-        <button class="btn btn-ghost" id="qAddIdea">+ Idea</button>
-        <button class="btn btn-ghost" id="qAddSnippet">+ Snippet</button>
-        <button class="btn btn-ghost" id="qGoKanban">Ver Kanban →</button>
-        <button class="btn btn-ghost" id="qGoFocus">🎯 Focus →</button>
-        <button class="btn btn-ghost" id="qGoTriage">◎ Revisar ideas →</button>
-        <button class="btn btn-ghost" id="qGoOrphans">🔗 Huérfanos →</button>
-        <button class="btn btn-ghost" id="qGoTimeline">Timeline →</button>
-        <button class="btn btn-ghost" id="qGoFS">FS Bridge →</button>
-      </div>
     </div>`;
 
   // Trigger bar & arc animations after paint
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    mainContent.querySelectorAll('.dash-bar-fill[data-w]').forEach(el => {
+    host.querySelectorAll('.dash-bar-fill[data-w]').forEach(el => {
       el.style.width = el.dataset.w + '%';
     });
-    mainContent.querySelectorAll('.anim-arc[data-dash]').forEach(el => {
+    host.querySelectorAll('.anim-arc[data-dash]').forEach(el => {
       el.setAttribute('stroke-dasharray', `${el.dataset.dash} 100`);
     });
   }));
 
-  $('dashAddProject').addEventListener('click', showAddProjectModal);
-  $('qAddIdea').addEventListener('click', showAddIdeaModal);
-  $('qAddSnippet').addEventListener('click', () => { navigate('snippets'); });
-  $('qGoKanban').addEventListener('click', () => navigate('kanban'));
-  $('qGoTimeline')?.addEventListener('click', () => navigate('timeline'));
-  $('qGoFocus')?.addEventListener('click',   () => navigate('focus'));
-  $('qGoTriage')?.addEventListener('click',  () => navigate('triage'));
-  $('qGoOrphans')?.addEventListener('click', () => navigate('orphans'));
-  $('qGoFS').addEventListener('click', () => navigate('filesystem'));
-  // Daily Briefing — toggle expandir/colapsar
-  $('dbToggleHeader')?.addEventListener('click', () => {
-    const details = $('dbDetails');
-    const btn     = $('dbToggleBtn');
-    if (!details || !btn) return;
-    const nowHidden = details.classList.toggle('db-details-hidden');
-    btn.textContent = nowHidden ? '▾' : '▴';
-    localStorage.setItem('ros-briefing-expanded', String(!nowHidden));
-  });
-  // Daily Briefing — navegación por filas
-  mainContent.querySelectorAll('[data-dash-nav]').forEach(btn =>
-    btn.addEventListener('click', () => navigate(btn.dataset.dashNav)));
-  mainContent.querySelectorAll('[data-db-inspect-project]').forEach(el =>
-    el.addEventListener('click', () => inspectProject(+el.dataset.dbInspectProject)));
-  mainContent.querySelectorAll('[data-db-inspect-meeting]').forEach(el =>
-    el.addEventListener('click', () => inspectMeeting(+el.dataset.dbInspectMeeting)));
-  mainContent.querySelectorAll('[data-db-inspect-idea]').forEach(el =>
-    el.addEventListener('click', () => inspectIdea(+el.dataset.dbInspectIdea)));
-  mainContent.querySelectorAll('[data-db-triage]').forEach(el =>
-    el.addEventListener('click', () => { App.triageIdx = 0; navigate('triage'); }));
-  mainContent.querySelectorAll('[data-inspect-project]').forEach(el => {
+  host.querySelectorAll('[data-inspect-project]').forEach(el => {
     el.addEventListener('click',      () => inspectProject(+el.dataset.inspectProject));
     el.addEventListener('mouseenter', () => HoverCard.show(+el.dataset.inspectProject, el));
     el.addEventListener('mouseleave', () => HoverCard.hide());
   });
 
-  // Render heatmap
-  await renderActivityHeatmap();
-
-  // -- Panel de alertas (zombie, urgentes, stale) ------
-  await _renderAlertPanel(mainContent.querySelector('.view'));
-}
-
-async function renderActivityHeatmap() {
-  const activityMap = await getActivityHeatmap();
-  const today       = new Date();
-  today.setHours(12, 0, 0, 0);
-
-  // Build 53-week grid starting from (today - 364 days), aligned to Sunday
-  const startDate = new Date(today);
-  startDate.setDate(startDate.getDate() - 364);
-  // Rewind to nearest Sunday
-  startDate.setDate(startDate.getDate() - startDate.getDay());
-
-  const weeks = [];
-  let cur = new Date(startDate);
-  while (cur <= today) {
-    const week = [];
-    for (let d = 0; d < 7; d++) {
-      const iso  = localDateISO(cur);
-      const cnt  = activityMap[iso] || 0;
-      const lvl  = cnt === 0 ? 0 : cnt <= 2 ? 1 : cnt <= 4 ? 2 : cnt <= 7 ? 3 : 4;
-      const future = cur > today;
-      week.push({ iso, cnt, lvl, future, dow: cur.getDay() });
-      cur.setDate(cur.getDate() + 1);
-    }
-    weeks.push(week);
-  }
-
-  // Month labels: detectar la primera semana de cada mes y anotar su índice exacto
-  const CELL_STRIDE = 15; // 12px celda + 3px gap
-  const months = [];
-  let lastMonth = -1;
-  weeks.forEach((week, wi) => {
-    // Buscar el primer día NO futuro de la semana para leer su mes
-    const firstReal = week.find(c => !c.future);
-    if (!firstReal) return;
-    const d = new Date(firstReal.iso + 'T12:00:00');
-    const mo = d.getMonth();
-    // Emitir label cuando cambia el mes (o en la primera semana)
-    if (mo !== lastMonth) {
-      months.push({
-        label: d.toLocaleDateString('es-CL', { month: 'short' }),
-        left:  wi * CELL_STRIDE   // posición absoluta en px
-      });
-      lastMonth = mo;
-    }
-  });
-
-  const totalActs = Object.values(activityMap).reduce((s, v) => s + v, 0);
-  const activeDays = Object.keys(activityMap).length;
-
-  const container = mainContent.querySelector('.view');
-  if (!container) return;
-
-  container.insertAdjacentHTML('beforeend', `
-    <div class="heatmap-section">
-      <div class="section-title">
-        Actividad anual
-        <span style="font-family:var(--font-mono);font-size:.7rem;color:var(--text-3);font-weight:400;margin-left:8px">
-          ${totalActs} ediciones · ${activeDays} días activos
-        </span>
-      </div>
-      <div class="heatmap-scroll">
-        <div class="heatmap-month-labels">
-          ${months.map(m => `<span class="heatmap-month-label" style="left:${m.left}px">${m.label}</span>`).join('')}
-        </div>
-        <div class="heatmap-grid" id="heatmapGrid">
-          ${weeks.map(week => `
-            <div class="heatmap-week">
-              ${week.map(cell => cell.future
-                ? `<div class="heatmap-cell" style="visibility:hidden"></div>`
-                : `<div class="heatmap-cell ${cell.cnt > 0 ? 'heatmap-cell-clickable' : ''}"
-                        data-level="${cell.lvl}" data-date="${cell.iso}"
-                        title="${cell.iso}: ${cell.cnt} actividad(es)${cell.cnt > 0 ? ' · Clic para ver' : ''}"></div>`
-              ).join('')}
-            </div>`).join('')}
-        </div>
-        <div class="heatmap-legend">
-          <span>Menos</span>
-          ${[0,1,2,3,4].map(l => `<div class="heatmap-legend-cell heatmap-cell" data-level="${l}"></div>`).join('')}
-          <span>Más</span>
-        </div>
-      </div>
-    </div>`);
-
-  // Handler de clic en celda del heatmap
-  container.querySelectorAll('.heatmap-cell-clickable').forEach(cell => {
-    cell.addEventListener('click', async () => {
-      const date = cell.dataset.date;
-      if (!date) return;
-
-      const [projects, ideas, snippets, refs, meets] = await Promise.all([
-        db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray(),
-        db.references.toArray(), db.meetings.toArray(),
-      ]);
-
-      // Filtrar por fecha (updatedAt o createdAt que coincida con 'date')
-      const matchDate = iso => iso && iso.startsWith(date);
-      const entries = [
-        ...projects.filter(p => matchDate(p.updatedAt) || matchDate(p.createdAt))
-                   .map(p => ({ icon:'◉', label: p.title, sub:'Proyecto', ts: p.updatedAt || p.createdAt,
-                                action: () => { closeModal(); inspectProject(p.id); } })),
-        ...ideas.filter(i => matchDate(i.updatedAt) || matchDate(i.createdAt))
-                .map(i => ({ icon:'◎', label: i.title, sub:'Idea', ts: i.updatedAt || i.createdAt,
-                             action: () => { closeModal(); inspectIdea(i.id); } })),
-        ...snippets.filter(s => matchDate(s.updatedAt) || matchDate(s.createdAt))
-                   .map(s => ({ icon:'⟨/⟩', label: s.title, sub: s.language || 'Snippet', ts: s.updatedAt,
-                                action: async () => { closeModal(); const f = await db.snippets.get(s.id); if(f) inspectSnippet(f); } })),
-        ...refs.filter(r => matchDate(r.updatedAt) || matchDate(r.createdAt))
-               .map(r => ({ icon:'📚', label: r.title, sub:'Referencia', ts: r.updatedAt,
-                            action: () => { closeModal(); inspectReference(r.id); } })),
-        ...meets.filter(m => matchDate(m.updatedAt) || matchDate(m.createdAt))
-                .map(m => ({ icon:'🗓', label: m.title, sub:'Reunión', ts: m.updatedAt,
-                             action: () => { closeModal(); inspectMeeting(m.id); } })),
-      ].sort((a, b) => (b.ts||'').localeCompare(a.ts||''));
-
-      const d = new Date(date + 'T12:00:00');
-      const dateLabel = d.toLocaleDateString('es-CL', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
-
-      showModal(`📅 ${dateLabel}`, `
-        <div class="modal-body" style="padding:0">
-          ${entries.length ? entries.map((e, idx) => `
-            <div class="activity-log-item" data-alog="${idx}"
-                 style="display:flex;align-items:center;gap:10px;padding:9px 16px;
-                        border-bottom:1px solid var(--border);cursor:pointer;
-                        transition:background 120ms;">
-              <span style="font-size:.9rem;flex-shrink:0">${e.icon}</span>
-              <div style="flex:1;min-width:0">
-                <div style="font-size:.82rem;font-weight:500;color:var(--text-1);
-                            overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.label)}</div>
-                <div style="font-size:.65rem;font-family:var(--font-mono);color:var(--text-3)">${esc(e.sub)} · ${relativeDate(e.ts)}</div>
-              </div>
-              <span style="font-size:.7rem;color:var(--text-3)">›</span>
-            </div>`).join('')
-          : `<div style="padding:28px;text-align:center;color:var(--text-3);font-size:.83rem">Sin actividad registrada para este día</div>`}
-        </div>`);
-
-      document.querySelectorAll('[data-alog]').forEach(el => {
-        el.addEventListener('mouseenter', () => el.style.background = 'var(--bg-hover)');
-        el.addEventListener('mouseleave', () => el.style.background = '');
-        el.addEventListener('click', () => entries[+el.dataset.alog]?.action());
-      });
-    });
-  });
 }
 
 // ==============================================================
@@ -1155,7 +1135,7 @@ function _kanbanBoardHTML(kanbanData, filterFn, unreadByProject, activeSubByProj
           pendingAIByProject[p.id] || 0
         )).join('')}
       </div>
-      <button class="kanban-add-btn" data-add-col="${col.id}">+ Add card</button>
+      <button class="kanban-add-btn" data-add-col="${col.id}">+ Añadir tarjeta</button>
     </div>`;
   }).join('');
 }
@@ -1164,7 +1144,7 @@ function _kanbanBoardHTML(kanbanData, filterFn, unreadByProject, activeSubByProj
 function _kanbanSwimlaneHTML(kanbanData, filterFn, unreadByProject, activeSubByProject, pendingAIByProject, groupBy, areaMap) {
   const TYPE_ICONS = {
     Paper:'📄', Grant:'💰', Análisis:'📊', Dataset:'🗄',
-    Proyecto:'◉', Presentación:'🎤'
+    Proyecto:'◉', Presentación:'🎤', Curso:'🎓'
   };
 
   const allCards = kanbanData.flatMap(col =>
@@ -1243,13 +1223,15 @@ function _kanbanSwimlaneHTML(kanbanData, filterFn, unreadByProject, activeSubByP
 //  VIEW: KANBAN
 // ==============================================================
 async function renderKanban() {
-  const [kanbanData, colPresets, areas, unreadIdeas, allKanbanMeets] = await Promise.all([
+  const [kanbanData, colPresets, areas, unreadIdeas, allKanbanMeets, taskStats] = await Promise.all([
     getKanbanData(),
     _getColPresets(),
     _getAreas(),
     db.ideas.where('status').equals('unread').toArray(),
     db.meetings.toArray(),
+    Tasks.statsByProject(),
   ]);
+  App._taskStats = taskStats;
   const areaMap = Object.fromEntries(areas.map(a => [a.id, a]));
   const unreadByProject = {};
   unreadIdeas.forEach(i => {
@@ -1282,9 +1264,9 @@ async function renderKanban() {
   // -- Filtro por preset activo ------------------------------
   const activePreset  = colPresets.find(pr => pr.id === App.activeColPreset);
   const filterByPreset = cards =>
-    (App.activeColPreset === 'all' || !activePreset)
+    ((App.activeColPreset === 'all' || !activePreset)
       ? cards
-      : cards.filter(p => activePreset.types.includes(p.type));
+      : cards.filter(p => activePreset.types.includes(p.type))).filter(inContext);
 
   // -- Contar visibles para el subtitle ---------------------
   const totalVisible = kanbanData.reduce((s, c) =>
@@ -1300,7 +1282,7 @@ async function renderKanban() {
   mainContent.innerHTML = `
     <div class="kanban-view-header">
       <div>
-        <div class="view-title">Kanban Board</div>
+        <div class="view-title">Tablero</div>
         <div class="view-subtitle">${totalVisible} proyecto(s) visibles</div>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
@@ -1415,7 +1397,9 @@ async function renderKanban() {
       input.value = oldTitle;
       el.replaceWith(input);
       input.focus(); input.select();
+      let done = false;
       const commit = async () => {
+        if (done) return; done = true;                 // Enter y la pérdida de foco que le sigue no deben guardar dos veces
         const newTitle = input.value.trim();
         if (newTitle && newTitle !== oldTitle) {
           await dbWrite(() => db.projects.update(projId, {
@@ -1424,12 +1408,12 @@ async function renderKanban() {
           showToast('Proyecto renombrado ✓', 'success');
           SaveIndicator.done();
         }
-        renderKanban();
+        renderView(App.view);
       };
       input.addEventListener('blur', commit);
       input.addEventListener('keydown', e => {
         if (e.key === 'Enter') { e.preventDefault(); commit(); }
-        if (e.key === 'Escape') renderKanban();
+        if (e.key === 'Escape') { done = true; renderView(App.view); }
       });
     });
   });
@@ -1461,17 +1445,17 @@ async function showManageColumnsModal() {
   const renderRows = () => cols.map((c, i) => `
     <div class="col-manage-row" data-col-id="${c._k}" data-col-idx="${i}">
       <span class="col-manage-handle" title="Reordenar" style="cursor:grab">⠿</span>
-      <input class="form-input col-manage-title"
+      <input class="form-input col-manage-title" aria-label="Nombre de la columna"
              value="${esc(c.title)}" data-col-id="${c._k}"
              style="flex:1;padding:5px 8px;font-size:.82rem">
-      <input type="color" class="col-manage-color"
+      <input type="color" class="col-manage-color" aria-label="Color de la columna"
              value="${esc(cssColor(c.color, '#38bdf8'))}" data-col-id="${c._k}"
              style="width:32px;height:32px;border:none;background:none;cursor:pointer;border-radius:6px">
       <input type="number" class="form-input col-manage-wip"
              value="${c.wip||''}" placeholder="WIP" data-col-id="${c._k}"
              style="width:64px;padding:5px 8px;font-size:.82rem"
              title="Límite de trabajo en curso (dejar vacío = sin límite)">
-      <button class="btn btn-ghost btn-sm col-manage-del" data-col-id="${c._k}"
+      <button class="btn btn-ghost btn-sm col-manage-del" data-col-id="${c._k}" aria-label="Eliminar columna"
               style="color:var(--red)" ${cols.length <= 1 ? 'disabled' : ''}>✕</button>
     </div>`).join('');
 
@@ -1513,7 +1497,7 @@ async function showManageColumnsModal() {
         if (col.id) {
           const count = await db.projects.where('columnId').equals(col.id).count();
           const dest  = cols[idx > 0 ? idx - 1 : idx + 1];
-          if (count > 0 && !confirm(`Esta columna tiene ${count} proyecto(s). Se moverán a «${dest.title}». ¿Continuar?`)) return;
+          if (count > 0 && !(await askConfirm(`Esta columna tiene ${count} proyecto(s). Se moverán a «${dest.title}».`, { title: '¿Quitar la columna?', confirmLabel: 'Quitar y mover' }))) return;
         }
         cols.splice(idx, 1);
         $('colManageList').innerHTML = renderRows();
@@ -1598,7 +1582,7 @@ async function showManageColumnsModal() {
 // -- Gestionar presets de Kanban -----------------
 async function showManagePresetsModal() {
   const presets  = await _getColPresets();
-  const ALL_TYPES = ['Proyecto','Grant','Paper','Análisis','Dataset','Presentación'];
+  const ALL_TYPES = ['Proyecto','Grant','Paper','Análisis','Dataset','Presentación','Curso'];
 
   const renderRows = () => presets.map((pr, i) => `
     <div style="display:flex;align-items:flex-start;gap:8px;padding:10px 0;
@@ -1678,10 +1662,24 @@ async function showManagePresetsModal() {
   });
 }
 
+/** «→ Próxima acción»: la tarea abierta propia con fecha más cercana del proyecto. */
+function nextActionHTML(projectId) {
+  const n = App._taskStats?.[projectId]?.next;
+  return n ? `<div class="next-action" title="Próxima acción"><span aria-hidden="true">→</span> <span class="next-title">${esc(n.title)}</span>${n.due ? ` <span class="next-due">${esc(dueLabel(n.due))}</span>` : ''}</div>` : '';
+}
+
+/** Insignia «✓ 2/5» con el avance de tareas de un proyecto (rojo si hay vencidas). */
+function taskPillHTML(projectId) {
+  const t = App._taskStats?.[projectId];
+  if (!t || !t.total) return '';
+  const cls = t.late ? 'late' : t.done === t.total ? 'done' : '';
+  return `<span class="task-pill ${cls}" title="${t.done} de ${t.total} tareas hechas${t.late ? ` · ${t.late} vencida(s)` : ''}">✓ ${t.done}/${t.total}</span>`;
+}
+
 function kanbanCardHTML(p, unreadCount = 0, activeSub = null, pendingAIs = 0) {
   // ── Compact mode ────────────────────────────────────────────
   if ((App.kanbanDensity || 'detailed') === 'compact') {
-    const TYPE_EMOJI  = { Paper:'📄', Grant:'💰', Análisis:'📊', Dataset:'🗄', Proyecto:'◉', Presentación:'🎤' };
+    const TYPE_EMOJI  = { Paper:'📄', Grant:'💰', Análisis:'📊', Dataset:'🗄', Proyecto:'◉', Presentación:'🎤', Curso:'🎓' };
     const PRIO_COLOR  = { Alta:'var(--red)', Media:'var(--amber)', Baja:'var(--green)' };
     const prioColor   = PRIO_COLOR[p.priority] || 'var(--text-3)';
     const daysSince   = p.updatedAt ? Math.floor((Date.now() - new Date(p.updatedAt)) / 86400000) : 0;
@@ -1695,6 +1693,7 @@ function kanbanCardHTML(p, unreadCount = 0, activeSub = null, pendingAIs = 0) {
           <span class="kanban-card-title-text"
                 data-inline-rename="${p.id}"
                 data-inline-rename-value="${esc(p.title)}">${esc(p.title)}</span>
+          ${p.starred ? '<span class="kanban-card-star" title="Favorito" role="img" aria-label="Favorito">★</span>' : ''}
           ${unreadCount > 0
             ? `<span style="font-size:.55rem;font-family:var(--font-mono);color:var(--amber);
                            flex-shrink:0">◎${unreadCount}</span>` : ''}
@@ -1732,7 +1731,7 @@ function kanbanCardHTML(p, unreadCount = 0, activeSub = null, pendingAIs = 0) {
       📤 ${sl}</span>`);
   }
 
-  const badgesRow = [ideaBadge, ...healthBadges].filter(Boolean).join('');
+  const badgesRow = [ideaBadge, taskPillHTML(p.id), ...healthBadges].filter(Boolean).join('');
 
   return `
     <div class="kanban-card${staleClass}" draggable="true" data-project-id="${p.id}"${staleTip}>
@@ -1743,8 +1742,9 @@ function kanbanCardHTML(p, unreadCount = 0, activeSub = null, pendingAIs = 0) {
       <div class="kanban-card-meta">
         <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
         <span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority)}</span>
+        ${p.starred ? '<span class="kanban-card-star" title="Favorito" role="img" aria-label="Favorito">★</span>' : ''}
       </div>
-      ${tags ? `<div class="project-card-tags" style="margin-bottom:6px">${tags}</div>` : ''}
+      ${nextActionHTML(p.id)}
       <div class="kanban-card-footer">
         <span class="kanban-card-person">
           ${p.responsible
@@ -2001,6 +2001,7 @@ async function renderProjects() {
   const cols      = await db.kanbanColumns.toArray();
   const colMap    = Object.fromEntries(cols.map(c => [c.id, c]));
   const f         = App.filters;
+  App._taskStats  = await Tasks.statsByProject();     // para la insignia «✓ n/m» de cada tarjeta
 
   // Apply compound filters
   let projects = allProjects.filter(p =>
@@ -2008,11 +2009,12 @@ async function renderProjects() {
     (f.priority === 'all' || p.priority === f.priority) &&
     (f.column   === 'all' || p.columnId === +f.column) &&
     (App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible) &&
-    (App.filterArea        === 'all' || p.areaId === +App.filterArea)
+    (App.filterArea        === 'all' || p.areaId === +App.filterArea) &&
+    inContext(p)
   );
   App._filteredProjectIds = projects.map(p => p.id);     // "Seleccionar todos" actúa solo sobre lo filtrado
 
-  const types        = ['all','Proyecto','Grant','Paper','Análisis','Dataset','Presentación'];
+  const types        = ['all','Proyecto','Grant','Paper','Análisis','Dataset','Presentación','Curso'];
   const prios        = ['all','Alta','Media','Baja'];
   const responsables = [...new Set(allProjects.map(p => p.responsible).filter(Boolean))].sort();
   const hasActiveFilters = f.type !== 'all' || f.priority !== 'all' || f.column !== 'all' ||
@@ -2069,6 +2071,8 @@ async function renderProjects() {
         </div>
       </div>
 
+      <details class="filters-fold" id="filtersFold" ${hasActiveFilters || localStorage.getItem('ros-proj-filters-open') === '1' ? 'open' : ''}>
+      <summary>Filtros y agrupación${hasActiveFilters ? ` <span class="filters-on">${activePills.length} activo${activePills.length !== 1 ? 's' : ''}</span>` : ''}</summary>
       <div class="cross-filter-bar">
         <div class="cross-filter-group">
           <div class="cross-filter-label">Tipo</div>
@@ -2099,7 +2103,7 @@ async function renderProjects() {
         <div class="cross-filter-group">
           <div class="cross-filter-label">Agrupar por</div>
           <div class="cross-filter-chips">
-            <select class="form-select" id="groupBySelect" style="font-size:.73rem;padding:4px 10px;height:auto">
+            <select class="form-select" id="groupBySelect" aria-label="Agrupar proyectos por" style="font-size:.73rem;padding:4px 10px;height:auto">
               <option value="none"        ${App.groupBy==='none'        ?'selected':''}>Sin agrupación</option>
               <option value="type"        ${App.groupBy==='type'        ?'selected':''}>Tipo</option>
               <option value="priority"    ${App.groupBy==='priority'    ?'selected':''}>Prioridad</option>
@@ -2111,6 +2115,7 @@ async function renderProjects() {
         </div>
         ${hasActiveFilters ? `<button class="btn btn-ghost btn-sm" id="clearFiltersBtn" style="align-self:flex-end">✕ Limpiar filtros</button>` : ''}
       </div>
+      </details>
 
       ${activePills.length ? `<div class="active-filters-row">
         ${activePills.map(p => `<span class="active-filter-pill" data-clear-filter="${p.key}">${esc(p.label)} ✕</span>`).join('')}
@@ -2123,7 +2128,8 @@ async function renderProjects() {
       </div>
     </div>`);
 
-  $('projAddBtn').addEventListener('click', showAddProjectModal);
+  $('projAddBtn').addEventListener('click', () => showAddProjectModal());
+  $('filtersFold')?.addEventListener('toggle', e => { try { localStorage.setItem('ros-proj-filters-open', e.target.open ? '1' : '0'); } catch {} });
   $('viewModeGrid')?.addEventListener('click', () => {
     App.projViewMode = 'grid';
     localStorage.setItem('ros-proj-view-mode', 'grid');
@@ -2134,9 +2140,9 @@ async function renderProjects() {
     localStorage.setItem('ros-proj-view-mode', 'list');
     renderView('projects');
   });
-  $('saveViewBtn')?.addEventListener('click', () => {
-    const name = prompt('Nombre para esta vista (p.ej. "Papers Alta Prioridad"):');
-    if (!name?.trim()) return;
+  $('saveViewBtn')?.addEventListener('click', async () => {
+    const name = await askText('Guardar esta vista de filtros', { placeholder: 'p. ej. Papers de prioridad alta', message: 'Ponle un nombre para volver a ella con un clic.' });
+    if (!name) return;
     _saveSavedView(name.trim(), { ...App.filters });
     showToast(`Vista "${name}" guardada ✓`, 'success');
     renderView('projects');
@@ -2196,7 +2202,6 @@ async function renderProjects() {
   });
 
   // -- Panel de alertas --------------------------------
-  _renderAlertPanel(mainContent.querySelector('.view')).catch(() => {});
   } // fin if (!_dataOnly)
 
   // Async: compute completeness for each card then render
@@ -2240,7 +2245,7 @@ async function renderProjects() {
     });
 
     const nowMs      = Date.now();
-    const isZombie   = p => !!p.updatedAt && (nowMs - new Date(p.updatedAt)) > 30 * 86400000;
+    const isZombie   = p => isIdle(p);     // sin movimiento; no cuenta lo que espera respuesta ni lo terminado
     const getRollup  = pid => {
       const ch = childMap[pid] || [];
       if (!ch.length) return null;
@@ -2311,7 +2316,7 @@ async function renderProjects() {
               ${p.starred ? '<span style="color:var(--amber);margin-right:4px">★</span>' : ''}
               ${esc(p.title)}
               ${rollup ? `<span class="rollup-badge" style="vertical-align:middle;margin-left:4px">⊕${rollup.count}</span>` : ''}
-              ${zombie ? `<span class="zombie-badge" style="vertical-align:middle;margin-left:4px">zombie</span>` : ''}
+              ${zombie ? `<span class="zombie-badge" style="vertical-align:middle;margin-left:4px">quieto</span>` : ''}
             </td>
             <td class="ptd"><span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span></td>
             <td class="ptd tbl-editable"
@@ -2539,7 +2544,7 @@ async function renderProjects() {
 
       $('bkDelete')?.addEventListener('click', async () => {
         if (!App.bulkSelected.size) return showToast('Selecciona al menos un proyecto', 'error');
-        if (!confirm(`¿Eliminar ${App.bulkSelected.size} proyectos permanentemente?`)) return;
+        if (!(await askConfirm(`Se eliminarán ${App.bulkSelected.size} proyectos (con «Deshacer» podrás recuperarlos unos segundos).`, { title: `¿Eliminar ${App.bulkSelected.size} proyectos?`, confirmLabel: 'Eliminar', danger: true }))) return;
         const n = App.bulkSelected.size;
         const undos = [];
         await dbWrite(async () => { for (const pid of [...App.bulkSelected]) undos.push(await deleteProjectCascade(pid)); });
@@ -2616,7 +2621,7 @@ function projectCardHTML(p, col, completeness = null, zombie = false, area = nul
     ? `<span class="badge" style="background:rgba(120,120,120,.15);color:var(--text-3)">Archivado</span>` : '';
   return `
     <div class="card clickable" data-inspect-project="${p.id}">
-      ${zombie ? `<span class="zombie-badge" title="Sin actividad >30 días">⊘ zombie</span>` : ''}
+      ${zombie ? `<span class="zombie-badge" title="Sin movimiento hace más de 30 días">⊘ quieto</span>` : ''}
       ${area   ? `<span class="area-chip" style="border-color:${cssColor(area.color)};color:${cssColor(area.color)}"
                         title="Área: ${esc(area.name)}">⊡ ${esc(area.name)}</span>` : ''}
       ${rollup ? `<span class="rollup-badge" title="${rollup.count} subproyecto(s)">
@@ -2630,13 +2635,15 @@ function projectCardHTML(p, col, completeness = null, zombie = false, area = nul
           <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
         </div>
       </div>
-      <div class="project-card-desc">${esc(p.description || 'Sin descripción.')}</div>
+      <div class="project-card-desc">${esc(plainPreview(p.description) || 'Sin descripción.')}</div>
+      ${nextActionHTML(p.id)}
       ${tags ? `<div class="project-card-tags">${tags}</div>` : ''}
       ${completeness !== null ? completenessBarHTML(completeness) : ''}
       <div class="project-card-footer">
         <div>
           <div class="project-card-meta">👤 ${esc(p.responsible || '—')}</div>
           ${p.deadline ? `<div class="project-card-meta">⏱ ${formatDate(p.deadline)}</div>` : ''}
+          ${taskPillHTML(p.id)}
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
           <span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority)}</span>
@@ -2649,10 +2656,13 @@ function projectCardHTML(p, col, completeness = null, zombie = false, area = nul
 // ==============================================================
 //  VIEW: IDEAS INBOX
 // ==============================================================
+const IDEAS_PAGE = 150;           // las bandejas enormes se pintan por tandas: 1 500 tarjetas tardaban ~3 s
 async function renderIdeas() {
   const ideas    = await db.ideas.orderBy('createdAt').reverse().toArray();
+  const ideasLimit = App._ideasLimit || IDEAS_PAGE;
   const projects = await db.projects.toArray();
   const projMap  = Object.fromEntries(projects.map(p => [p.id, p]));
+  const stMap    = await Tasks.countsByIdea();
 
   const _draftTitle   = sessionStorage.getItem('ros-idea-draft-title')   || '';
   const _draftContent = sessionStorage.getItem('ros-idea-draft-content') || '';
@@ -2661,7 +2671,7 @@ async function renderIdeas() {
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">Ideas Inbox</div>
+          <div class="view-title">Ideas</div>
           <div class="view-subtitle">${ideas.filter(i=>i.status==='unread').length} sin revisar</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
@@ -2749,10 +2759,10 @@ async function renderIdeas() {
 
       <!-- Ideas list -->
       <div class="ideas-list" id="ideasList">
-        ${ideas.length ? ideas.map(i => {
+        ${ideas.length ? ideas.slice(0, ideasLimit).map(i => {
           const proj = i.projectId ? projMap[i.projectId] : null;
-          const stCount = (i.subtasks||[]).length;
-          const stDone  = (i.subtasks||[]).filter(t => t.done).length;
+          const stCount = stMap[i.id]?.total || 0;
+          const stDone  = stMap[i.id]?.done  || 0;
           return `
             <div class="idea-item ${i.status==='unread'?'idea-unread':''}"
                  data-idea-id="${i.id}"
@@ -2774,7 +2784,7 @@ async function renderIdeas() {
                 <div class="idea-title">${esc(i.title)}</div>
                 ${i.content ? `<div class="idea-content md-preview"
                   style="font-family:var(--font-mono);font-size:.73rem;
-                         max-height:3.6em;overflow:hidden">${renderMd(i.content)}</div>` : ''}
+                         max-height:3.6em;overflow:hidden">${renderMd(String(i.content).slice(0, 360))}</div>` : ''}
                 <div class="idea-footer">
                   ${(i.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
                   ${(i.projectIds||[i.projectId]).filter(Boolean).map(pid=>{
@@ -2795,9 +2805,12 @@ async function renderIdeas() {
             </div>`;
         }).join('')
         : `<div class="empty-state"><span class="empty-state-icon">◎</span>
-             <h3>Inbox vacío</h3><p>Captura tu primera idea arriba</p></div>`}
+             <h3>Inbox vacío</h3><p>Captura tu primera idea arriba</p>
+             <button class="btn btn-primary btn-sm" data-empty-cta="idea" style="margin-top:12px">Escribir una idea</button></div>`}
       </div>
+      ${ideas.length > ideasLimit ? `<button class="btn btn-ghost" id="ideasMore" style="margin:12px auto 0;display:block">Mostrar ${Math.min(IDEAS_PAGE, ideas.length - ideasLimit)} más · quedan ${ideas.length - ideasLimit}</button>` : ''}
     </div>`;
+  $('ideasMore')?.addEventListener('click', () => { const y = mainContent.scrollTop; App._ideasLimit = ideasLimit + IDEAS_PAGE; renderIdeas().then(() => { mainContent.scrollTop = y; }); });
 
   $('saveIdeaBtn').addEventListener('click', saveQuickIdea);
   $('ideaTitleInput').addEventListener('input', () =>
@@ -2858,11 +2871,12 @@ async function renderIdeas() {
 
     $('ibDelete')?.addEventListener('click', async () => {
       if (!App.ideaBulkSelected.size) return showToast('Selecciona ideas primero', 'error');
-      if (!confirm(`¿Eliminar ${App.ideaBulkSelected.size} idea(s)?`)) return;
-      await dbWrite(() =>
-        db.ideas.where('id').anyOf([...App.ideaBulkSelected]).delete()
-      );
-      showToast(`${App.ideaBulkSelected.size} ideas eliminadas`, 'info');
+      const n = App.ideaBulkSelected.size;
+      if (!(await askConfirm(`Se eliminarán ${n} idea(s) y sus tareas.`, { title: `¿Eliminar ${n} idea(s)?`, confirmLabel: 'Eliminar', danger: true }))) return;
+      const restores = [];
+      await dbWrite(async () => { for (const iid of [...App.ideaBulkSelected]) restores.push(await deleteIdeaCascade(iid)); });
+      UndoStack.push({ label: `Eliminar ${n} ideas`, undo: async () => { await dbWrite(async () => { for (const r of restores.reverse()) await r(); }); } });
+      showToastWithUndo(`${n} ideas eliminadas`, 'info');
       App.ideaBulkSelected.clear();
       App.ideaBulkMode = false;
       renderIdeas();
@@ -2996,7 +3010,7 @@ async function renderIdeas() {
   mainContent.querySelectorAll('.idea-delete-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (confirm('¿Eliminar esta idea?')) {
+      {
         await deleteWithUndo('ideas', +btn.dataset.ideaId, 'Eliminar idea', 'Idea eliminada');
         renderIdeas();
         updateBadges();
@@ -3021,10 +3035,10 @@ async function renderIdeas() {
   }, 80);
 }
 
-function ideaItemHTML(idea, projMap) {
+function ideaItemHTML(idea, projMap, stMap = {}) {
   const proj = idea.projectId ? projMap[idea.projectId] : null;
-  const stCount  = (idea.subtasks || []).length;
-  const stDone   = (idea.subtasks || []).filter(t => t.done).length;
+  const stCount  = stMap[idea.id]?.total || 0;
+  const stDone   = stMap[idea.id]?.done  || 0;
   return `
     <div class="idea-item ${idea.status === 'unread' ? 'idea-unread' : ''}" data-idea-id="${idea.id}">
       <button class="idea-status-btn ${idea.status === 'reviewed' ? 'reviewed' : ''}"
@@ -3139,7 +3153,8 @@ async function renderSnippets() {
           <div class="snippets-list">
             ${snippets.length ? snippets.map(s => snippetCardHTML(s, projMap, colMap)).join('')
               : `<div class="empty-state"><span class="empty-state-icon">⟨/⟩</span>
-                  <h3>Sin snippets</h3><p>Guarda tu primer fragmento de código</p></div>`}
+                  <h3>Sin snippets</h3><p>Guarda tu primer fragmento de código</p>
+                  <button class="btn btn-primary btn-sm" data-empty-cta="snippet" style="margin-top:12px">+ Snippet</button></div>`}
           </div>
         </div>
       </div>
@@ -3165,7 +3180,7 @@ async function renderSnippets() {
   mainContent.querySelectorAll('.snippet-delete-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (confirm('¿Eliminar este snippet?')) {
+      {
         await deleteWithUndo('snippets', +btn.dataset.id, 'Eliminar snippet', 'Snippet eliminado');
         renderSnippets();
         updateBadges();
@@ -3218,7 +3233,7 @@ function snippetCardHTML(s, projMap, colMap = {}) {
           <button class="btn btn-ghost btn-sm snippet-star-btn" data-id="${s.id}"
                   title="${s.starred ? 'Quitar favorito' : 'Marcar favorito'}">${s.starred ? '★' : '☆'}</button>
           <button class="btn btn-ghost btn-sm snippet-edit-btn" data-id="${s.id}" title="Editar">✎</button>
-          <button class="btn btn-ghost btn-sm snippet-delete-btn" data-id="${s.id}">✕</button>
+          <button class="btn btn-ghost btn-sm snippet-delete-btn" data-id="${s.id}" title="Eliminar snippet">✕</button>
         </div>
       </div>
       ${s.description ? `<div class="snippet-desc">${esc(s.description)}</div>` : ''}
@@ -3581,7 +3596,7 @@ async function renderTimeline() {
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">Timeline</div>
+          <div class="view-title">Línea de tiempo</div>
           <div class="view-subtitle" id="tlSubtitle"></div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
@@ -3948,7 +3963,7 @@ async function renderArchived() {
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">Proyectos Archivados</div>
+          <div class="view-title">Archivados</div>
           <div class="view-subtitle">${projects.length} proyecto(s) archivado(s)</div>
         </div>
       </div>
@@ -4012,7 +4027,7 @@ async function renderNestedProjects() {
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">⬡ Proyectos Anidados</div>
+          <div class="view-title">Jerarquía de proyectos</div>
           <div class="view-subtitle">${roots.length} proyectos raíz · ${all.length} total</div>
         </div>
         <button class="btn btn-primary" id="nestAddRoot">+ Proyecto Raíz</button>
@@ -4024,6 +4039,7 @@ async function renderNestedProjects() {
                <span class="empty-state-icon">⬡</span>
                <h3>Sin proyectos</h3>
                <p>Crea tu primer proyecto raíz</p>
+               <button class="btn btn-primary btn-sm" data-empty-cta="project" style="margin-top:12px">+ Proyecto</button>
              </div>`}
       </div>
     </div>`;
@@ -4198,7 +4214,7 @@ async function renderWeeklyAgenda() {
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">📅 Agenda</div>
+          <div class="view-title">Calendario</div>
           <div class="view-subtitle">${subtitleHTML}</div>
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -4593,7 +4609,7 @@ async function showManageSubStagesModal() {
       <div style="font-size:.75rem;color:var(--text-3);margin-bottom:10px">
         Icono · Etiqueta completa · Etiqueta corta · Color.
         Las claves internas se generan del nombre al crear etapas nuevas.
-        Los cambios se propagan al Kanban, Hub, Submissions y Settings.
+        Los cambios se propagan al Kanban, Hub, Submissions y Ajustes.
       </div>
       <div id="stageManageList">${renderRows()}</div>
       <button class="btn btn-ghost btn-sm" id="stageAddNew"
@@ -4734,7 +4750,7 @@ async function renderSubmissions() {
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">📤 Submission Tracker</div>
+          <div class="view-title">Submissions</div>
           <div class="view-subtitle">${paperProjects.length} paper(s) en seguimiento</div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
@@ -4825,6 +4841,7 @@ async function renderSubmissions() {
              <span class="empty-state-icon">📤</span>
              <h3>Sin papers en seguimiento</h3>
              <p>Crea un proyecto tipo Paper para comenzar</p>
+             <button class="btn btn-primary btn-sm" data-empty-cta="paper" style="margin-top:12px">+ Nuevo Paper</button>
            </div>`}
       </div>
     </div>`;
@@ -4948,7 +4965,7 @@ async function renderMeetings() {
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">🗓 Log de Reuniones</div>
+          <div class="view-title">Reuniones</div>
           <div class="view-subtitle">${meetings.length} reunión(es) registrada(s)</div>
         </div>
         <button class="btn btn-primary" id="addMeetingBtn">+ Reunión</button>
@@ -4972,6 +4989,7 @@ async function renderMeetings() {
              <span class="empty-state-icon">🗓</span>
              <h3>Sin reuniones registradas</h3>
              <p>Registra reuniones con colaboradores, comités o directores</p>
+             <button class="btn btn-primary btn-sm" data-empty-cta="meeting" style="margin-top:12px">+ Reunión</button>
            </div>`}
       </div>
     </div>`;
@@ -5012,9 +5030,9 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
           placeholder="Se acordó enviar borrador antes del 15…"></textarea>
       </div>
       <div class="form-group">
-        <label class="form-label">Próximos pasos (uno por línea)</label>
+        <label class="form-label">Próximos pasos (uno por línea · <code>&gt;persona</code> y fechas como «viernes» funcionan)</label>
         <textarea class="form-textarea" id="am-actions" rows="3"
-          placeholder="Revisar sección 2&#10;Enviar datos a Dr. Vega&#10;Preparar slides"></textarea>
+          placeholder="Revisar sección 2&#10;Enviar datos &gt;vega viernes&#10;Preparar slides mañana"></textarea>
       </div>
     </div>
     <div class="modal-footer">
@@ -5033,9 +5051,12 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
     const title = $('am-title').value.trim();
     const date  = $('am-date').value;
     if (!title || !date) { showToast('Título y fecha son requeridos', 'error'); return; }
+    // Cada línea admite «>persona» y una fecha: «Enviar datos >vega viernes»
+    const people = await db.collaborators.toArray();
     const actionItems = $('am-actions').value.split('\n')
       .map(s => s.trim()).filter(Boolean)
-      .map(text => ({ id: Date.now() + Math.random(), text, done: false }));
+      .map(line => { const c = parseCapture(line, [], new Date(), people);
+        return { id: Date.now() + Math.random(), text: c.title || line, done: false, due: c.due, assigneeId: c.assigneeId }; });
     const now = new Date().toISOString();
     await dbWrite(() => db.meetings.add({
       title, date,
@@ -5071,6 +5092,11 @@ async function inspectMeeting(id) {
     : null;
   const proj = m.projectId ? await db.projects.get(m.projectId) : null;
   const ais  = m.actionItems || [];
+  const whoName = Object.fromEntries(_meetCollabs.map(c => [c.id, c.name]));
+  // Pendientes con las personas que asisten (para saber qué tratar en la reunión)
+  const attendees = (m.participants || '').split(',').map(n => _meetCollabByName[n.trim().toLowerCase()]).filter(Boolean);
+  const attendeePending = [];
+  for (const c of attendees) for (const it of await pendingWith(c.id)) attendeePending.push({ ...it, who: c.name });
 
   inspectorBody.innerHTML = `
     <div>
@@ -5105,8 +5131,16 @@ async function inspectMeeting(id) {
           <div class="subtask-item">
             <button class="subtask-check ${a.done?'done':''}" data-toggle-ai="${esc(a.id)}">${a.done?'✓':''}</button>
             <span class="subtask-text ${a.done?'done':''}">${esc(a.text)}</span>
+            ${a.assigneeId ? `<span class="tw-sub" title="Esperando a esta persona">→ ${esc(whoName[a.assigneeId] || '?')}</span>` : ''}
+            ${a.due ? `<span class="subtask-due has-due ${!a.done && a.due < localDateISO() ? 'overdue' : ''}" style="cursor:default">${esc(dueLabel(a.due))}</span>` : ''}
           </div>`).join('')}
       </div>
+
+      ${attendeePending.length ? `
+        <div class="inspector-related-title">Para tratar con los asistentes (${attendeePending.length})</div>
+        ${attendeePending.map(t => `<div class="inspector-related-item" style="display:flex;gap:6px">
+          <span style="color:var(--amber)">⏳</span><span style="flex:1">${esc(t.title)}</span>
+          <span class="tw-sub">${esc(t.who)}${t.due ? ' · ' + esc(dueLabel(t.due)) : ''}</span></div>`).join('')}` : ''}
 
       <div class="inspector-actions" style="margin-top:14px">
         <button class="btn btn-ghost btn-sm" id="meetEditBtn">✎ Editar</button>
@@ -5123,7 +5157,7 @@ async function inspectMeeting(id) {
   inspectorBody.querySelectorAll('[data-toggle-ai]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const aid = btn.dataset.toggleAi;
-      const updated = ais.map(a => a.id == aid ? {...a, done: !a.done} : a);
+      const updated = ais.map(a => a.id == aid ? {...a, done: !a.done, doneAt: a.done ? null : new Date().toISOString()} : a);
       await dbWrite(() => db.meetings.update(id, { actionItems: updated, updatedAt: new Date().toISOString() }));
       inspectMeeting(id);
     });
@@ -5180,7 +5214,6 @@ async function inspectMeeting(id) {
   });
 
   $('meetDeleteBtn').addEventListener('click', async () => {
-    if (!confirm(`¿Eliminar esta reunión?`)) return;
     await deleteWithUndo('meetings', id, 'Eliminar reunión', 'Reunión eliminada');
     closeInspector();
     if (App.view === 'meetings') renderMeetings();
@@ -5200,23 +5233,31 @@ async function renderReferences() {
 
   // Filter by project if set
   const filterProjId = App._refFilterProject || 'all';
-  const visible = filterProjId === 'all' ? refs
-    : refs.filter(r => r.projectId === +filterProjId);
+  const readFilter = App._refReadFilter || 'all';
+  const READ = { toread: ['📖', 'Por leer'], reading: ['👓', 'Leyendo'], read: ['✓', 'Leída'] };
+  const visible = (filterProjId === 'all' ? refs : refs.filter(r => r.projectId === +filterProjId))
+    .filter(r => readFilter === 'all' || (readFilter === 'none' ? !r.readStatus : r.readStatus === readFilter));
 
   mainContent.innerHTML = `
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">📚 Referencias</div>
+          <div class="view-title">Referencias</div>
           <div class="view-subtitle">${visible.length} de ${refs.length} referencia(s)</div>
         </div>
         <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost" id="importRefsBtn" title="Importar desde Zotero, Mendeley o cualquier gestor (.bib, .ris)">⬆ Importar .bib / .ris</button>
+          <input type="file" id="importRefsInput" accept=".bib,.ris,.txt,text/plain" multiple hidden>
           <button class="btn btn-ghost" id="exportBibtexBtn">⬇ .bib</button>
           <button class="btn btn-primary" id="addRefBtn">+ Referencia</button>
         </div>
       </div>
 
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
+        <div class="read-filter" role="group" aria-label="Estado de lectura">
+          ${[['all', 'Todas'], ['toread', '📖 Por leer'], ['reading', '👓 Leyendo'], ['read', '✓ Leídas']].map(([k, l]) =>
+            `<button class="filter-chip ${readFilter === k ? 'active' : ''}" data-read-filter="${k}">${l}</button>`).join('')}
+        </div>
         <select class="form-select" id="refProjectFilter" style="max-width:240px;font-size:.8rem">
           <option value="all">Todos los proyectos</option>
           ${projects.map(p => `<option value="${p.id}" ${p.id == filterProjId?'selected':''}>${esc(p.title)}</option>`).join('')}
@@ -5234,6 +5275,7 @@ async function renderReferences() {
                 ${r.journal ? `<div class="ref-card-journal">${esc(r.journal)}</div>` : ''}
               </div>
               <div class="ref-card-side">
+                <button class="read-chip ${r.readStatus || 'none'}" data-ref-read="${r.id}" title="Cambiar estado de lectura">${r.readStatus ? READ[r.readStatus].join(' ') : '＋ estado'}</button>
                 ${r.doi ? `<a class="ref-doi-link" href="https://doi.org/${esc(encodeURI(r.doi))}" target="_blank" rel="noopener noreferrer"
                   onclick="event.stopPropagation()">DOI ↗</a>` : ''}
                 ${proj ? `<span style="font-size:.65rem;color:var(--accent)">⬡ ${esc(proj.title)}</span>` : ''}
@@ -5244,11 +5286,27 @@ async function renderReferences() {
              <span class="empty-state-icon">📚</span>
              <h3>Sin referencias</h3>
              <p>Agrega papers y fuentes vinculadas a tus proyectos</p>
+             <button class="btn btn-primary btn-sm" data-empty-cta="reference" style="margin-top:12px">+ Referencia</button>
+             <button class="btn btn-ghost btn-sm" data-empty-cta="import-bib" style="margin-top:12px">Importar .bib / .ris</button>
            </div>`}
       </div>
     </div>`;
 
-  $('addRefBtn').addEventListener('click', showAddReferenceModal);
+  $('addRefBtn').addEventListener('click', () => showAddReferenceModal());
+  mainContent.querySelectorAll('[data-read-filter]').forEach(b => b.addEventListener('click', () => { App._refReadFilter = b.dataset.readFilter; renderReferences(); }));
+  mainContent.querySelectorAll('[data-ref-read]').forEach(b => b.addEventListener('click', async e => {
+    e.stopPropagation();
+    const id = +b.dataset.refRead, cur = refs.find(r => r.id === id)?.readStatus || null;
+    const next = { null: 'toread', toread: 'reading', reading: 'read', read: null }[cur];
+    const stamp = new Date().toISOString();
+    await dbWrite(() => db.references.update(id, { readStatus: next, readAt: next === 'read' ? stamp : null, updatedAt: stamp }));
+    renderReferences();
+  }));
+  $('importRefsBtn').addEventListener('click', () => $('importRefsInput').click());
+  $('importRefsInput').addEventListener('change', e => {
+    const files = [...e.target.files]; e.target.value = '';
+    if (files.length) startReferenceImport(files);
+  });
 
   $('exportBibtexBtn').addEventListener('click', async () => {
     const pid = filterProjId !== 'all' ? +filterProjId : null;
@@ -5291,6 +5349,43 @@ async function _lookupDOI(doi) {
       doi:     m.DOI || clean,
     };
   } catch { return null; }
+}
+
+/** Lee archivos .bib / .ris y abre la vista previa de importación. */
+async function startReferenceImport(files) {
+  const records = [];
+  for (const f of files) {
+    const text = await f.text();
+    records.push(...(/^\s*TY\s{2}-/m.test(text) ? parseRIS(text) : bibtexToReferences(parseBibtex(text))));
+  }
+  if (!records.length) return showToast('No se encontraron referencias en el archivo (¿es .bib o .ris?)', 'error');
+  const projects = await db.projects.toArray();
+  const existing = new Set((await db.references.toArray()).map(refDedupeKey));
+  const fresh = records.filter(r => !existing.has(refDedupeKey(r)));
+  showModal('⬆ Importar referencias', `
+    <div class="modal-body">
+      <p style="font-size:.85rem;color:var(--text-2);margin-bottom:12px">
+        Se encontraron <strong style="color:var(--text-1)">${records.length}</strong> referencia(s);
+        <strong style="color:var(--text-1)">${fresh.length}</strong> son nuevas${records.length - fresh.length ? ` y ${records.length - fresh.length} ya existen (se omitirán)` : ''}.
+      </p>
+      <div class="form-group">
+        <label class="form-label">Vincular a un proyecto (opcional)</label>
+        <select class="form-select" id="impRefProject"><option value="">Sin proyecto</option>
+          ${projects.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}</select>
+      </div>
+      <div class="import-preview">${fresh.slice(0, 6).map(r => `<div>${esc(r.authors.split(';')[0] || '—')} (${r.year || 's/f'}) — ${esc(r.title.slice(0, 80))}</div>`).join('')}${fresh.length > 6 ? `<div>…y ${fresh.length - 6} más</div>` : ''}</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="impRefCancel">Cancelar</button>
+      <button class="btn btn-primary" id="impRefOk" ${fresh.length ? '' : 'disabled'}>Importar ${fresh.length}</button>
+    </div>`);
+  $('impRefCancel').addEventListener('click', closeModal);
+  $('impRefOk').addEventListener('click', async () => {
+    const res = await dbWrite(() => importReferences(records, { projectId: +$('impRefProject').value || null }));
+    closeModal();
+    showToast(`${res.added} referencia(s) importada(s)${res.skipped ? ` · ${res.skipped} ya existían` : ''} ✓`, 'success');
+    if (App.view === 'references') renderReferences();
+  });
 }
 
 async function showAddReferenceModal(preProjectId = null) {
@@ -5550,7 +5645,6 @@ async function inspectReference(id) {
     });
   });
   $('refDeleteBtn').addEventListener('click', async () => {
-    if (!confirm(`¿Eliminar "${r.title}"?`)) return;
     await deleteWithUndo('references', id, 'Eliminar referencia', 'Referencia eliminada');
     closeInspector();
     if (App.view === 'references') renderReferences();
@@ -5761,7 +5855,7 @@ async function renderCollaborators() {
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">👥 Colaboradores</div>
+          <div class="view-title">Colaboradores</div>
           <div class="view-subtitle">${collabs.length} colaborador(es)</div>
         </div>
         <button class="btn btn-primary" id="addCollabBtn">+ Colaborador</button>
@@ -5795,6 +5889,7 @@ async function renderCollaborators() {
              <span class="empty-state-icon">👥</span>
              <h3>Sin colaboradores</h3>
              <p>Registra coautores, directores y contactos de investigación</p>
+             <button class="btn btn-primary btn-sm" data-empty-cta="collaborator" style="margin-top:12px">+ Colaborador</button>
            </div>`}
       </div>
     </div>`;
@@ -5870,6 +5965,7 @@ async function inspectCollaborator(id) {
   const linked = projects.filter(p =>
     p.responsible === c.name || (p.coauthors||[]).includes(c.name)
   );
+  const pending = await pendingWith(id);
 
   inspectorBody.innerHTML = `
     <div>
@@ -5900,6 +5996,12 @@ async function inspectCollaborator(id) {
       </div>
       ${c.notes ? `<div class="inspector-related-title">Notas</div>
         <div class="inspector-desc">${esc(c.notes)}</div>` : ''}
+      ${pending.length ? `
+        <div class="inspector-related-title">Esperando a ${esc(c.name.split(' ')[0])} (${pending.length})</div>
+        ${pending.map(t => `<div class="inspector-related-item" style="display:flex;gap:6px;align-items:center">
+          <span style="color:var(--amber)">⏳</span><span style="flex:1">${esc(t.title)}</span>
+          <span class="tw-sub">${t.projectTitle ? esc(t.projectTitle.slice(0, 22)) : ''}${t.due ? ' · ' + esc(dueLabel(t.due)) : ''}</span></div>`).join('')}
+        <button class="btn btn-ghost btn-sm" id="collabAgendaBtn" style="margin-top:6px">📋 Copiar agenda para la reunión</button>` : ''}
       ${linked.length ? `
         <div class="inspector-related-title">Proyectos compartidos (${linked.length})</div>
         ${linked.map(p => `
@@ -5914,6 +6016,11 @@ async function inspectCollaborator(id) {
     </div>`;
 
   openInspector();
+  enhanceCollaboratorInspector(c).catch(() => {});     // academic.js: último contacto, seguimiento, correo con la agenda
+  $('collabAgendaBtn')?.addEventListener('click', async () => {
+    await navigator.clipboard.writeText(await agendaTextFor(c));
+    showToast('Agenda copiada al portapapeles ✓', 'success');
+  });
   $('collabHubBtn')?.addEventListener('click', () => {
     App.collaboratorHubId = id;
     navigate('collaborator-hub');
@@ -5955,9 +6062,8 @@ async function inspectCollaborator(id) {
     });
   });
   $('collabDeleteBtn').addEventListener('click', async () => {
-    if (!confirm(`¿Eliminar a "${c.name}"?`)) return;
-    await db.collaborators.delete(id);
-    closeInspector(); showToast('Colaborador eliminado', 'info');
+    await deleteWithUndo('collaborators', id, `Eliminar a "${c.name}"`, 'Colaborador eliminado');
+    closeInspector();
     if (App.view === 'collaborators') renderCollaborators();
   });
 }
@@ -6087,13 +6193,14 @@ async function renderProjectHub() {
   const id = App.projectHubId;
   if (!id) { navigate('projects'); return; }
 
-  const [p, cols, ideas, snippets, meetings, references] = await Promise.all([
+  const [p, cols, ideas, snippets, meetings, references, hubTasks] = await Promise.all([
     db.projects.get(id),
     db.kanbanColumns.toArray(),
     db.ideas.where('projectId').equals(id).toArray(),
     db.snippets.where('projectId').equals(id).toArray(),
     db.meetings.where('projectId').equals(id).toArray(),
     db.references.where('projectId').equals(id).toArray(),
+    Tasks.forEntity('project', id),
   ]);
   if (!p) { navigate('projects'); return; }
 
@@ -6273,12 +6380,12 @@ async function renderProjectHub() {
 
       <!-- Subtareas del proyecto -->
       ${(() => {
-        const tasks = p.subtasks || [];
+        const tasks = hubTasks;
         const done  = tasks.filter(t => t.done).length;
         return sectionToggle('proj-tasks',
-          `✓ Subtareas${tasks.length ? ` · <span style="color:var(--green)">${done}/${tasks.length}</span>` : ''}`,
+          `✓ Tareas${tasks.length ? ` · <span style="color:var(--green)">${done}/${tasks.length}</span>` : ''}`,
           tasks.length,
-          `<div style="padding:10px 14px">${subtaskListHTML(p, 'project')}</div>`
+          `<div style="padding:10px 14px">${subtaskListHTML(p, 'project', tasks)}</div>`
         );
       })()}
 
@@ -6515,149 +6622,6 @@ async function renderProjectHub() {
 }
 
 // ==============================================================
-//  FOCUS FEED — "¿Qué hago ahora?"
-// ==============================================================
-async function renderFocusFeed() {
-  const today = new Date(); today.setHours(0,0,0,0);
-  const in7   = new Date(today); in7.setDate(today.getDate() + 7);
-
-  const [projects, ideas, meetings] = await Promise.all([
-    db.projects.filter(p => !p.archived).toArray(),
-    db.ideas.filter(i => i.status === 'unread').toArray(),
-    db.meetings.toArray(),
-  ]);
-
-  const items = [];
-
-  // 0. Papers en pipeline activo — derivado de SUB_STATUSES (respeta etapas customizadas)
-  const _defSubKey = _defaultSubKey();
-  const _totalSub  = SUB_STATUSES.length;
-  projects
-    .filter(p => p.type === 'Paper' && p.submissionStatus && p.submissionStatus !== _defSubKey)
-    .forEach(p => {
-      const stageInfo = SUB_STATUSES.find(s => s.key === p.submissionStatus);
-      if (!stageInfo) return;
-      const stageIdx  = SUB_STATUSES.findIndex(s => s.key === p.submissionStatus);
-      // Score: progresivo según posición en el pipeline (60–90)
-      const score = Math.round(60 + (stageIdx / Math.max(_totalSub - 1, 1)) * 30);
-      items.push({
-        score,
-        icon:  stageInfo.icon  || '📤',
-        label: `Pipeline: ${stageInfo.label}`,
-        text:  `${p.title}${p.targetVenue ? ` → ${p.targetVenue}` : ''}`,
-        type:  'project',
-        ref:   p,
-      });
-    });
-
-  // 1. Deadlines en los próximos 7 días (prioridad máxima)
-  projects
-    .filter(p => p.deadline)
-    .forEach(p => {
-      const d = new Date(p.deadline + 'T00:00:00');
-      const daysLeft = Math.ceil((d - today) / 86400000);
-      if (daysLeft < 0) {
-        items.push({ score: 100, icon:'🔴', label:`Proyecto vencido hace ${Math.abs(daysLeft)}d`,
-          text: p.title, type:'deadline-overdue', ref: p, daysLeft });
-      } else if (daysLeft <= 7) {
-        items.push({ score: 90 - daysLeft * 5, icon:'⏱', label:`Deadline en ${daysLeft}d`,
-          text: p.title, type:'deadline', ref: p, daysLeft });
-      }
-    });
-
-  // 2. Submissions que requieren acción
-
-  // 3. Action items pendientes de reuniones
-  meetings.forEach(m => {
-    const pending = (m.actionItems||[]).filter(a => !a.done);
-    if (pending.length) {
-      pending.slice(0,3).forEach(ai =>
-        items.push({ score: 70, icon:'⚑', label:`Acción pendiente (${formatDate(m.date)})`,
-          text: ai.text, type:'action-item', ref: m, meetingId: m.id }));
-    }
-  });
-
-  // 4. Ideas sin revisar vinculadas a proyectos activos con deadline próximo
-  const hotProjectIds = new Set(
-    projects.filter(p => p.deadline &&
-      Math.ceil((new Date(p.deadline+'T00:00:00') - today)/86400000) <= 30
-    ).map(p => p.id)
-  );
-  ideas
-    .filter(i => hotProjectIds.has(i.projectId))
-    .slice(0, 4)
-    .forEach(i => items.push({ score: 60, icon:'◎', label:'Idea sin revisar en proyecto activo',
-      text: i.title, type:'idea', ref: i }));
-
-  // 5. Proyectos sin actividad reciente (> 14 días)
-  const cutoff = new Date(today); cutoff.setDate(today.getDate() - 14);
-  projects
-    .filter(p => p.updatedAt && new Date(p.updatedAt) < cutoff && !p.archived)
-    .sort((a,b) => new Date(a.updatedAt) - new Date(b.updatedAt))
-    .slice(0, 3)
-    .forEach(p => items.push({ score: 30, icon:'❄', label:`Sin actividad hace ${Math.floor((today - new Date(p.updatedAt))/86400000)}d`,
-      text: p.title, type:'stale', ref: p }));
-
-  // Ordenar por score desc, limitar a 10 ítems
-  items.sort((a,b) => b.score - a.score);
-  const feed = items.slice(0, 10);
-
-  const itemHTML = (item) => {
-    const scoreColor = item.score >= 85 ? 'var(--red)' : item.score >= 70 ? 'var(--amber)' : 'var(--text-3)';
-    let actionAttr = '';
-    if (['deadline','deadline-overdue','stale','project'].includes(item.type))
-      actionAttr = `data-inspect-project="${item.ref.id}"`;
-    else if (item.type === 'idea')
-      actionAttr = `data-inspect-idea="${item.ref.id}"`;
-    else if (item.type === 'action-item')
-      actionAttr = `data-inspect-meeting="${item.meetingId}"`;
-
-    return `
-      <div class="focus-item" ${actionAttr}>
-        <div class="focus-item-score" style="color:${scoreColor}">${item.icon}</div>
-        <div class="focus-item-body">
-          <div class="focus-item-label">${item.label}</div>
-          <div class="focus-item-text">${esc(item.text)}</div>
-        </div>
-        <div class="focus-item-arrow">›</div>
-      </div>`;
-  };
-
-  mainContent.innerHTML = `
-    <div class="view">
-      <div class="view-header">
-        <div>
-          <div class="view-title">🎯 Focus Feed</div>
-          <div class="view-subtitle">Calculado ahora · ${feed.length} elemento(s) que requieren atención</div>
-        </div>
-        <button class="btn btn-ghost btn-sm" id="focusRefreshBtn">↻ Actualizar</button>
-      </div>
-      ${feed.length ? `
-        <div class="focus-feed">
-          ${feed.map(itemHTML).join('')}
-        </div>
-        <div style="font-size:.72rem;color:var(--text-3);font-family:var(--font-mono);margin-top:12px;text-align:center">
-          Ordenado por urgencia calculada · Toca un ítem para abrir su inspector
-        </div>`
-      : `<div class="empty-state">
-           <span class="empty-state-icon">🎯</span>
-           <h3>Todo al día</h3>
-           <p>No hay deadlines próximos, acciones pendientes ni ideas sin revisar.<br>Buen momento para capturar ideas nuevas.</p>
-         </div>`}
-    </div>`;
-
-  $('focusRefreshBtn').addEventListener('click', () => renderView('focus'));
-  mainContent.querySelectorAll('[data-inspect-project]').forEach(el =>
-    el.addEventListener('click', () => inspectProject(+el.dataset.inspectProject)));
-  mainContent.querySelectorAll('[data-inspect-idea]').forEach(el =>
-    el.addEventListener('click', () => inspectIdea(+el.dataset.inspectIdea)));
-  mainContent.querySelectorAll('[data-inspect-submission]').forEach(el =>
-    el.addEventListener('click', () => inspectProject(+el.dataset.inspectSubmission)));
-  mainContent.querySelectorAll('[data-inspect-meeting]').forEach(el =>
-    el.addEventListener('click', () => typeof inspectMeeting === 'function' && inspectMeeting(+el.dataset.inspectMeeting)));
-}
-
-// ==============================================================
 //  ELEMENTOS HUÉRFANOS
 // ==============================================================
 async function renderOrphans() {
@@ -6714,7 +6678,7 @@ async function renderOrphans() {
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">🔗 Elementos Huérfanos</div>
+          <div class="view-title">Elementos huérfanos</div>
           <div class="view-subtitle">${total} elemento(s) sin proyecto asignado</div>
         </div>
         ${total > 0 ? `
@@ -6844,7 +6808,7 @@ async function renderOrphans() {
   $('orphBulkDelete')?.addEventListener('click', async () => {
     if (!App.orphanBulkSelected.size) return;
     const n = App.orphanBulkSelected.size;
-    if (!confirm(`¿Eliminar ${n} elemento(s)?`)) return;
+    if (!(await askConfirm(`Se eliminarán ${n} elemento(s) sin proyecto.`, { title: `¿Eliminar ${n} elemento(s)?`, confirmLabel: 'Eliminar', danger: true }))) return;
     await dbWrite(async () => {
       for (const { type, id } of App.orphanBulkSelected.values()) {
         const table = ORPHAN_TABLE_MAP[type];
@@ -6893,10 +6857,8 @@ async function renderOrphans() {
 
   mainContent.querySelectorAll('.orphan-delete-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!confirm('¿Eliminar este elemento?')) return;
       const table = ORPHAN_TABLE_MAP[btn.dataset.otype];
-      if (table) await table.delete(+btn.dataset.oid);
-      showToast('Eliminado', 'info');
+      if (table) await deleteWithUndo(table.name, +btn.dataset.oid, 'Eliminar elemento', 'Elemento eliminado');
       renderOrphans();
     });
   });
@@ -6938,7 +6900,7 @@ async function renderIdeaTriage() {
     <div class="view triage-view">
       <div class="view-header">
         <div>
-          <div class="view-title">◎ Revisión rápida</div>
+          <div class="view-title">Revisión rápida</div>
           <div class="view-subtitle">${current} de ${total} ideas sin revisar</div>
         </div>
         <button class="btn btn-ghost" id="triageExitBtn">✕ Salir</button>
@@ -6993,7 +6955,7 @@ async function renderIdeaTriage() {
   $('triageExitBtn').addEventListener('click', () => navigate('ideas'));
   $('triageBtnDone').addEventListener('click', () => next(false));
   $('triageBtnArchive').addEventListener('click', async () => {
-    if (confirm('¿Eliminar esta idea?')) {
+    {
       await deleteWithUndo('ideas', idea.id, 'Eliminar idea', 'Idea eliminada');
       App.triageIdx = Math.max(0, App.triageIdx - 1);
       renderIdeaTriage();
@@ -7145,14 +7107,14 @@ async function renderTutorial() {
           ${step(1, '◉', 'Crea tu primer proyecto', 'Todo gira en torno a proyectos: papers, grants, análisis, datasets, clases, tesis. Elige un tipo y una plantilla — se pre-rellena la estructura.', 'Nuevo Proyecto', 'data-tut-demo="add-project"')}
           ${step(2, '◎', 'Captura una idea', 'El Ideas Inbox es tu área de captura rápida. Anota cualquier cosa antes de que se te olvide — puedes vincularla a un proyecto después.', 'Ir a Ideas', 'data-tut-nav="ideas"')}
           ${step(3, '⊞', 'Organiza con el Kanban', 'Arrastra tarjetas entre columnas para reflejar el estado. ResearchOS guarda el historial de cada movimiento con fecha y hora.', 'Ver Kanban', 'data-tut-nav="kanban"')}
-          ${step(4, '🎯', 'Usa el Focus Feed', '¿Qué hacer hoy? El Focus Feed calcula automáticamente qué proyectos necesitan atención según deadlines, acciones pendientes e ideas sin revisar.', 'Abrir Focus', 'data-tut-nav="focus"')}
+          ${step(4, '🎯', 'Mira la vista Hoy', '¿Qué hacer hoy? La vista Hoy calcula automáticamente qué proyectos necesitan atención según deadlines, acciones pendientes e ideas sin revisar.', 'Abrir Focus', 'data-tut-nav="focus"')}
         </div>
 
         <div class="section-title" style="margin-top:4px">Todos los módulos</div>
         <div class="tut-mod-grid">
           ${modCard('⊞', 'Kanban', 'Estado visual con drag & drop', 'kanban')}
           ${modCard('⏱', 'Timeline', 'Gantt de deadlines', 'timeline')}
-          ${modCard('🎯', 'Focus Feed', 'Priorización automática', 'focus')}
+          ${modCard('🎯', 'Hoy', 'Qué toca ahora', 'dashboard')}
           ${modCard('◎', 'Ideas', 'Captura rápida de notas', 'ideas')}
           ${modCard('📤', 'Submissions', 'Seguimiento de envíos', 'submissions')}
           ${modCard('🗓', 'Reuniones', 'Log con action items', 'meetings')}
@@ -7165,7 +7127,7 @@ async function renderTutorial() {
           ${modCard('📅', 'Agenda', 'Calendario semanal/mensual', 'weekly')}
           ${modCard('⬡', 'Anidados', 'Árbol de subproyectos', 'nested')}
           ${modCard('⊟', 'FS Bridge', 'Estructura de directorios', 'filesystem')}
-          ${modCard('⚙', 'Settings', 'Exportar, importar, Drive', 'settings')}
+          ${modCard('⚙', 'Ajustes', 'Exportar, importar, Drive', 'settings')}
         </div>
 
         ${tip(`<strong>Tip de productividad:</strong> Presiona <kbd class="tut-kbd">Ctrl+K</kbd> (o <kbd class="tut-kbd">⌘K</kbd> en Mac) en cualquier momento para buscar en todos tus proyectos, ideas, snippets, reuniones y referencias a la vez — sin salir de la vista actual.`)}
@@ -7231,7 +7193,7 @@ async function renderTutorial() {
         <div class="section-title">Supervisión de tesistas — flujo paso a paso</div>
         <div class="tut-step-grid">
           ${step(1, '◉', 'Un proyecto por tesista', 'Tipo "Proyecto", responsable = nombre del alumno, deadline = fecha de defensa. La descripción Markdown guarda el título de tesis y el plan de trabajo.', 'Nuevo Proyecto', 'data-tut-demo="add-project"')}
-          ${step(2, '🗓', 'Registra cada reunión de avance', 'Documenta acuerdos y próximos pasos. Los action items aparecen en el Focus Feed hasta completarse — ningún compromiso se pierde.', 'Nueva Reunión', 'data-tut-demo="add-meeting"')}
+          ${step(2, '🗓', 'Registra cada reunión de avance', 'Documenta acuerdos y próximos pasos. Los action items aparecen en el Hoy hasta completarse — ningún compromiso se pierde.', 'Nueva Reunión', 'data-tut-demo="add-meeting"')}
           ${step(3, '◎', 'Correcciones como ideas con subtareas', 'Cada vez que identifies algo que el tesista debe mejorar, créalo como Idea con subtareas desglosadas. El progreso queda visible y trazable.', 'Nueva Idea', 'data-tut-demo="add-idea"')}
           ${step(4, '⬡', 'El Hub como bitácora completa', 'El Hub del proyecto muestra en una sola página el historial completo: reuniones, correcciones, referencias, deadlines y progreso de cada capítulo.', 'Ver Proyectos', 'data-tut-nav="projects"')}
         </div>
@@ -7247,8 +7209,8 @@ async function renderTutorial() {
         ${ucBox([
           'Crea proyecto <strong>"Tesis Mg. [Nombre]"</strong> — tipo "Proyecto", responsable = nombre del alumno, deadline = fecha de defensa, área = "Docencia".',
           'Agrega ideas iniciales: "Cap. 1 — Introducción", "Cap. 2 — Metodología", "Cap. 3 — Resultados" con subtareas para cada sub-sección.',
-          'Después de cada reunión, registra acuerdos y asigna próximos pasos como action items. Quedan en el Focus Feed hasta completarse.',
-          'Usa el <strong>Focus Feed</strong> semanalmente para revisar todos los action items pendientes de tus tesistas de un vistazo.',
+          'Después de cada reunión, registra acuerdos y asigna próximos pasos como action items. Quedan en Hoy y en el Hoy hasta completarse.',
+          'Usa el <strong>Hoy</strong> semanalmente para revisar todos los action items pendientes de tus tesistas de un vistazo.',
           'En reuniones de comisión, registra los comentarios de cada evaluador como ideas vinculadas al proyecto con subtareas de corrección.',
         ])}
 
@@ -7289,7 +7251,11 @@ async function renderTutorial() {
         <div class="section-title" style="margin-top:4px">Gestión de deadlines críticos</div>
         ${featRow([
           feat('⏱', 'Timeline para planificación estratégica', 'Vista Gantt con zoom semana/mes/<strong>año</strong>. Visualiza simultáneamente los deadlines de todas las convocatorias activas, reuniones de equipo y hitos del proyecto.', 'Ver Timeline', 'data-tut-nav="timeline"'),
-          feat('🎯', 'Alertas automáticas', 'El Dashboard muestra proyectos con deadline próximo. El Focus Feed prioriza grants con fechas inminentes. Activa notificaciones del navegador en Settings para recordatorios el día anterior.', 'Focus Feed', 'data-tut-nav="focus"'),
+          feat('🎯', 'Hoy: lo que toca ahora', 'La vista Hoy junta tareas atrasadas y de hoy, fechas límite, reuniones y acciones pendientes de la semana, ideas por revisar y lo que está esperando respuesta. Marca una tarea con el círculo, pospónla con ⋯. Activa notificaciones del navegador en Ajustes para recordatorios.', 'Hoy', 'data-tut-nav="dashboard"'),
+          feat('⚡', 'Captura rápida', 'Escribe en la barra de Hoy (atajo C, o Ctrl+K desde cualquier vista): «llamar a imprenta mañana @alfa !alta» crea una tarea en ese proyecto con fecha y prioridad. «idea: …», «p: …» o «r: …» fuerzan el tipo.', 'Hoy', 'data-tut-nav="dashboard"'),
+          feat('⊡', 'Áreas como contexto', 'Define tus frentes (Investigación, Docencia, Gestión…) en Áreas y elige uno en el selector del menú: Hoy, el Tablero y Proyectos muestran solo ese frente. «Todas las áreas» vuelve a la vista completa.', 'Áreas', 'data-tut-nav="areas"'),
+          feat('🔗', 'Enlaces [[ ]]', 'Escribe [[ en cualquier nota o descripción para enlazar con un proyecto, idea, snippet, referencia o reunión (con autocompletado). El elemento enlazado muestra desde dónde lo mencionan.', 'Ideas', 'data-tut-nav="ideas"'),
+          feat('🗓', 'Revisión semanal', 'Un repaso guiado de diez minutos: ideas sin revisar, tareas atrasadas, proyectos quietos (no cuentan los que esperan respuesta ni los terminados), próximos 14 días y backup.', 'Revisión semanal', 'data-tut-nav="review"'),
           feat('☁', 'Respaldo en Google Drive', 'Conecta Drive para sincronizar entre dispositivos. El auto-guardado sube los cambios 60 segundos después de cada edición. Comparte el backup con tu equipo de co-PI.', 'Configurar', 'data-tut-nav="settings"'),
         ])}
 
@@ -7310,15 +7276,15 @@ async function renderTutorial() {
         <div class="tut-step-grid">
           ${step(1, '👤', 'Registra a tu equipo', 'Agrega cada persona en Colaboradores: nombre, rol (tesista, co-investigador, colaborador externo), institución y email. El autocompletado los sugiere en todos los campos del sistema.', 'Colaboradores', 'data-tut-nav="collaborators"')}
           ${step(2, '⬡', 'Vincula personas a proyectos', 'Al crear o editar un proyecto, escribe el nombre en "Responsable" o "Coautores". El autocompletado muestra las personas registradas en Colaboradores.', 'Ver Proyectos', 'data-tut-nav="projects"')}
-          ${step(3, '🗓', 'Registra reuniones del laboratorio', 'Documenta cada reunión con acuerdos y próximos pasos. Los action items quedan en el Focus Feed hasta que se marquen como completados.', 'Nueva Reunión', 'data-tut-demo="add-meeting"')}
+          ${step(3, '🗓', 'Registra reuniones del laboratorio', 'Documenta cada reunión con acuerdos y próximos pasos. Los action items quedan en el Hoy hasta que se marquen como completados.', 'Nueva Reunión', 'data-tut-demo="add-meeting"')}
           ${step(4, '🔗', 'Revisa huérfanos regularmente', 'La vista Huérfanos muestra ideas, snippets y reuniones sin proyecto asignado. Pásate por ella semanalmente para mantener todo el equipo conectado.', 'Ver Huérfanos', 'data-tut-nav="orphans"')}
         </div>
 
         <div class="section-title" style="margin-top:4px">Coordinación y visibilidad del equipo</div>
         ${featRow([
-          feat('⚑', 'Action Items por reunión', 'Los próximos pasos de cada reunión tienen checkboxes propios. El Focus Feed los muestra con la reunión de origen hasta completarse — ningún compromiso se pierde entre sesiones.'),
+          feat('⚑', 'Action Items por reunión', 'Los próximos pasos de cada reunión tienen checkboxes propios. El Hoy los muestra con la reunión de origen hasta completarse — ningún compromiso se pierde entre sesiones.'),
           feat('⊞', 'Filtrar por responsable', 'En el Kanban y la vista Proyectos, filtra por "Responsable" para ver solo los proyectos asignados a una persona. Útil para las reuniones de seguimiento individuales.', 'Ver Kanban', 'data-tut-nav="kanban"'),
-          feat('📊', 'Heatmap de actividad', 'El Dashboard muestra la actividad diaria del año. Haz clic en cualquier fecha para ver exactamente qué se editó o creó ese día — ideal para reconstruir el historial del lab.', 'Dashboard', 'data-tut-nav="dashboard"'),
+          feat('📊', 'Heatmap de actividad', 'El Panorama (al final de Hoy, plegado) muestra la actividad diaria del año. Haz clic en cualquier fecha para ver exactamente qué se editó o creó ese día — ideal para reconstruir el historial del lab.', 'Hoy', 'data-tut-nav="dashboard"'),
         ])}
 
         <div class="section-title" style="margin-top:4px">Caso de uso: laboratorio de investigación</div>
@@ -7326,8 +7292,8 @@ async function renderTutorial() {
           'Crea <strong>Áreas</strong> por cada línea del laboratorio (ej: Ecología del Paisaje, Teledetección, Estadística Ecológica). Vincula cada proyecto a su área.',
           'Registra todos los miembros en <strong>Colaboradores</strong> con su rol. El autocompletado funciona en todos los modales del sistema sin configuración adicional.',
           'Asigna proyectos usando el campo <strong>Responsable</strong>. En el Kanban, usa el filtro "Responsable" para el seguimiento individual de cada persona.',
-          'Cada semana: revisa el <strong>Focus Feed</strong> para ver deadlines próximos y action items pendientes de reuniones pasadas de todo el equipo.',
-          'Exporta los datos a JSON desde Settings y sube el archivo a Google Drive como respaldo compartido del laboratorio.',
+          'Cada semana: revisa el <strong>Hoy</strong> para ver deadlines próximos y action items pendientes de reuniones pasadas de todo el equipo.',
+          'Exporta los datos a JSON desde Ajustes y backup y sube el archivo a Google Drive como respaldo compartido del laboratorio.',
         ])}
 
         ${tip('<strong>Tip:</strong> Usa la vista <strong>Proyectos Anidados</strong> para crear proyectos "paraguas" (ej: "Laboratorio Semestre 1/2026") con los proyectos de cada integrante del equipo como subproyectos anidados — la vista muestra el árbol completo con estados y deadlines.')}
@@ -7346,24 +7312,24 @@ async function renderTutorial() {
 
         <div class="section-title">Configurar la conexión con Google</div>
         <div class="tut-step-grid">
-          ${step(1, '⚙', 'Abre Settings', 'Ve a Settings &amp; Export desde el menú lateral. La sección "Sincronización con Google Drive" está en la parte inferior de la página.', 'Ir a Settings', 'data-tut-nav="settings"')}
-          ${step(2, 'G', 'Conecta tu cuenta', 'Haz clic en "Conectar Google". Se abrirá la pantalla de autorización de Google — acepta los permisos de Drive para habilitar el respaldo.', 'Ir a Settings', 'data-tut-nav="settings"')}
-          ${step(3, '☁', 'Sube tu primer backup', 'Haz clic en "☁ Subir a Drive". ResearchOS exportará todos tus datos (proyectos, ideas, snippets, reuniones, referencias, colaboradores) como un archivo JSON privado en Drive.', 'Ir a Settings', 'data-tut-nav="settings"')}
-          ${step(4, '⬇', 'Restaura en otro dispositivo', 'En el otro dispositivo, conecta la misma cuenta Google y usa "⬇ Descargar (merge)" para sincronizar sin perder trabajo local.', 'Ir a Settings', 'data-tut-nav="settings"')}
+          ${step(1, '⚙', 'Abre Ajustes', 'Ve a «Ajustes y backup» desde el menú lateral. La sección "Sincronización con Google Drive" está en la parte inferior de la página.', 'Ir a Ajustes', 'data-tut-nav="settings"')}
+          ${step(2, 'G', 'Conecta tu cuenta', 'Haz clic en "Conectar Google". Se abrirá la pantalla de autorización de Google — acepta los permisos de Drive para habilitar el respaldo.', 'Ir a Ajustes', 'data-tut-nav="settings"')}
+          ${step(3, '☁', 'Sube tu primer backup', 'Haz clic en "☁ Subir a Drive". ResearchOS exportará todos tus datos (proyectos, ideas, snippets, reuniones, referencias, colaboradores) como un archivo JSON privado en Drive.', 'Ir a Ajustes', 'data-tut-nav="settings"')}
+          ${step(4, '⬇', 'Restaura en otro dispositivo', 'En el otro dispositivo, conecta la misma cuenta Google y usa "⬇ Descargar (merge)" para sincronizar sin perder trabajo local.', 'Ir a Ajustes', 'data-tut-nav="settings"')}
         </div>
 
         <div class="section-title" style="margin-top:4px">Opciones de respaldo</div>
         ${featRow([
-          feat('☁', 'Subir a Drive manualmente', 'El botón <strong>"☁ Subir a Drive"</strong> en Settings exporta todos tus datos como un archivo JSON en <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-size:.75rem">appDataFolder</code> — visible solo para ResearchOS, no en tu Drive normal.', 'Ir a Settings', 'data-tut-nav="settings"'),
+          feat('☁', 'Subir a Drive manualmente', 'El botón <strong>"☁ Subir a Drive"</strong> en Ajustes exporta todos tus datos como un archivo JSON en <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-size:.75rem">appDataFolder</code> — visible solo para ResearchOS, no en tu Drive normal.', 'Ir a Ajustes', 'data-tut-nav="settings"'),
           feat('⬇', 'Dos modos de descarga', '<strong>"Descargar (merge)"</strong> añade solo los registros nuevos sin borrar lo local — ideal para sincronizar entre dispositivos.<br><strong>"Descargar (reemplazar)"</strong> sustituye todos los datos locales — úsalo para restaurar un backup completo.'),
-          feat('⏱', 'Auto-guardado tras cambios', 'Activa <strong>"Auto-guardar tras cambios"</strong> en Settings. ResearchOS subirá automáticamente a Drive 60 segundos después de cada modificación. El indicador <span style="font-family:var(--font-mono);font-size:.72rem;color:var(--green)">Drive ✓</span> confirma la sincronización.'),
+          feat('⏱', 'Auto-guardado tras cambios', 'Activa <strong>"Auto-guardar tras cambios"</strong> en Ajustes. ResearchOS subirá automáticamente a Drive 60 segundos después de cada modificación. El indicador <span style="font-family:var(--font-mono);font-size:.72rem;color:var(--green)">Drive ✓</span> confirma la sincronización.'),
         ])}
 
         <div class="section-title" style="margin-top:4px">Caso de uso: sincronización entre dispositivos</div>
         ${ucBox([
-          'Conecta tu cuenta en <strong>Settings → Sincronización con Google Drive</strong>.',
+          'Conecta tu cuenta en <strong>Ajustes → Sincronización con Google Drive</strong>.',
           'Activa <strong>"Auto-sync al iniciar"</strong> y <strong>"Auto-guardar tras cambios"</strong> para respaldo automático.',
-          'En el segundo dispositivo, abre ResearchOS, ve a Settings y conecta la misma cuenta Google.',
+          'En el segundo dispositivo, abre ResearchOS, ve a Ajustes y conecta la misma cuenta Google.',
           'Haz clic en <strong>"⬇ Descargar (merge)"</strong> para traer todos los datos sin perder trabajo local.',
           'A partir de ese momento, ambos dispositivos se mantendrán sincronizados vía el auto-guardado.',
         ])}
@@ -7377,7 +7343,9 @@ async function renderTutorial() {
         <div class="section-title">Atajos de teclado globales</div>
         <div class="tut-sk-table">
           ${sk(['Ctrl+K', '⌘K'], 'Abrir Paleta de Comandos — búsqueda unificada en proyectos, ideas, snippets, reuniones, referencias y submissions')}
-          ${sk(['Ctrl+Shift+K', '⌘⇧K'], 'Ir directamente al Kanban Board')}
+          ${sk(['Ctrl+Shift+K', '⌘⇧K'], 'Ir directamente al Tablero (Kanban)')}
+          ${sk(['C'], 'Capturar al vuelo (en «Hoy»): «llamar a imprenta mañana @alfa !alta» crea una tarea con fecha en ese proyecto')}
+          ${sk(['[['], 'Dentro de cualquier nota o descripción, enlaza con un proyecto, idea, snippet, referencia o reunión (con autocompletado)')}
           ${sk(['F5'], 'Activar / desactivar modo presentación en la vista Kanban')}
           ${sk(['Esc'], 'Cerrar modal, inspector, paleta de comandos o salir de presentación')}
         </div>
@@ -7388,13 +7356,13 @@ async function renderTutorial() {
           ${sk(['A'], 'Eliminar la idea actual y avanzar')}
           ${sk(['P'], 'Abrir modal para asignar la idea a un proyecto')}
           ${sk(['E'], 'Expandir y editar la idea en el panel inspector')}
-          ${sk(['Esc'], 'Salir del modo Triage y volver al Ideas Inbox')}
+          ${sk(['Esc'], 'Salir del modo Triage y volver a Ideas')}
         </div>
 
         <div class="section-title" style="margin-top:24px">Inspector — edición in-place</div>
         <div class="tut-sk-table">
-          ${sk(['Doble clic en campo'], 'Editar responsable, deadline o prioridad directamente sin abrir el modal de edición completo')}
-          ${sk(['Enter'], 'Confirmar y guardar la edición in-place')}
+          ${sk(['Clic en un campo'], 'Editar título, responsable, deadline, prioridad, columna… directamente, sin abrir el formulario completo (con teclado: Tab hasta el campo y Enter)')}
+          ${sk(['Enter'], 'Guardar la edición (en los desplegables basta con elegir una opción)')}
           ${sk(['Esc'], 'Cancelar la edición in-place sin guardar cambios')}
         </div>
 
@@ -7415,7 +7383,7 @@ async function renderTutorial() {
         <div class="section-title" style="margin-top:24px">Acceso rápido a módulos — haz clic para navegar</div>
         <div class="tut-mod-grid" style="margin-top:10px">
           ${[
-            ['◈', 'Dashboard', 'dashboard'],
+            ['◈', 'Hoy', 'dashboard'],
             ['⊞', 'Kanban', 'kanban'],
             ['◉', 'Proyectos', 'projects'],
             ['◎', 'Ideas', 'ideas'],
@@ -7424,7 +7392,7 @@ async function renderTutorial() {
             ['📚', 'Referencias', 'references'],
             ['👥', 'Colaboradores', 'collaborators'],
             ['⟨/⟩', 'Snippets', 'snippets'],
-            ['🎯', 'Focus Feed', 'focus'],
+            ['🎯', 'Hoy', 'focus'],
             ['⏱', 'Timeline', 'timeline'],
             ['📅', 'Agenda', 'weekly'],
             ['🔗', 'Huérfanos', 'orphans'],
@@ -7445,7 +7413,7 @@ async function renderTutorial() {
     <div class="view tutorial-view">
       <div class="view-header">
         <div>
-          <div class="view-title">📖 Tutorial &amp; Guía de Uso</div>
+          <div class="view-title">Tutorial y guía de uso</div>
           <div class="view-subtitle">Aprende a usar ResearchOS para todos tus flujos de trabajo</div>
         </div>
       </div>
@@ -7489,11 +7457,12 @@ async function renderTutorial() {
 }
 
 async function renderStarred() {
-  const [allProjects, cols, ideas, snippets] = await Promise.all([
+  const [allProjects, cols, ideas, snippets, stMap] = await Promise.all([
     db.projects.toArray(),
     db.kanbanColumns.toArray(),
     db.ideas.filter(i => i.starred).toArray(),
     db.snippets.filter(s => s.starred).toArray(),
+    Tasks.countsByIdea(),
   ]);
   const projects = allProjects.filter(p => p.starred && !p.archived);
   const colMap   = Object.fromEntries(cols.map(c => [c.id, c]));
@@ -7503,7 +7472,7 @@ async function renderStarred() {
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">★ Favoritos</div>
+          <div class="view-title">Favoritos</div>
           <div class="view-subtitle">${projects.length + ideas.length + snippets.length} elementos marcados</div>
         </div>
       </div>
@@ -7515,7 +7484,7 @@ async function renderStarred() {
       ${ideas.length ? `
         <div class="section-title mt-16">Ideas</div>
         <div class="ideas-list">
-          ${ideas.map(i => ideaItemHTML(i, projMap)).join('')}
+          ${ideas.map(i => ideaItemHTML(i, projMap, stMap)).join('')}
         </div>` : ''}
       ${snippets.length ? `
         <div class="section-title mt-16">Snippets</div>
@@ -7580,7 +7549,7 @@ async function renderStarred() {
   mainContent.querySelectorAll('.idea-delete-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (confirm('¿Eliminar esta idea?')) {
+      {
         await deleteWithUndo('ideas', +btn.dataset.ideaId, 'Eliminar idea', 'Idea eliminada');
         renderStarred();
         updateBadges();
@@ -7668,7 +7637,7 @@ async function renderSettings() {
     <div class="view" style="max-width:640px">
       <div class="view-header">
         <div>
-          <div class="view-title">Settings &amp; Export</div>
+          <div class="view-title">Ajustes y backup</div>
           <div class="view-subtitle">Gestión de datos y configuración</div>
         </div>
       </div>
@@ -7738,7 +7707,7 @@ async function renderSettings() {
           <div class="settings-row">
             <div>
               <div class="settings-row-label">Exportar proyectos a CSV</div>
-              <div class="settings-row-desc">Columnas: title, type, responsible, priority, deadline, description, tags, status</div>
+              <div class="settings-row-desc">Columnas: title, type, responsible, priority, deadline, description, tags, status, column, parent</div>
             </div>
             <button class="btn btn-ghost btn-sm" id="exportCsvBtn">CSV ↓</button>
           </div>
@@ -7822,82 +7791,17 @@ async function renderSettings() {
   });
 
   // -- Import con opción merge vs. reemplazar ---------
-  $('importJsonInput').addEventListener('change', async (e) => {
+  $('importJsonInput').addEventListener('change', e => {
     const file = e.target.files[0];
-    if (!file) return;
     e.target.value = ''; // reset para volver a disparar si mismo archivo
-
-    try {
-      const text = await file.text();
-      const data = sanitizeBackup(JSON.parse(text));     // valida el formato antes de mostrar nada
-      const counts = { projects: data.projects.length, ideas: data.ideas.length, snippets: data.snippets.length };
-
-      showModal('📥 Importar datos', `
-        <div class="modal-body">
-          <p style="color:var(--text-2);font-size:.85rem;margin-bottom:14px">
-            El archivo contiene <strong style="color:var(--text-1)">${counts.projects}</strong> proyectos,
-            <strong style="color:var(--text-1)">${counts.ideas}</strong> ideas y
-            <strong style="color:var(--text-1)">${counts.snippets}</strong> snippets.
-          </p>
-          <p style="font-size:.82rem;color:var(--text-2);margin-bottom:16px">¿Cómo deseas importarlos?</p>
-          <div style="display:flex;flex-direction:column;gap:10px">
-            <label class="import-option-card" id="importOptMerge" style="cursor:pointer">
-              <input type="radio" name="importMode" value="merge" checked style="margin-right:8px">
-              <div>
-                <strong style="color:var(--text-1)">⊕ Merge (recomendado)</strong>
-                <p style="font-size:.75rem;color:var(--text-3);margin:2px 0 0">
-                  Añade sólo los registros nuevos y reconecta sus referencias. No borra ni modifica los datos existentes.
-                </p>
-              </div>
-            </label>
-            <label class="import-option-card" id="importOptReplace" style="cursor:pointer">
-              <input type="radio" name="importMode" value="replace" style="margin-right:8px">
-              <div>
-                <strong style="color:var(--red)">⚠ Reemplazar todo</strong>
-                <p style="font-size:.75rem;color:var(--text-3);margin:2px 0 0">
-                  Borra todos los datos actuales y los sustituye. Antes se descarga una copia automática de tus datos actuales.
-                </p>
-              </div>
-            </label>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost" id="importModeCancel">Cancelar</button>
-          <button class="btn btn-primary" id="importModeOk">Importar</button>
-        </div>`);
-
-      $('importModeCancel').addEventListener('click', closeModal);
-      $('importModeOk').addEventListener('click', async () => {
-        const mode = document.querySelector('input[name="importMode"]:checked')?.value;
-        try {
-          let msg;
-          if (mode === 'replace') {
-            if (!confirm('⚠ ¿Seguro? Esto eliminará TODOS tus datos actuales (se descargará antes una copia).')) return;
-            await downloadBackup('researchos-antes-de-reemplazar');
-            const n = await importAllData(text);
-            msg = `Datos reemplazados: ${n.projects} proyectos, ${n.ideas} ideas, ${n.snippets} snippets`;
-          } else {
-            msg = 'Importado (merge): ' + describeMerge(await mergeAllData(text));
-          }
-          await _afterDataReplaced();
-          closeModal();
-          showToast(msg + ' ✓', 'success');
-          navigate('dashboard');
-        } catch (err) {
-          showToast('No se pudo importar: ' + err.message, 'error');
-          console.error(err);
-        }
-      });
-    } catch (err) {
-      showToast('Error al leer el archivo: ' + err.message, 'error');
-    }
+    if (file) startBackupImport(file);
   });
 
   $('exportCsvBtn').addEventListener('click', exportProjectsCSV);
   $('importCsvInput').addEventListener('change', e => previewImportCSV(e.target.files[0]));
   $('clearAllBtn').addEventListener('click', async () => {
-    if (!confirm('⚠ ¿Borrar TODOS los datos permanentemente? Se descargará antes una copia de seguridad.')) return;
-    if (!confirm('Esta acción no se puede deshacer. ¿Confirmas?')) return;
+    if (!(await askConfirm('Se borrarán todos tus proyectos, ideas, snippets, reuniones y referencias de este navegador. Antes se descargará una copia de seguridad.',
+          { title: '¿Borrar TODOS los datos?', confirmLabel: 'Borrar todo', danger: true, typeToConfirm: 'BORRAR' }))) return;
     await downloadBackup('researchos-antes-de-borrar');
     await clearAllData();
     await _afterDataReplaced();
@@ -8120,12 +8024,14 @@ async function renderSettings() {
 
     // Restaurar defaults
     $('cfResetDefaultsBtn')?.addEventListener('click', async () => {
-      if (!confirm('¿Restaurar los schemas por defecto? Los campos personalizados se perderán.')) return;
+      if (!(await askConfirm('Los campos personalizados que añadiste se perderán.', { title: '¿Restaurar los campos por defecto?', confirmLabel: 'Restaurar', danger: true }))) return;
       await _saveTypeSchemas({ ...DEFAULT_TYPE_SCHEMAS });
       showToast('Schemas restaurados ✓', 'success');
       renderView('settings');
     });
   }
+
+  if (typeof enhanceSettings === 'function') await enhanceSettings();    // integrations.js: copia automática, calendario, uso, avanzado
 }
 
 // -- Renderiza (o refresca) el bloque Google Sync dentro de Settings --
@@ -8206,7 +8112,7 @@ async function renderGoogleSyncSection() {
   document.getElementById('gPullMergeBtn')?.addEventListener('click', () => GoogleSync.pull({ mode: 'merge' }));
 
   document.getElementById('gPullReplaceBtn')?.addEventListener('click', async () => {
-    if (!confirm('⚠ ¿Reemplazar TODOS los datos locales con los de Drive? Esta acción es irreversible.')) return;
+    if (!(await askConfirm('Se reemplazarán todos los datos de este navegador por los de Drive. No se puede deshacer.', { title: '¿Reemplazar todo con lo de Drive?', confirmLabel: 'Reemplazar', danger: true }))) return;
     await GoogleSync.pull({ mode: 'replace' });
   });
 
@@ -8237,21 +8143,61 @@ const PROJECT_TEMPLATES = {
     label: '📄 Paper', type: 'Paper', priority: 'Alta',
     tags: ['writing', 'review'],
     description: 'Objetivo: publicar en revista indexada.\n\n## Estructura\n- Introducción\n- Métodos\n- Resultados\n- Discusión\n- Conclusiones',
+    tasks: [
+      { title: 'Definir pregunta y estructura del manuscrito', offset: -60 },
+      { title: 'Redactar introducción y métodos',              offset: -45 },
+      { title: 'Cerrar análisis y figuras principales',        offset: -35 },
+      { title: 'Primer borrador completo',                     offset: -25 },
+      { title: 'Revisión de coautores',                        offset: -14 },
+      { title: 'Ajustar formato a la revista y carta de presentación', offset: -5 },
+      { title: 'Enviar manuscrito',                            offset: 0 },
+    ],
   },
   grant: {
     label: '💰 Grant FONDECYT', type: 'Grant', priority: 'Alta',
     tags: ['grant', 'funding', 'deadline-hard'],
     description: 'Postulación a concurso de financiamiento.\n\n## Secciones requeridas\n- Resumen ejecutivo\n- Objetivos\n- Metodología\n- Presupuesto\n- Equipo',
+    tasks: [
+      { title: 'Leer bases y confirmar elegibilidad',             offset: -60 },
+      { title: 'Pedir cartas de apoyo y datos del equipo',        offset: -45 },
+      { title: 'Borrador de objetivos y metodología',             offset: -30 },
+      { title: 'Presupuesto y justificación',                     offset: -20 },
+      { title: 'Revisión interna (colega externo)',               offset: -10 },
+      { title: 'Subir postulación (la plataforma se satura el último día)', offset: -2 },
+    ],
+  },
+  grantExec: {
+    label: '📑 Ejecución de grant', type: 'Grant', priority: 'Media',
+    tags: ['grant', 'ejecución'],
+    description: '## Compromisos con la agencia\n- Informes de avance:\n- Rendiciones:\n- Entregables:\n\n## Equipo y presupuesto',
+    // «every»: tarea que se repite hasta la fecha límite (término del proyecto); «first»: días hasta la primera
+    tasks: [
+      { title: 'Revisar la ejecución del presupuesto',   every: { freq: 'monthly', interval: 1 }, first: 30, effort: 45 },
+      { title: 'Rendición de gastos',                    every: { freq: 'monthly', interval: 3 }, first: 90, effort: 120 },
+      { title: 'Informe de avance a la agencia',         every: { freq: 'monthly', interval: 6 }, first: 150, effort: 240 },
+      { title: 'Informe final y cierre administrativo',  offset: 0, effort: 300 },
+    ],
   },
   course: {
-    label: '🎓 Curso / Asignatura', type: 'Análisis', priority: 'Media',
+    label: '🎓 Curso / Asignatura', type: 'Curso', priority: 'Media',
     tags: ['docencia', 'curso'],
     description: '## Información del curso\n- Código:\n- Semestre:\n- Créditos:\n\n## Contenidos mínimos',
+    // «weekly»: se repite cada semana desde el próximo lunes hasta la fecha límite (fin del semestre)
+    tasks: [
+      { title: 'Preparar la clase de la semana', weekly: true },
+      { title: 'Publicar programa y calendario de evaluaciones', offset: -120 },
+      { title: 'Subir notas finales', offset: 0 },
+    ],
   },
   talk: {
     label: '🎤 Ponencia / Congreso', type: 'Presentación', priority: 'Media',
     tags: ['congreso', 'slides'],
     description: '## Detalles\n- Evento:\n- Fecha:\n- Duración:\n\n## Estructura de la presentación',
+    tasks: [
+      { title: 'Esquema y mensaje central',   offset: -21 },
+      { title: 'Primera versión de las diapositivas', offset: -14 },
+      { title: 'Ensayo con tiempo cronometrado', offset: -4 },
+    ],
   },
   dataset: {
     label: '🗄 Dataset / Pipeline', type: 'Dataset', priority: 'Media',
@@ -8292,6 +8238,12 @@ const DEFAULT_TYPE_SCHEMAS = {
     { key: 'event',     label: 'Evento / Congreso', type: 'text',   placeholder: 'ICES 2025, ISMIR 2025…' },
     { key: 'duration',  label: 'Duración (min)',    type: 'number', placeholder: '20' },
     { key: 'slidesUrl', label: 'URL slides',        type: 'text',   placeholder: 'https://…' },
+  ],
+  Curso: [
+    { key: 'code',     label: 'Código',               type: 'text', placeholder: 'BIO-204' },
+    { key: 'term',     label: 'Semestre / periodo',   type: 'text', placeholder: '2026-2' },
+    { key: 'schedule', label: 'Horario',              type: 'text', placeholder: 'Lun y mié 10:00' },
+    { key: 'room',     label: 'Sala / plataforma',    type: 'text', placeholder: 'Aula 3 · Zoom' },
   ],
   Proyecto: [],
 };
@@ -8436,7 +8388,7 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
       <div class="form-group">
         <label class="form-label">Tipo</label>
         <select class="form-select" id="mp-type">
-          ${['Proyecto','Grant','Paper','Análisis','Dataset','Presentación'].map(t =>
+          ${['Proyecto','Grant','Paper','Análisis','Dataset','Presentación','Curso'].map(t =>
             `<option ${t === tpl.type ? 'selected' : ''}>${t}</option>`).join('')}
         </select>
       </div>
@@ -8457,6 +8409,7 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
       <div class="form-group">
         <label class="form-label">Fecha límite</label>
         <input class="form-input" type="date" id="mp-deadline">
+        ${tpl.tasks?.length ? `<div class="form-hint" id="mpTplHint">La plantilla añadirá ${tpl.tasks.length} tareas${tpl.tasks.some(t => t.offset !== undefined) ? ', programadas respecto a esta fecha' : ''}.</div>` : ''}
       </div>
       <div class="form-group">
         <label class="form-label">Prioridad</label>
@@ -8486,7 +8439,7 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
         <select class="form-select" id="mp-area">
           <option value="">— Sin área —</option>
           ${(await _getAreas()).map(a =>
-            `<option value="${a.id}">${esc(a.name)}</option>`).join('')}
+            `<option value="${a.id}" ${a.id === App.areaContext ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}
         </select>
       </div>
       <div id="mpCFContainer">
@@ -8520,7 +8473,8 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
     const { responsible, responsibleId, coauthors: coauthorNames, coauthorIds } =
       await _collectProjectPersonFields('mp-responsible', 'mp-coauthors');
 
-    await dbWrite(() => db.projects.add({
+    const projectDeadline = $('mp-deadline').value || null;
+    const newProjectId = await dbWrite(() => db.projects.add({
       title,
       type:          $('mp-type').value,
       columnId:      +$('mp-col').value,
@@ -8542,6 +8496,15 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
       customFields:  _readCustomFields() || {},
       columnHistory: [{ colId: +$('mp-col').value, enteredAt: new Date().toISOString(), exitedAt: null }],
     }));
+    // Tareas de la plantilla: fechas relativas a la fecha límite (si no hay fecha, quedan sin fecha)
+    for (const t of (tpl.tasks || [])) {
+      let due = null, recurrence = null;
+      if (t.weekly) { due = nextWeekdayISO(1); recurrence = { freq: 'weekly', interval: 1, until: projectDeadline }; }
+      else if (t.every) { due = addDaysISO(t.first ?? 30); recurrence = { ...t.every, until: projectDeadline }; }
+      else if (projectDeadline && t.offset !== undefined) { const d = new Date(projectDeadline + 'T12:00:00'); d.setDate(d.getDate() + t.offset); due = localDateISO(d); }
+      if (due && due < localDateISO() && !t.weekly && !t.every) due = null;        // no crear tareas ya vencidas por una plantilla
+      await dbWrite(() => Tasks.add({ title: t.title, projectId: newProjectId, due, recurrence, effort: t.effort }));
+    }
     closeModal();
     showToast('Proyecto creado ✓', 'success');
     renderView(App.view);
@@ -8784,6 +8747,7 @@ async function showAddSnippetModal(preProjectId = null) {
 // ==============================================================
 function openInspector() {
   document.body.classList.remove('inspector-closed');
+  autoLabelControls(inspectorBody);
 }
 /**
  * Resetea el inspector visualmente sin tocar App._savedInspector.
@@ -8818,21 +8782,28 @@ function closeInspector() {
 // ==============================================================
 /**
  * Convierte cualquier elemento con [data-inplace] del inspectorBody
- * en campo editable al doble clic. onSave(field, value) recibe el
+ * en campo editable con un clic (o Enter con el teclado). onSave(field, value) recibe el
  * nombre del campo y el nuevo valor.
  * @param {function} onSave  async (field, newValue) => void
  */
 function _attachInplaceEditors(onSave) {
   inspectorBody.querySelectorAll('[data-inplace]').forEach(el => {
+    const label = el.dataset.inplaceLabel || el.closest('.inspector-meta-row')?.querySelector('.inspector-meta-key')?.textContent.trim() || el.dataset.inplace;
     el.classList.add('inplace-field');
-    el.setAttribute('title', 'Doble clic para editar');
+    el.setAttribute('title', 'Clic para editar');
+    el.setAttribute('role', 'button');
+    el.setAttribute('aria-label', `Editar ${label}`);
+    el.tabIndex = 0;
 
-    el.addEventListener('dblclick', async (e) => {
+    const open = (e) => {
+      if (e.target.closest?.('a, [data-collab-hub]')) return;        // los enlaces y chips de persona siguen navegando
       e.stopPropagation();
+      if (el.nextElementSibling?.classList.contains('inplace-input')) return;   // ya se está editando
       const field    = el.dataset.inplace;
       const type     = el.dataset.inplaceType || 'text';
       const oldVal   = el.dataset.inplaceValue ?? el.textContent.trim();
       let _cancelled = false;
+      const picker   = type === 'select' || type === 'id-select';
 
       let input;
       if (type === 'select') {
@@ -8870,6 +8841,7 @@ function _attachInplaceEditors(onSave) {
         input.type  = type;
         input.value = oldVal;
       }
+      input.setAttribute('aria-label', `Editar ${label}`);
 
       let _committed = false;
       const commit = async () => {
@@ -8879,21 +8851,34 @@ function _attachInplaceEditors(onSave) {
         const sameVal = type === 'id-select'
           ? String(newVal) === String(oldVal)
           : newVal === oldVal;
-        if (sameVal) { el.style.display = ''; input.remove(); return; }
-        await onSave(field, newVal);
+        const shown = picker ? input.selectedOptions[0]?.textContent : newVal;
+        el.style.display = ''; input.remove();
+        if (sameVal) return;
+        // El valor nuevo se ve al instante; la base de datos y el resto de la pantalla se actualizan enseguida detrás.
+        if (type === 'tags') el.innerHTML = newVal.split(',').map(s => s.trim()).filter(Boolean).map(t => `<span class="tag">${esc(t)}</span>`).join('') || '<span style="color:var(--text-3);font-size:.72rem;font-style:italic">Sin etiquetas — clic para editar</span>';
+        else if (type === 'date') el.textContent = newVal ? formatDate(newVal) : '—';
+        else el.textContent = shown || '—';
+        el.dataset.inplaceValue = newVal;
+        try { await onSave(field, newVal); }
+        catch (err) { showToast('No se pudo guardar: ' + err.message, 'error'); refreshInspector(); }
       };
 
       input.addEventListener('blur',    commit);
-      input.addEventListener('keydown', e => {
-        if (e.key === 'Enter')  { e.preventDefault(); commit(); }
-        if (e.key === 'Escape') { _cancelled = true; el.style.display = ''; input.remove(); }
+      input.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter')  { ev.preventDefault(); commit(); }
+        if (ev.key === 'Escape') { ev.stopPropagation(); _cancelled = true; el.style.display = ''; input.remove(); el.focus(); }
       });
+      if (picker) input.addEventListener('change', commit);           // al elegir una opción se guarda: sin Enter ni clic fuera
 
       el.style.display = 'none';
       el.insertAdjacentElement('afterend', input);
       input.focus();
       if (type === 'text') input.select();
-    });
+      if (picker || type === 'date') { try { input.showPicker?.(); } catch { /* el navegador no lo permite aquí */ } }
+    };
+
+    el.addEventListener('click', open);
+    el.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target === el) { e.preventDefault(); open(e); } });
   });
 }
 
@@ -8989,7 +8974,12 @@ async function _appendCrossRefs(projectId, projectTitle) {
     ).toArray(),
   ]);
 
-  if (!mentionSnips.length && !mentionIdeas.length) return;
+  // Menciones explícitas [[Título]] (además de las implícitas por texto)
+  const explicit = await findMentions(projectTitle, { type: 'project', id: projectId });
+  const addUnique = (list, extra) => [...list, ...extra.filter(x => !list.some(y => y.id === x.id))];
+  const mentionIdeasAll = addUnique(mentionIdeas, explicit.ideas);
+  const mentionSnipsAll = addUnique(mentionSnips, explicit.snippets);
+  if (!mentionSnipsAll.length && !mentionIdeasAll.length && !explicit.projects.length && !explicit.meetings.length) return;
 
   // Verificar que el inspector aún muestra este proyecto
   const actionsEl = inspectorBody.querySelector('.inspector-actions');
@@ -9000,7 +8990,17 @@ async function _appendCrossRefs(projectId, projectTitle) {
     <div class="inspector-related-title" style="margin-top:12px">
       🔗 Mencionado en
     </div>
-    ${mentionSnips.map(s => `
+    ${explicit.projects.map(x => `
+      <div class="inspector-related-item" data-xref-proj="${x.id}" style="cursor:pointer;display:flex;align-items:center;gap:6px">
+        <span style="flex-shrink:0;color:var(--accent);font-size:.8rem">◉</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.title)}</span>
+      </div>`).join('')}
+    ${explicit.meetings.map(x => `
+      <div class="inspector-related-item" data-xref-meet="${x.id}" style="cursor:pointer;display:flex;align-items:center;gap:6px">
+        <span style="flex-shrink:0;font-size:.8rem">🗓</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.title)}</span>
+      </div>`).join('')}
+    ${mentionSnipsAll.map(s => `
       <div class="inspector-related-item" data-xref-snip="${s.id}"
            style="cursor:pointer;display:flex;align-items:center;gap:6px">
         <span style="flex-shrink:0;color:var(--green);font-size:.8rem">⟨/⟩</span>
@@ -9009,7 +9009,7 @@ async function _appendCrossRefs(projectId, projectTitle) {
         </span>
         <span style="font-size:.62rem;color:var(--text-3);flex-shrink:0">${esc(s.language||'')}</span>
       </div>`).join('')}
-    ${mentionIdeas.map(i => `
+    ${mentionIdeasAll.map(i => `
       <div class="inspector-related-item" data-xref-idea="${i.id}"
            style="cursor:pointer;display:flex;align-items:center;gap:6px">
         <span style="flex-shrink:0;color:var(--purple);font-size:.8rem">◎</span>
@@ -9030,6 +9030,10 @@ async function _appendCrossRefs(projectId, projectTitle) {
     }));
   el.querySelectorAll('[data-xref-idea]').forEach(e =>
     e.addEventListener('click', () => inspectIdea(+e.dataset.xrefIdea)));
+  el.querySelectorAll('[data-xref-proj]').forEach(e =>
+    e.addEventListener('click', () => inspectProject(+e.dataset.xrefProj)));
+  el.querySelectorAll('[data-xref-meet]').forEach(e =>
+    e.addEventListener('click', () => inspectMeeting(+e.dataset.xrefMeet)));
 }
 
 // ── Atajos contextuales de teclado ────────────
@@ -9115,7 +9119,7 @@ async function inspectProject(id) {
   App._inspectedProjectId = id;
 
   // ── Todos los fetches en paralelo ─────────────────────────
-  const [cols, areas, relIdeas, relSnips, refs, meets, schemas] = await Promise.all([
+  const [cols, areas, relIdeas, relSnips, refs, meets, schemas, projTasks] = await Promise.all([
     db.kanbanColumns.toArray(),
     _getAreas(),
     getRelatedIdeas(id),
@@ -9123,6 +9127,7 @@ async function inspectProject(id) {
     getReferences(id),
     getMeetings(id),
     _getTypeSchemas(),
+    Tasks.forEntity('project', id),
   ]);
 
   const col      = cols.find(c => c.id === p.columnId);
@@ -9152,7 +9157,7 @@ async function inspectProject(id) {
         <span class="inspector-meta-key">Tipo</span>
         <span class="inspector-meta-val"
               data-inplace="type" data-inplace-type="select"
-              data-inplace-opts="Proyecto|Grant|Paper|Análisis|Dataset|Presentación"
+              data-inplace-opts="Proyecto|Grant|Paper|Análisis|Dataset|Presentación|Curso"
               data-inplace-value="${esc(p.type||'Proyecto')}">
           <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
         </span>
@@ -9185,7 +9190,7 @@ async function inspectProject(id) {
               data-inplace="priority" data-inplace-type="select"
               data-inplace-opts="Alta|Media|Baja"
               data-inplace-value="${esc(p.priority||'Media')}">
-          ${esc(p.priority||'—')}
+          ${p.priority ? `<span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority)}</span>` : '—'}
         </span>
       </div>
       <div class="inspector-meta-row">
@@ -9245,7 +9250,7 @@ async function inspectProject(id) {
          </div>`}`;
 
   // SUBTAREAS
-  const tasksHTML = subtaskListHTML(p, 'project');
+  const tasksHTML = subtaskListHTML(p, 'project', projTasks);
 
   // SUBMISSION (Paper only)
   const subHTML = p.type === 'Paper' ? (() => {
@@ -9473,12 +9478,12 @@ async function inspectProject(id) {
         <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
         <span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority)}</span>
       </div>
-      <div class="inspector-project-title">${esc(p.title)}</div>
+      <div class="inspector-project-title" data-inplace="title" data-inplace-label="Título" data-inplace-value="${esc(p.title)}">${esc(p.title)}</div>
 
-      ${_inspSectionHTML('p-meta', 'Metadata', metaHTML)}
+      ${_inspSectionHTML('p-meta', 'Metadatos', metaHTML)}
       ${_inspSectionHTML('p-comp', 'Completitud', compHTML)}
       ${_inspSectionHTML('p-desc', 'Descripción', descHTML)}
-      ${_inspSectionHTML('p-tasks', `Subtareas${(p.subtasks||[]).length ? ` · ${(p.subtasks||[]).filter(t=>t.done).length}/${p.subtasks.length}` : ''}`, tasksHTML)}
+      ${_inspSectionHTML('p-tasks', `Tareas${projTasks.length ? ` · ${projTasks.filter(t=>t.done).length}/${projTasks.length}` : ''}`, tasksHTML)}
 
       <div class="insp-quickadd-bar">
         <span style="font-size:.63rem;color:var(--text-3);font-family:var(--font-mono)">Agregar:</span>
@@ -9518,7 +9523,9 @@ async function inspectProject(id) {
 
   openInspector();
   _attachInspSectionToggles();
+  enhanceProjectInspector(p);                 // academic.js: clases, evaluaciones, respuesta a revisores
   _attachInplaceEditors(async (field, newVal) => {
+    if (field === 'title' && !newVal) { showToast('El título no puede estar vacío', 'error'); refreshInspector(); return; }
     await snapshotProject(id);
     const upd = { updatedAt: new Date().toISOString() };
     switch (field) {
@@ -9535,8 +9542,7 @@ async function inspectProject(id) {
     }
     await dbWrite(() => db.projects.update(id, upd));
     showToast('Campo actualizado ✓', 'success');
-    renderView(App.view);
-    setTimeout(() => inspectProject(id), 80);
+    await renderView(App.view);        // repinta la vista y el inspector a la vez, sin vaciarlo
   });
 
   // Cross-refs y subproyectos — async fire-and-forget
@@ -9692,7 +9698,6 @@ async function inspectProject(id) {
   });
 
   $('inspDeleteBtn').addEventListener('click', async () => {
-    if (!confirm(`¿Eliminar "${p.title}"?`)) return;
     const restore = await dbWrite(() => deleteProjectCascade(id));   // desvincula ideas/snippets/reuniones…
     UndoStack.push({
       label: `Eliminar "${p.title.slice(0,30)}"`,
@@ -9801,7 +9806,7 @@ async function inspectSnippet(s) {
     if (App.view === 'snippets') renderSnippets();
   });
   $('snipDeleteBtn').addEventListener('click', async () => {
-    if (confirm(`¿Eliminar "${s.title}"?`)) {
+    {
       await deleteWithUndo('snippets', s.id, 'Eliminar snippet', 'Snippet eliminado');
       closeInspector();
       if (App.view === 'snippets') renderSnippets();
@@ -9937,7 +9942,7 @@ async function showEditProjectModal(p) {
       <div class="form-group">
         <label class="form-label">Tipo</label>
         <select class="form-select" id="ep-type">
-          ${['Proyecto','Grant','Paper','Análisis','Dataset','Presentación'].map(t => `<option ${t===p.type?'selected':''}>${t}</option>`).join('')}
+          ${['Proyecto','Grant','Paper','Análisis','Dataset','Presentación','Curso'].map(t => `<option ${t===p.type?'selected':''}>${t}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -10073,6 +10078,7 @@ async function inspectIdea(id) {
   const idea = await db.ideas.get(id);
   if (!idea) return;
   const proj = idea.projectId ? await db.projects.get(idea.projectId) : null;
+  const ideaTasks = await Tasks.forEntity('idea', id);
   _pushInspectorHistory('idea', id, idea.title);
 
   inspectorBody.innerHTML = `
@@ -10134,7 +10140,7 @@ async function inspectIdea(id) {
           <span class="inspector-meta-val">${relativeDate(idea.createdAt)}</span>
         </div>
       </div>
-      ${subtaskListHTML(idea)}
+      ${subtaskListHTML(idea, 'idea', ideaTasks)}
       <div class="inspector-actions" style="margin-top:14px">
         <button class="btn btn-ghost btn-sm" id="ideaEditBtn">✎ Editar</button>
         <button class="btn btn-ghost btn-sm" id="ideaToggleReviewBtn">
@@ -10144,6 +10150,8 @@ async function inspectIdea(id) {
                 style="color:${idea.starred ? 'var(--amber)' : 'var(--text-3)'}">
           ${idea.starred ? '★' : '☆'}
         </button>
+        <button class="btn btn-ghost btn-sm" id="ideaToTaskBtn" title="Convertir esta idea en una tarea y quitarla de la bandeja">→ Tarea</button>
+        <button class="btn btn-ghost btn-sm" id="ideaToProjectBtn" title="Convertir esta idea en un proyecto nuevo">→ Proyecto</button>
         <button class="btn btn-danger btn-sm" id="ideaDeleteBtn">✕ Eliminar</button>
       </div>`;
 
@@ -10166,6 +10174,10 @@ async function inspectIdea(id) {
     updateBadges();
   });
 
+  _appendBacklinks('idea', id, idea.title).catch(() => {});
+  $('ideaToTaskBtn')?.addEventListener('click', () => promoteIdea(id, 'task'));
+  $('ideaToProjectBtn')?.addEventListener('click', () => promoteIdea(id, 'project'));
+
   // Subtask handlers
   inspectorBody.querySelectorAll('[data-toggle-st]').forEach(btn => {
     btn.addEventListener('click', () =>
@@ -10184,7 +10196,6 @@ async function inspectIdea(id) {
       const hist   = [...(idea._history||[])].reverse();
       const snap   = hist[snapIdx];
       if (!snap) return;
-      if (!confirm('¿Restaurar esta versión? El contenido actual se guardará en el historial.')) return;
       await snapshotIdea(iid);
       await dbWrite(() => db.ideas.update(iid, {
         title:   snap.title,
@@ -10218,18 +10229,96 @@ async function inspectIdea(id) {
   });
 
   $('ideaDeleteBtn').addEventListener('click', async () => {
-    if (!confirm('¿Eliminar esta idea?')) return;
-    const snapshot = { ...idea };
-    await db.ideas.delete(id);
+    const restore = await dbWrite(() => deleteIdeaCascade(id));      // también elimina las tareas de la idea
     UndoStack.push({
       label: `Eliminar idea "${idea.title.slice(0,30)}"`,
-      undo:  async () => { await dbWrite(() => db.ideas.add(snapshot)); }
+      undo:  async () => { await dbWrite(() => restore()); }
     });
     closeInspector();
     showToastWithUndo('Idea eliminada', 'info');
     if (App.view === 'ideas') renderIdeas();
   });
 }
+
+
+// ==============================================================
+//  DIÁLOGOS PROPIOS (en lugar de confirm() / prompt() del navegador)
+//  No bloquean la página, siguen el tema, funcionan igual en la app instalada y en el móvil, y pueden abrirse encima de
+//  otra ventana (p. ej. confirmar desde «Gestionar columnas»). Esc cancela; Enter acepta.
+// ==============================================================
+function askDialog({ title = '', message = '', confirmLabel = 'Aceptar', cancelLabel = 'Cancelar', danger = false, input = null, typeToConfirm = '' } = {}) {
+  return new Promise(resolve => {
+    const prevFocus = document.activeElement;
+    const ov = document.createElement('div');
+    ov.className = 'confirm-overlay';
+    ov.innerHTML = `
+      <div class="confirm-box" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" ${message ? 'aria-describedby="confirmMsg"' : ''}>
+        <h3 class="confirm-title" id="confirmTitle">${esc(title)}</h3>
+        ${message ? `<p class="confirm-msg" id="confirmMsg">${esc(message).replace(/\n/g, '<br>')}</p>` : ''}
+        ${input ? `<input class="form-input confirm-input" id="confirmInput" maxlength="200" autocomplete="off" aria-label="${esc(input.label || title)}" placeholder="${esc(input.placeholder || '')}" value="${esc(input.value || '')}">` : ''}
+        ${typeToConfirm ? `<label class="confirm-type">Para confirmar, escribe <strong>${esc(typeToConfirm)}</strong>
+          <input class="form-input confirm-input" id="confirmInput" autocomplete="off" aria-label="Escribe ${esc(typeToConfirm)} para confirmar"></label>` : ''}
+        <div class="confirm-actions">
+          <button class="btn btn-ghost" id="confirmNo" type="button">${esc(cancelLabel)}</button>
+          <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" id="confirmYes" type="button">${esc(confirmLabel)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+    const yes = ov.querySelector('#confirmYes'), no = ov.querySelector('#confirmNo'), field = ov.querySelector('#confirmInput');
+    if (typeToConfirm) {
+      yes.disabled = true;
+      field.addEventListener('input', () => { yes.disabled = field.value.trim().toLowerCase() !== typeToConfirm.toLowerCase(); });
+    }
+    const finish = ok => {
+      document.removeEventListener('keydown', onKey, true);
+      ov.remove();
+      if (prevFocus?.isConnected && prevFocus !== document.body) prevFocus.focus?.({ preventScroll: true });
+      resolve(input ? (ok ? field.value.trim() : null) : !!ok);
+    };
+    const onKey = e => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); finish(false); }
+      else if (e.key === 'Enter' && field && e.target === field) { e.preventDefault(); e.stopImmediatePropagation(); if (!yes.disabled) finish(true); }
+      else if (e.key === 'Tab') {                                   // el foco no sale del diálogo
+        const f = [...ov.querySelectorAll('input, button:not([disabled])')];
+        if (!f.length) return;
+        const first = f[0], last = f[f.length - 1];
+        if (!ov.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+        else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    yes.addEventListener('click', () => finish(true));
+    no.addEventListener('click', () => finish(false));
+    ov.addEventListener('mousedown', e => { if (e.target === ov) finish(false); });
+    (field || (danger ? no : yes)).focus();                          // lo destructivo empieza con «Cancelar» enfocado
+    if (field && input) field.select();
+  });
+}
+/** ¿Seguro? → true / false. */
+const askConfirm = (message, opts = {}) => askDialog({ title: '¿Continuar?', message, confirmLabel: 'Continuar', ...opts });
+/** Pide un texto → string (sin espacios sobrantes) o null si se cancela. */
+const askText = (title, opts = {}) => askDialog({ title, confirmLabel: 'Guardar', input: { label: title, ...opts }, message: opts.message || '' });
+
+/** Cierra la ventana; si hay algo escrito sin guardar pregunta antes (clic fuera, ✕ o Esc). */
+async function requestCloseModal() {
+  if (App._modalDirty && !(await askConfirm('Lo que escribiste en este formulario se perderá.',
+        { title: '¿Descartar los cambios?', confirmLabel: 'Descartar', cancelLabel: 'Seguir editando', danger: true }))) return;
+  closeModal();
+}
+
+/** Tras un «… es requerido»: marca el primer campo obligatorio vacío de la ventana abierta y le da el foco. */
+function flagMissingRequired() {
+  if (!modalOverlay.classList.contains('visible')) return;
+  const fields = [...modalContent.querySelectorAll('.form-group')]
+    .filter(g => /\*/.test(g.querySelector('.form-label')?.textContent || ''))
+    .map(g => g.querySelector('input:not([type=hidden]), textarea, select')).filter(Boolean);
+  const missing = fields.filter(f => !String(f.value || '').trim());
+  const targets = missing.length ? missing : [modalContent.querySelector('input.form-input:not([type=hidden]):not([type=date])')].filter(f => f && !String(f.value || '').trim());
+  targets.forEach(f => { f.classList.add('is-invalid'); f.setAttribute('aria-invalid', 'true'); });
+  targets[0]?.focus();
+}
+document.addEventListener('input', e => { if (e.target?.classList?.contains('is-invalid')) { e.target.classList.remove('is-invalid'); e.target.removeAttribute('aria-invalid'); } });
 
 // ==============================================================
 //  MODAL SYSTEM
@@ -10239,12 +10328,15 @@ function showModal(title, bodyHTML) {
   if (!modalOverlay.classList.contains('visible')) _modalReturnFocus = document.activeElement;
   modalTitle.textContent = title;
   modalContent.innerHTML = bodyHTML;
+  App._modalDirty = false;
+  autoLabelControls(modalContent);
   modalOverlay.classList.add('visible');
 }
 function closeModal() {
   const wasOpen = modalOverlay.classList.contains('visible');
   modalOverlay.classList.remove('visible');
   modalContent.innerHTML = '';
+  App._modalDirty = false;
   // Devuelve el foco al elemento que abrió el modal (accesibilidad por teclado).
   if (wasOpen && _modalReturnFocus && _modalReturnFocus.isConnected && _modalReturnFocus !== document.body) _modalReturnFocus.focus?.();
   _modalReturnFocus = null;
@@ -10255,6 +10347,12 @@ function closeModal() {
  * `message` es el texto del aviso (p. ej. 'Idea eliminada').
  */
 async function deleteWithUndo(tableName, id, undoLabel, message) {
+  if (tableName === 'ideas') {                                   // una idea arrastra sus tareas
+    const restore = await dbWrite(() => deleteIdeaCascade(id));
+    UndoStack.push({ label: undoLabel, undo: async () => { await dbWrite(() => restore()); } });
+    showToastWithUndo(message, 'info');
+    return;
+  }
   const rec = await db[tableName].get(id);
   if (!rec) return;
   await dbWrite(() => db[tableName].delete(id));
@@ -10283,6 +10381,76 @@ const BackupMeta = {
 };
 
 /** Descarga un backup completo y lo anota como "último backup". */
+/** Lee un backup (JSON o cifrado) y ofrece fusionarlo o reemplazar los datos actuales. */
+async function startBackupImport(file) {
+  try {
+    const raw = await file.text();
+    const text = await Vault.open(raw);                // archivo cifrado: pide la contraseña (null = cancelado)
+    if (text === null) return;
+    const data = sanitizeBackup(JSON.parse(text));     // valida el formato antes de mostrar nada
+    const counts = { projects: data.projects.length, ideas: data.ideas.length, snippets: data.snippets.length };
+
+    showModal('📥 Importar datos', `
+      <div class="modal-body">
+        <p style="color:var(--text-2);font-size:.85rem;margin-bottom:14px">
+          El archivo contiene <strong style="color:var(--text-1)">${counts.projects}</strong> proyectos,
+          <strong style="color:var(--text-1)">${counts.ideas}</strong> ideas y
+          <strong style="color:var(--text-1)">${counts.snippets}</strong> snippets.
+        </p>
+        <p style="font-size:.82rem;color:var(--text-2);margin-bottom:16px">¿Cómo deseas importarlos?</p>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <label class="import-option-card" id="importOptMerge" style="cursor:pointer">
+            <input type="radio" name="importMode" value="merge" checked style="margin-right:8px">
+            <div>
+              <strong style="color:var(--text-1)">⊕ Merge (recomendado)</strong>
+              <p style="font-size:.75rem;color:var(--text-3);margin:2px 0 0">
+                Añade sólo los registros nuevos y reconecta sus referencias. No borra ni modifica los datos existentes.
+              </p>
+            </div>
+          </label>
+          <label class="import-option-card" id="importOptReplace" style="cursor:pointer">
+            <input type="radio" name="importMode" value="replace" style="margin-right:8px">
+            <div>
+              <strong style="color:var(--red)">⚠ Reemplazar todo</strong>
+              <p style="font-size:.75rem;color:var(--text-3);margin:2px 0 0">
+                Borra todos los datos actuales y los sustituye. Antes se descarga una copia automática de tus datos actuales.
+              </p>
+            </div>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="importModeCancel">Cancelar</button>
+        <button class="btn btn-primary" id="importModeOk">Importar</button>
+      </div>`);
+
+    $('importModeCancel').addEventListener('click', closeModal);
+    $('importModeOk').addEventListener('click', async () => {
+      const mode = document.querySelector('input[name="importMode"]:checked')?.value;
+      try {
+        let msg;
+        if (mode === 'replace') {
+          if (!(await askConfirm('Se eliminarán todos tus datos actuales y se cargará el archivo. Antes se descargará una copia.', { title: '¿Reemplazar todos los datos?', confirmLabel: 'Reemplazar', danger: true }))) return;
+          await downloadBackup('researchos-antes-de-reemplazar');
+          const n = await importAllData(text);
+          msg = `Datos reemplazados: ${n.projects} proyectos, ${n.ideas} ideas, ${n.snippets} snippets`;
+        } else {
+          msg = 'Importado (merge): ' + describeMerge(await mergeAllData(text));
+        }
+        await _afterDataReplaced();
+        closeModal();
+        showToast(msg + ' ✓', 'success');
+        navigate('dashboard');
+      } catch (err) {
+        showToast('No se pudo importar: ' + err.message, 'error');
+        console.error(err);
+      }
+    });
+  } catch (err) {
+    showToast('Error al leer el archivo: ' + err.message, 'error');
+  }
+}
+
 async function downloadBackup(prefix = 'researchos-backup') {
   downloadFile(`${prefix}-${localDateISO()}.json`, await exportAllData());
   BackupMeta.mark();
@@ -10293,18 +10461,34 @@ async function _afterDataReplaced() {
   _applySubStages(await _getSubStages());
   UndoStack.clear();
   await _buildSearchIndex().catch(() => {});
+  Live.settingsDirty = true; Live.touch();          // si quien llama no repinta la vista (ni el selector de área), el refresco central lo hace
 }
 
 // ==============================================================
 //  TOAST NOTIFICATIONS
 // ==============================================================
+/** Monta un aviso: tope de 4 a la vez, botón de cierre y pausa al pasar el ratón; los errores se quedan más tiempo. */
+function _mountToast(toast, ms) {
+  const host = $('toastContainer');
+  while (host.children.length >= 4) host.firstElementChild.remove();
+  const close = document.createElement('button');
+  close.className = 'toast-close'; close.setAttribute('aria-label', 'Cerrar aviso'); close.textContent = '✕';
+  close.addEventListener('click', () => toast.remove());
+  toast.appendChild(close);
+  host.appendChild(toast);
+  let timer = setTimeout(() => toast.remove(), ms);
+  toast.addEventListener('mouseenter', () => clearTimeout(timer));
+  toast.addEventListener('mouseleave', () => { timer = setTimeout(() => toast.remove(), 1800); });
+  return () => clearTimeout(timer);
+}
+
 function showToast(message, type = 'info') {
   const icons = { success: '✓', error: '✕', info: 'ℹ' };
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
-  toast.innerHTML = `<span>${icons[type] || '•'}</span> ${esc(message)}`;
-  $('toastContainer').appendChild(toast);
-  setTimeout(() => toast.remove(), 3200);
+  toast.innerHTML = `<span>${icons[type] || '•'}</span> <span class="toast-msg">${esc(message)}</span>`;
+  _mountToast(toast, type === 'error' ? 7000 : 3200);
+  if (type === 'error' && /requerid/i.test(message)) flagMissingRequired();
 }
 
 // ==============================================================
@@ -10348,6 +10532,19 @@ async function updateBadges() {
     mbadge.classList.toggle('visible', pendingActions > 0);
   }
 
+  // Badge de «Hoy»: tareas y fechas límite que vencen hoy o ya vencieron (dentro del área activa)
+  const todayBadge = $('todayBadge');
+  if (todayBadge) {
+    const iso = localDateISO();
+    const byId = Object.fromEntries(allProjects.map(p => [p.id, p]));
+    const nTasks = (await db.tasks.filter(t => !t.done && t.due && t.due <= iso).toArray())
+      .filter(t => !t.projectId || (byId[t.projectId] && !byId[t.projectId].archived && inContext(byId[t.projectId]))).length;
+    const nDue = allProjects.filter(p => !p.archived && p.deadline && p.deadline <= iso && !isFinished(p) && inContext(p)).length;
+    todayBadge.textContent = nTasks + nDue;
+    todayBadge.classList.toggle('visible', nTasks + nDue > 0);
+  }
+  if (typeof updateNavGroupDots === 'function') updateNavGroupDots();
+
   await _renderResearchStatus();
 }
 
@@ -10369,11 +10566,23 @@ function _langClass(lang) {
   return String(lang || 'Other').replace(/[^A-Za-z0-9_-]/g, '') || 'Other';
 }
 
+/** Texto plano para vistas previas: sin # ni ** ni enlaces ni código, en una sola línea. */
+function plainPreview(md, max = 180) {
+  const t = String(md || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, a, b) => b || a)
+    .replace(/^\s{0,3}(#{1,6}|[-*+>]|\d+\.)\s+/gm, '')
+    .replace(/[*_`~]+/g, '')
+    .replace(/\s+/g, ' ').trim();
+  return t.length > max ? t.slice(0, max - 1) + '…' : t;
+}
+
 function typeBadgeClass(type) {
   const map = {
     Grant:'badge-grant', Paper:'badge-paper',
     Análisis:'badge-analisis', Dataset:'badge-dataset',
-    Presentación:'badge-presentacion', Proyecto:'badge-proyecto'
+    Presentación:'badge-presentacion', Proyecto:'badge-proyecto', Curso:'badge-curso'
   };
   return map[type] || 'badge-type';
 }
@@ -10523,7 +10732,7 @@ async function previewImportCSV(file) {
     return;
   }
 
-  const VALID_TYPES    = ['Proyecto','Grant','Paper','Análisis','Dataset','Presentación'];
+  const VALID_TYPES    = ['Proyecto','Grant','Paper','Análisis','Dataset','Presentación','Curso'];
   const VALID_PRIORITY = ['Alta','Media','Baja'];
   const fold = foldText;
   const [cols, existing] = await Promise.all([db.kanbanColumns.orderBy('order').toArray(), db.projects.toArray()]);
@@ -10737,19 +10946,23 @@ async function exportProjectAsMarkdown(projectId) {
 // ==============================================================
 function _showWelcomeModal() {
   const sections = [
-    { icon:'◈', title:'Dashboard',        desc:'Vista general: estadísticas, actividad reciente y accesos rápidos a Focus Feed, revisión de ideas y elementos huérfanos.' },
+    { icon:'◈', title:'Hoy',              desc:'Tu punto de partida: tareas y fechas de hoy y de la semana, captura rápida (tecla C) y lo que espera respuesta. Las métricas están plegadas en «Panorama».' },
+    { icon:'⊡', title:'Áreas',            desc:'Define tus frentes (Investigación, Docencia, Gestión…) y elige uno en el menú para ver solo ese contexto en Hoy, Tablero y Proyectos.' },
     { icon:'⊞', title:'Kanban Board',     desc:'Gestiona el estado de tus proyectos arrastrando tarjetas entre columnas personalizables. Soporta límites WIP.' },
     { icon:'◉', title:'Proyectos',        desc:'Listado filtrable por tipo, prioridad y columna. Guarda filtros como vistas con nombre para acceso rápido.' },
     { icon:'⬡', title:'Project Hub',      desc:'Abre el Hub desde cualquier proyecto para ver en una sola página: ideas, submissions, reuniones, referencias y snippets vinculados.' },
-    { icon:'🎯', title:'Focus Feed',       desc:'Calculado automáticamente: qué hacer ahora según deadlines, acciones pendientes e ideas sin revisar.' },
+    { icon:'🎯', title:'Hoy',       desc:'Calculado automáticamente: qué hacer ahora según deadlines, acciones pendientes e ideas sin revisar.' },
     { icon:'📤', title:'Submissions',      desc:'Seguimiento de papers, grants y ponencias a través de su ciclo: preparación → enviado → revisión → aceptado/rechazado.' },
-    { icon:'🗓', title:'Reuniones',        desc:'Registra reuniones con acuerdos y próximos pasos. Las acciones pendientes aparecen en el Focus Feed.' },
+    { icon:'🗓', title:'Reuniones',        desc:'Registra reuniones con acuerdos y próximos pasos. Las acciones pendientes aparecen en el Hoy.' },
     { icon:'📚', title:'Referencias',      desc:'Gestiona fuentes bibliográficas vinculadas a proyectos. Exporta a .bib con un clic.' },
     { icon:'◎', title:'Ideas Inbox',       desc:'Captura rápida de ideas. Usa la Revisión rápida (teclado) para procesar el inbox sin fricción.' },
     { icon:'⟨/⟩', title:'Snippets',       desc:'Biblioteca de código por lenguaje y colección, vinculada a proyectos. Resaltado de sintaxis incluido.' },
     { icon:'📅', title:'Agenda Semanal',   desc:'Vista de solo lectura que agrega todos los deadlines, submissions y reuniones de los próximos 7 días.' },
     { icon:'⏱', title:'Timeline',         desc:'Vista Gantt con zoom semana / mes / año. Filtra proyectos vencidos y colorea por prioridad o tipo.' },
     { icon:'🔗', title:'Huérfanos',        desc:'Detecta ideas, snippets, referencias y reuniones sin proyecto asignado para mantener todo conectado.' },
+    { icon:'✺', title:'Red',              desc:'Grafo estilo Obsidian con todo lo que has guardado y cómo se conecta; filtra por tipo, busca y abre el grafo local de cualquier elemento.' },
+    { icon:'☀', title:'Mi día',           desc:'Elige qué harás hoy según el tiempo disponible y los tiempos estimados (~2h al capturar). Lo pendiente pasa solo al día siguiente.' },
+    { icon:'📈', title:'Informe de avance', desc:'Lo que lograste en una semana, un mes o el año, en Markdown, para tu memoria anual, tu CV o tu jefatura.' },
   ];
 
   showModal('⬡ Bienvenido a ResearchOS', `
@@ -10779,11 +10992,15 @@ function _showWelcomeModal() {
 
       <div class="welcome-section-title" style="margin-top:20px">Atajos de teclado</div>
       <div class="welcome-shortcuts">
-        <div class="ws-row"><kbd>⌘K</kbd><span>Abrir Command Palette (búsqueda global)</span></div>
-        <div class="ws-row"><kbd>⌘⇧K</kbd><span>Ir al Kanban</span></div>
+        <div class="ws-row"><kbd>${MOD_KEY}K</kbd><span>Buscar y ejecutar acciones (paleta de comandos)</span></div>
+        <div class="ws-row"><kbd>?</kbd><span>Ver todos los atajos</span></div>
+        <div class="ws-row"><kbd>C</kbd><span>Capturar al vuelo: tarea, idea, proyecto o reunión</span></div>
+        <div class="ws-row"><kbd>/</kbd><span>Filtrar la lista que estás viendo</span></div>
+        <div class="ws-row"><kbd>${MOD_KEY}Z</kbd><span>Deshacer lo último (borrar, archivar, mover…)</span></div>
+        <div class="ws-row"><kbd>[[</kbd><span>Escribe <code>[[</code> en cualquier nota para enlazar con otro elemento</span></div>
         <div class="ws-row"><kbd>F5</kbd><span>Presentación Kanban (pantalla completa)</span></div>
         <div class="ws-row"><kbd>→ / L</kbd><span>Siguiente idea en Revisión rápida</span></div>
-        <div class="ws-row"><kbd>Esc</kbd><span>Cerrar modal / inspector / paleta</span></div>
+        <div class="ws-row"><kbd>Esc</kbd><span>Cerrar ventana / inspector / paleta</span></div>
       </div>
     </div>
     <div class="modal-footer" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
@@ -10820,7 +11037,7 @@ function _showWelcomeModal() {
         localStorage.setItem('ros-welcomed', '1');
       }
       closeModal();
-      showToast('Datos de ejemplo cargados ✓ — explora el Dashboard', 'success');
+      showToast('Datos de ejemplo cargados ✓ — mira la vista Hoy', 'success');
       navigate('dashboard');
     } catch (err) {
       btn.disabled = false;
@@ -10866,11 +11083,11 @@ const GoogleSync = (() => {
     const dot  = document.getElementById('syncDot');
     const text = document.getElementById('saveIndicatorText');
     const MAP  = {
-      idle:        ['',        'Local Only'    ],
+      idle:        ['',        'Solo local'    ],
       syncing:     ['syncing', 'Sincronizando…'],
       ok:          ['ok',      'Drive ✓'       ],
       error:       ['error',   'Sync Error'    ],
-      disconnected:['',        'Local Only'    ],
+      disconnected:['',        'Solo local'    ],
     };
     const [cls, label] = MAP[state] ?? MAP.idle;
     if (dot)  dot.className  = 'status-dot' + (cls ? ' sync-' + cls : '');
@@ -10893,47 +11110,55 @@ const GoogleSync = (() => {
       if (autoSync === 'true') await push({ silent: true });
     }
 
-    if (typeof google !== 'undefined') {
-      tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: CLIENT_ID,
-        scope: SCOPE,
-        callback: async resp => {
-          if (resp.error) {
-            setStatus('error');
-            showToast('Error de autenticación con Google', 'error');
-            return;
-          }
-          accessToken = resp.access_token;
-          _userEmail  = null;
-          await saveSetting('google_access_token', accessToken);
-          await saveSetting('google_token_expiry',
-            String(Date.now() + (resp.expires_in - 60) * 1000));
-
-          // tokeninfo devuelve email + scope en una sola llamada segura
-          try {
-            const r    = await fetch(`https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=${encodeURIComponent(accessToken)}`);
-            const info = await r.json();
-            if (info?.email) {
-              _userEmail = info.email;
-              await saveSetting('google_user_email', _userEmail);
-            }
-          } catch { /* no crítico */ }
-
-          setStatus('ok');
-          showToast('Cuenta de Google conectada ✓', 'success');
-          renderGoogleSyncSection();
-        }
-      });
-    }
+    if (token || savedEmail) ensureClient().catch(() => {});        // sesión previa: prepara el cliente de Google en segundo plano
   }
 
-  function signIn() {
-    if (!tokenClient) { showToast('Google Identity Services no disponible', 'error'); return; }
-    tokenClient.requestAccessToken({ prompt: accessToken ? '' : 'consent' });
+  /** Carga Google Identity Services solo cuando hace falta: no se contacta a Google en cada arranque. */
+  async function ensureClient() {
+    if (tokenClient) return tokenClient;
+    await loadLib('gsi').catch(() => {});
+    if (typeof google === 'undefined') return null;
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPE,
+      callback: async resp => {
+        if (resp.error) {
+          setStatus('error');
+          showToast('Error de autenticación con Google', 'error');
+          return;
+        }
+        accessToken = resp.access_token;
+        _userEmail  = null;
+        await saveSetting('google_access_token', accessToken);
+        await saveSetting('google_token_expiry',
+          String(Date.now() + (resp.expires_in - 60) * 1000));
+
+        // tokeninfo devuelve email + scope en una sola llamada segura
+        try {
+          const r    = await fetch(`https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=${encodeURIComponent(accessToken)}`);
+          const info = await r.json();
+          if (info?.email) {
+            _userEmail = info.email;
+            await saveSetting('google_user_email', _userEmail);
+          }
+        } catch { /* no crítico */ }
+
+        setStatus('ok');
+        showToast('Cuenta de Google conectada ✓', 'success');
+        renderGoogleSyncSection();
+      }
+    });
+    return tokenClient;
+  }
+
+  async function signIn() {
+    const client = await ensureClient();
+    if (!client) { showToast('Google Identity Services no disponible', 'error'); return; }
+    client.requestAccessToken({ prompt: accessToken ? '' : 'consent' });
   }
 
   async function signOut() {
-    if (accessToken) google.accounts.oauth2.revoke(accessToken);
+    if (accessToken && typeof google !== 'undefined') google.accounts.oauth2.revoke(accessToken);
     accessToken = null;
     _userEmail  = null;
     await Promise.all([
@@ -11475,14 +11700,16 @@ function _showBootError() {
 
 async function init() {
   if (typeof Dexie === 'undefined') { _showBootError(); return; }
+  _wireLive();                                          // refresco inmediato de la vista ante cualquier cambio de datos
 
   // Librerías opcionales: la app funciona sin ellas, con menos funciones.
-  const _optional = [['marked', 'Markdown'], ['hljs', 'resaltado de código'], ['katex', 'LaTeX']]
+  const _optional = [['marked', 'Markdown']]
     .filter(([g]) => typeof window[g] === 'undefined').map(([, n]) => n);
   if (_optional.length) setTimeout(() => showToast(`No se cargaron: ${_optional.join(', ')}. La app funciona con funciones reducidas.`, 'info'), 600);
 
   // Seed database defaults
   await seedDefaults();
+  await refreshColumnFlags();
   navigator.storage?.persist?.().catch(() => {});      // pide almacenamiento persistente: evita que el navegador evacúe la BD
   if (!localStorage.getItem('ros-first-seen')) localStorage.setItem('ros-first-seen', String(Date.now()));
 
@@ -11563,6 +11790,9 @@ async function init() {
     sw.addEventListener('click', () => _applyAccent(sw.dataset.accent));
   });
 
+  initNavGroups();                  // grupos plegables del menú (today.js)
+  await renderContextSwitcher();    // selector de área activa
+
   // Navigation history buttons
   $('navBack')?.addEventListener('click', navBack);
   $('navForward')?.addEventListener('click', navForward);
@@ -11571,7 +11801,9 @@ async function init() {
   document.querySelectorAll('.nav-item[data-view]').forEach(link => {
     link.addEventListener('click', (e) => {
       e.preventDefault();
-      navigate(link.dataset.view);
+      // «Proyectos» abre la última pestaña usada (Tablero, Lista, Línea de tiempo o Jerarquía)
+      const remembered = link.dataset.remember === 'proj-tab' && localStorage.getItem('ros-proj-tab');
+      navigate(remembered && PROJECT_TABS.some(t => t.view === remembered) ? remembered : link.dataset.view);
     });
   });
 
@@ -11593,9 +11825,20 @@ async function init() {
   $('closeInspector').addEventListener('click', closeInspector);
 
   // Modal close
-  $('modalClose').addEventListener('click', closeModal);
+  $('modalClose').addEventListener('click', requestCloseModal);
   $('modalOverlay').addEventListener('click', (e) => {
-    if (e.target === $('modalOverlay')) closeModal();
+    if (e.target === $('modalOverlay')) requestCloseModal();
+  });
+  const markDirty = e => { if (e.isTrusted) App._modalDirty = true; };      // solo lo que escribe la persona, no los eventos que lanza la app
+  modalContent.addEventListener('input', markDirty); modalContent.addEventListener('change', markDirty);
+  // Enter en un campo de una sola línea = botón principal de la ventana
+  modalContent.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' || e.defaultPrevented || e.shiftKey || e.isComposing) return;
+    const t = e.target;
+    if (!t.matches?.('input.form-input:not([type=checkbox]):not([type=radio]):not([type=file])') || t.closest('.proj-chip-picker, [data-no-enter]') || t.getAttribute('list') || t.getAttribute('aria-autocomplete')) return;
+    if (modalContent.querySelector('.proj-chip-dropdown:not(:empty), .person-dropdown, .autocomplete-list')) return;
+    const primary = modalContent.querySelector('.modal-footer .btn-primary:not([disabled])');
+    if (primary) { e.preventDefault(); primary.click(); }
   });
 
   // Keyboard shortcuts
@@ -11603,7 +11846,7 @@ async function init() {
     if (e.key === 'Escape') {
       // Una sola capa por pulsación: paleta → modal → inspector.
       if ($('paletteOverlay').classList.contains('open')) closePalette();
-      else if (modalOverlay.classList.contains('visible')) closeModal();
+      else if (modalOverlay.classList.contains('visible')) requestCloseModal();
       else closeInspector();
     }
     // Atrapa el foco dentro del modal abierto (Tab / Shift+Tab)
@@ -11628,12 +11871,47 @@ async function init() {
     const _noFocus   = !e.target.closest('input, textarea, select, [contenteditable]');
     const _noModal   = !modalOverlay.classList.contains('visible');
     const _noPalette = !$('paletteOverlay').classList.contains('open');
-    if (_noFocus && _noModal && _noPalette) {
+    const _plain = !e.metaKey && !e.ctrlKey && !e.altKey;       // Ctrl/⌘+C (copiar), ⌘+S (guardar), etc. son del navegador, no atajos de la app
+    if (_noFocus && _noModal && _noPalette && _plain) {
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); _contextualNew(); }
+      if (e.key === 'c' || e.key === 'C') { e.preventDefault(); focusCapture(); }
       if (e.key === 'e' || e.key === 'E') { e.preventDefault(); _inspectorEdit(); }
       if (e.key === 's' || e.key === 'S') { e.preventDefault(); _inspectorStar(); }
+      if (e.key === '?') { e.preventDefault(); openShortcutsHelp(); }
+    }
+    // Deshacer lo último (borrados, archivados, movimientos…) aunque el aviso ya haya desaparecido
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'z' || e.key === 'Z') && _noFocus && _noModal && _noPalette) {
+      e.preventDefault(); undoLast();
+    }
+    // «/» lleva el cursor al filtro de la lista
+    if (e.key === '/' && _plain && _noFocus && _noModal && _noPalette && $('listFilterInput')) { e.preventDefault(); $('listFilterInput').focus(); }
+    // Historial de vistas, como anuncian los botones ← →
+    if (e.altKey && !e.metaKey && !e.ctrlKey && _noFocus && _noModal && _noPalette) {
+      if (e.key === 'ArrowLeft')  { e.preventDefault(); navBack(); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); navForward(); }
+    }
+    // Enter / Espacio abren la fila o tarjeta enfocada (ver enableKeyboardClicks)
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.hasAttribute?.('data-kb') && !e.target.matches('input, textarea, select, button, a')) {
+      e.preventDefault(); e.target.click();
     }
   });
+
+  // Botones de los estados vacíos («+ Reunión», «+ Snippet»…)
+  mainContent.addEventListener('click', e => {
+    const b = e.target.closest('[data-empty-cta]');
+    if (!b) return;
+    const go = {
+      project: () => showAddProjectModal(), paper: () => { App._projectTemplate = 'paper'; App._skipTemplateStep = true; showAddProjectModal(); },
+      idea: () => $('ideaTitleInput')?.focus(), snippet: () => showAddSnippetModal(), meeting: () => showAddMeetingModal(),
+      reference: () => showAddReferenceModal(), collaborator: () => showAddCollaboratorModal(),
+      'import-bib': () => $('importRefsBtn')?.click(),
+    }[b.dataset.emptyCta];
+    go?.();
+  });
+  // Enlace «Saltar al contenido»: enfoca el contenido sin cambiar la URL
+  $('skipLink')?.addEventListener('click', e => { e.preventDefault(); mainContent.focus({ preventScroll: true }); });
+  $('shortcutsBtn')?.addEventListener('click', () => openShortcutsHelp());
+  const modHint = $('paletteModKey'); if (modHint) modHint.textContent = `${MOD_KEY}K`;
 
   _initPalette();
 
@@ -11642,10 +11920,23 @@ async function init() {
     _showWelcomeModal();
   }
 
+  initAutoBackup().catch(() => {});             // integrations.js
+  initSync().catch(() => {});                   // sync.js
+  await handleSharedCapture().catch(() => {});  // «Compartir → ResearchOS» desde el móvil
+
   // Índice de búsqueda inicial
   _buildSearchIndex().catch(() => {});
   // Initial view
   navigate('dashboard');
+  // Un repintado directo (renderIdeas(), renderToday()…) también cuenta como «ya repintó»: el refresco central no lo repite.
+  for (const name of ['renderToday', 'renderKanban', 'renderProjects', 'renderIdeas', 'renderSnippets', 'renderArchived', 'renderStarred',
+                      'renderTimeline', 'renderNestedProjects', 'renderWeeklyAgenda', 'renderSubmissions', 'renderMeetings', 'renderReferences',
+                      'renderCollaborators', 'renderProjectHub', 'renderOrphans', 'renderIdeaTriage', 'renderAreas', 'renderCollaboratorHub',
+                      'renderWeeklyReview', 'renderReport']) {
+    const fn = window[name];
+    if (typeof fn === 'function') window[name] = function (...args) { App._renderStartedAt = performance.now(); return fn.apply(this, args); };
+  }
+  Live.ready = true;                // desde aquí, cualquier cambio de datos refresca la vista abierta
   // Resumen de sesión (se muestra si hubo ≥4h de inactividad)
   setTimeout(() => _checkSessionResume().catch(() => {}), 800);
 
@@ -11665,10 +11956,30 @@ async function init() {
 // ==============================================================
 async function _getAreas() {
   const s = await db.settings.get('ros-areas');
-  return s ? (JSON.parse(s.value) || []) : [];
+  const areas = s ? (JSON.parse(s.value) || []) : [];
+  // Cada área lleva uid y updatedAt (como el resto de registros) para poder sincronizarse entre dispositivos
+  let dirty = false;
+  for (const a of areas) {
+    if (!a.uid) { a.uid = legacyUid('areas', { name: a.name }); dirty = true; }
+    if (!a.updatedAt) { a.updatedAt = '1970-01-01T00:00:00.000Z'; dirty = true; }
+  }
+  if (dirty) await db.settings.put({ key: 'ros-areas', value: JSON.stringify(areas) });
+  return areas;
 }
 async function _saveAreas(areas) {
+  const prev = await _getAreas();
+  const prevByUid = new Map(prev.map(a => [a.uid, a]));
+  const now = new Date().toISOString();
+  const strip = a => JSON.stringify({ ...a, updatedAt: null });
+  for (const a of areas) {
+    if (!a.uid) a.uid = newUid();
+    const p = prevByUid.get(a.uid);
+    if (!p || strip(p) !== strip(a)) a.updatedAt = now;           // «gana el cambio más reciente» también para las áreas
+  }
+  for (const p of prev.filter(p => !areas.some(a => a.uid === p.uid)))
+    await db.tombstones.add({ uid: p.uid, table: 'areas', deletedAt: now, name: p.name });         // el borrado de un área se propaga (también por nombre)
   await db.settings.put({ key: 'ros-areas', value: JSON.stringify(areas) });
+  if (typeof renderContextSwitcher === 'function') renderContextSwitcher();
 }
 
 // ==============================================================
@@ -11682,7 +11993,7 @@ async function _getColPresets() {
     { id: 'research', name: 'Investigación', icon: '🔬',
       types: ['Paper', 'Grant', 'Análisis', 'Dataset'] },
     { id: 'teaching', name: 'Docencia', icon: '🎓',
-      types: ['Proyecto', 'Presentación'] },
+      types: ['Proyecto', 'Presentación', 'Curso'] },
   ];
   await _saveColPresets(defaults);
   return defaults;
@@ -11731,19 +12042,21 @@ async function renderAreas() {
           <div class="empty-state" style="grid-column:1/-1">
             <span class="empty-state-icon">⊡</span>
             <h3>Sin áreas definidas</h3>
-            <p>Las áreas agrupan proyectos por temática o línea de investigación</p>
+            <p>Las áreas son tus frentes (Investigación, Docencia, Gestión…). Con un área activa, Hoy, el Tablero y la lista solo muestran ese frente.</p>
+            <button class="btn btn-primary" id="seedAreasBtn" style="margin-top:12px">Crear áreas sugeridas</button>
           </div>`}
       </div>
     </div>`);
 
   $('addAreaBtn').addEventListener('click', () => showAreaModal());
+  $('seedAreasBtn')?.addEventListener('click', async () => { await seedSuggestedAreas(); showToast('Áreas creadas ✓ — elige una en el menú lateral', 'success'); renderAreas(); });
   mainContent.querySelectorAll('[data-edit-area]').forEach(btn => {
     const area = areas.find(a => a.id === +btn.dataset.editArea);
     if (area) btn.addEventListener('click', () => showAreaModal(area));
   });
   mainContent.querySelectorAll('[data-del-area]').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!confirm('¿Eliminar esta área? Los proyectos vinculados quedarán sin área.')) return;
+      if (!(await askConfirm('Los proyectos vinculados quedarán sin área.', { title: '¿Eliminar esta área?', confirmLabel: 'Eliminar', danger: true }))) return;
       const id = +btn.dataset.delArea;
       await _saveAreas((await _getAreas()).filter(a => a.id !== id));
       const linked = await db.projects.filter(p => p.areaId === id).toArray();
@@ -11825,26 +12138,25 @@ function showAreaModal(area = null) {
 async function _renderResearchStatus() {
   const el = $('researchStatus');
   if (!el) return;
+  await refreshColumnFlags();
   const today = new Date(); today.setHours(0,0,0,0);
-  const now   = Date.now();
-  const all   = await db.projects.filter(p => !p.archived).toArray();
-  const zombie = all.filter(p =>
-    !!p.updatedAt && (now - new Date(p.updatedAt)) > 30 * 86400000).length;
+  const all   = (await db.projects.filter(p => !p.archived).toArray()).filter(inContext);
+  const idle   = all.filter(p => isIdle(p)).length;                    // sin movimiento (no cuenta lo que espera respuesta ni lo terminado)
   const urgent = all.filter(p => {
-    if (!p.deadline) return false;
+    if (!p.deadline || isFinished(p)) return false;
     const d = Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000);
     return d >= 0 && d <= 7;
   }).length;
-  const active = all.length - zombie;
+  const active = all.filter(p => !isFinished(p)).length;
 
   el.innerHTML = `
     <div class="research-status-bar">
       <button class="rs-chip rs-active" data-rs-nav="projects"
-              title="${active} proyectos activos">◉ ${active} activo${active!==1?'s':''}</button>
+              title="${active} proyectos en curso">◉ ${active} en curso</button>
       ${urgent ? `<button class="rs-chip rs-urgent" data-rs-nav="timeline"
-              title="${urgent} con deadline en ≤7 días">⏱ ${urgent} urgente${urgent!==1?'s':''}</button>` : ''}
-      ${zombie ? `<button class="rs-chip rs-zombie" data-rs-nav="projects"
-              title="${zombie} sin actividad >30 días">⊘ ${zombie} zombie${zombie!==1?'s':''}</button>` : ''}
+              title="${urgent} con fecha límite en ≤7 días">⏱ ${urgent} urgente${urgent!==1?'s':''}</button>` : ''}
+      ${idle ? `<button class="rs-chip rs-zombie" data-rs-nav="review"
+              title="${idle} sin movimiento en más de 30 días (no cuentan los que esperan respuesta ni los terminados)">⊘ ${idle} quieto${idle!==1?'s':''}</button>` : ''}
     </div>`;
   el.querySelectorAll('[data-rs-nav]').forEach(btn =>
     btn.addEventListener('click', () => navigate(btn.dataset.rsNav)));
@@ -11854,43 +12166,32 @@ async function _renderResearchStatus() {
 //  SISTEMA DE ALERTAS — Panel dismissable
 // ==============================================================
 async function _evalAlerts() {
-  const today = new Date(); today.setHours(0,0,0,0);
-  const now   = Date.now();
-  const all   = await db.projects.filter(p => !p.archived).toArray();
+  // Las fechas límite y las tareas atrasadas ya viven en «Hoy»: aquí solo avisos que nadie más muestra,
+  // agrupados (antes eran ~15 líneas rojas) y sin penalizar lo que espera respuesta o está terminado.
+  await refreshColumnFlags();
+  const all = (await db.projects.filter(p => !p.archived).toArray()).filter(inContext);
   const alerts = [];
 
-  all.forEach(p => {
-    const idleMs = p.updatedAt ? now - new Date(p.updatedAt) : Infinity;
+  const idle = all.filter(p => isIdle(p, 30))
+    .sort((a, b) => String(a.updatedAt).localeCompare(String(b.updatedAt)));
+  if (idle.length) {
+    const names = idle.slice(0, 2).map(p => `«${p.title.length > 38 ? p.title.slice(0, 36) + '…' : p.title}»`).join(', ');
+    alerts.push({ id: `idle-${idle.length}`, severity: 'warn', nav: 'review',
+      msg: `⊘ ${idle.length} proyecto${idle.length > 1 ? 's' : ''} sin movimiento hace más de 30 días (${names}${idle.length > 2 ? '…' : ''}) · revísalo${idle.length > 1 ? 's' : ''} en la revisión semanal` });
+  }
 
-    if (idleMs > 30 * 86400000)
-      alerts.push({ id: `z-${p.id}`, severity: 'warn',
-        msg: `⊘ "${p.title}" sin actividad hace ${Math.floor(idleMs/86400000)}d` });
-
-    if (p.deadline) {
-      const days = Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000);
-      if (days < 0)
-        alerts.push({ id: `ov-${p.id}`, severity: 'error',
-          msg: `🔴 "${p.title}" venció hace ${Math.abs(days)}d` });
-      else if (days <= 3)
-        alerts.push({ id: `ur-${p.id}`, severity: 'error',
-          msg: `⏱ "${p.title}" vence en ${days}d` });
-    }
-
-    if (p.priority === 'Alta' && idleMs > 14 * 86400000)
-      alerts.push({ id: `st-${p.id}`, severity: 'warn',
-        msg: `⚑ "${p.title}" (Alta) sin cambios hace ${Math.floor(idleMs/86400000)}d` });
-  });
+  if (typeof AutoBackup !== 'undefined' && AutoBackup.paused && AutoBackup.enabled())
+    alerts.push({ id: 'ab-paused', severity: 'warn', nav: 'settings', msg: '🗄 La copia automática está en pausa: el navegador necesita que la reactives (Ajustes → Copia automática)' });
 
   // Recordatorio de backup: los datos viven solo en este navegador.
   if (all.length) {
     const sinceFirst = Math.floor((Date.now() - (+localStorage.getItem('ros-first-seen') || Date.now())) / 86400000);
     const days = BackupMeta.daysSince();
     if (days === null && sinceFirst >= 3)
-      alerts.push({ id: 'bk-never', severity: 'warn', msg: '💾 Tus datos solo existen en este navegador y nunca has exportado un backup (Settings → Exportar)' });
+      alerts.push({ id: 'bk-never', severity: 'warn', msg: '💾 Tus datos solo existen en este navegador y nunca has exportado un backup (Ajustes → Exportar)' });
     else if (days !== null && days >= BackupMeta.BACKUP_DAYS)
-      alerts.push({ id: 'bk-old', severity: 'warn', msg: `💾 Tu último backup fue hace ${days} días (Settings → Exportar)` });
+      alerts.push({ id: 'bk-old', severity: 'warn', msg: `💾 Tu último backup fue hace ${days} días (Ajustes → Exportar)` });
   }
-
   return alerts;
 }
 
@@ -11914,7 +12215,7 @@ async function _renderAlertPanel(container) {
     </div>
     ${alerts.slice(0, 5).map(a => `
       <div class="alert-item alert-${a.severity}">
-        <span class="alert-msg">${esc(a.msg)}</span>
+        <span class="alert-msg" ${a.nav ? `data-alert-nav="${a.nav}" style="cursor:pointer"` : ''}>${esc(a.msg)}</span>
         <button class="alert-dismiss" data-aid="${a.id}" title="Descartar">✕</button>
       </div>`).join('')}`;
 
@@ -11922,6 +12223,7 @@ async function _renderAlertPanel(container) {
   if (bcBar) bcBar.insertAdjacentElement('afterend', panel);
   else container.prepend(panel);
 
+  panel.querySelectorAll('[data-alert-nav]').forEach(el => el.addEventListener('click', () => navigate(el.dataset.alertNav)));
   panel.querySelectorAll('[data-aid]').forEach(btn => {
     btn.addEventListener('click', () => {
       const s = _getDismissedAlerts(); s.add(btn.dataset.aid);
@@ -11944,15 +12246,31 @@ async function _renderAlertPanel(container) {
 // ==============================================================
 //  ÍNDICE DE BÚSQUEDA EN MEMORIA
 // ==============================================================
+/** Títulos → elemento, para resolver enlaces [[Título]] y autocompletarlos (el primero gana si hay repetidos). */
+function makeTitleIndex({ projects = [], ideas = [], snippets = [], refs = [], meets = [], collabs = [] }) {
+  const titles = new Map();
+  const addTitle = (type, list, key = 'title') => list.forEach(x => {
+    const k = foldText(x[key]).trim();
+    if (k && !titles.has(k)) titles.set(k, { type, id: x.id, title: x[key] });
+  });
+  addTitle('project', projects); addTitle('idea', ideas); addTitle('snippet', snippets);
+  addTitle('ref', refs); addTitle('meeting', meets); addTitle('collab', collabs, 'name');
+  return titles;
+}
+
+/** Palabras buscables de un texto: sin tildes, separadas por espacios y signos («geom_point» → geom, point). */
+const _searchTokens = str => foldText(str).split(/[\s,;:/\-_()\[\].=+*<>{}"'`|\\]+/).filter(t => t.length >= 2);
+
 async function _buildSearchIndex() {
-  const [projects, ideas, snippets, refs, meets] = await Promise.all([
+  const [projects, ideas, snippets, refs, meets, collabs, tasks] = await Promise.all([
     db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray(),
-    db.references.toArray(), db.meetings.toArray(),
+    db.references.toArray(), db.meetings.toArray(), db.collaborators.toArray(), db.tasks.toArray(),
   ]);
 
+  App._titleIndex = makeTitleIndex({ projects, ideas, snippets, refs, meets, collabs });
+
   const idx = new Map();
-  const tokenize = str => foldText(str)
-    .split(/[\s,;:/\-_()\[\].]+/).filter(t => t.length >= 2);
+  const tokenize = _searchTokens;
   const add = (type, id, toks) => {
     [...new Set(toks)].forEach(tok => {
       if (!idx.has(tok)) idx.set(tok, []);
@@ -11961,20 +12279,27 @@ async function _buildSearchIndex() {
   };
 
   projects.forEach(p => add('project', p.id, [
-    ...tokenize(p.title), ...tokenize(p.description), ...tokenize(p.responsible),
+    ...tokenize(p.title), ...tokenize(p.description), ...tokenize(p.responsible), ...tokenize(p.targetVenue),
     ...(p.tags||[]).flatMap(tokenize)
   ]));
   ideas.forEach(i => add('idea', i.id, [
     ...tokenize(i.title), ...tokenize(i.content), ...(i.tags||[]).flatMap(tokenize)
   ]));
   snippets.forEach(s => add('snippet', s.id, [
-    ...tokenize(s.title), ...tokenize(s.description), ...tokenize(s.language)
+    ...tokenize(s.title), ...tokenize(s.description), ...tokenize(s.language), ...tokenize(String(s.code || '').slice(0, 8000)),
+    ...(s.tags||[]).flatMap(tokenize)
   ]));
   refs.forEach(r => add('ref', r.id, [
-    ...tokenize(r.title), ...tokenize(r.authors), ...tokenize(r.journal)
+    ...tokenize(r.title), ...tokenize(r.authors), ...tokenize(r.journal), ...tokenize(r.notes), ...tokenize(r.doi), ...tokenize(r.citeKey),
+    ...tokenize(r.abstract), ...(r.tags||[]).flatMap(tokenize), ...(r.keywords||[]).flatMap(tokenize), ...tokenize(r.year)
   ]));
   meets.forEach(m => add('meeting', m.id, [
-    ...tokenize(m.title), ...tokenize(m.agreements)
+    ...tokenize(m.title), ...tokenize(m.agreements), ...tokenize(m.participants),
+    ...(m.actionItems||[]).flatMap(a => tokenize(a.text))
+  ]));
+  tasks.forEach(t => add('task', t.id, tokenize(t.title)));
+  collabs.forEach(c => add('collab', c.id, [
+    ...tokenize(c.name), ...tokenize(c.role), ...tokenize(c.affiliation), ...tokenize(c.email), ...tokenize(c.notes)
   ]));
 
   App._searchIdx = idx;
@@ -12008,6 +12333,15 @@ function _paletteSetActive(idx) {
   });
 }
 
+/** Puntúa una consulta de varias palabras: frase contigua, o todas las palabras repartidas entre los campos (algo menos). */
+function _scoreQuery(lq, words, fields) {
+  const whole = _scoreMatch(lq, fields);
+  if (words.length < 2) return whole;
+  const per = words.map(w => _scoreMatch(w, fields));
+  const spread = per.every(s => s > 0) ? per.reduce((s, x) => s + x, 0) / per.length * 0.8 : 0;
+  return Math.max(whole, spread);
+}
+
 // -- Relevance scorer para búsqueda unificada -------------
 function _scoreMatch(lq, fields) {
   // fields: array de { text, weight }  → retorna 0-100
@@ -12025,51 +12359,74 @@ function _scoreMatch(lq, fields) {
 async function _searchPalette(q) {
   if (App._searchIdxDirty) await _buildSearchIndex();      // hubo escrituras desde el último índice
   const lq = foldText(q).trim();
-  let projects, ideas, snippets, refs, meets;
+  const qScore = lq.split(/\s+/).filter(Boolean);                // para puntuar: cada palabra escrita, por corta que sea
+  const qWords = [...new Set(_searchTokens(q))];                 // «geom_point» → geom, point · «paper alfa» → paper, alfa
+  let projects, ideas, snippets, refs, meets, tasks, people;
 
-  if (lq.length >= 2 && App._searchIdx.size > 0) {
-    // Índice disponible: obtener IDs relevantes primero, luego sólo esos registros
-    const hits = { project: new Set(), idea: new Set(), snippet: new Set(),
-                   ref: new Set(), meeting: new Set() };
-    App._searchIdx.forEach((entries, tok) => {
-      if (tok === lq || tok.startsWith(lq) || tok.includes(lq))
-        entries.forEach(e => { if (hits[e.type]) hits[e.type].add(e.id); });
+  if (lq.length >= 2 && qWords.length && App._searchIdx.size > 0) {
+    // Índice disponible: candidatos = elementos que contienen TODAS las palabras; luego se leen solo esos registros
+    const types = ['project', 'idea', 'snippet', 'ref', 'meeting', 'task', 'collab'];
+    const perWord = qWords.map(w => {
+      const m = Object.fromEntries(types.map(t => [t, new Set()]));
+      App._searchIdx.forEach((entries, tok) => { if (tok.includes(w)) entries.forEach(e => m[e.type]?.add(e.id)); });
+      return m;
     });
-    [projects, ideas, snippets, refs, meets] = await Promise.all([
-      hits.project.size ? db.projects.where('id').anyOf([...hits.project]).toArray() : Promise.resolve([]),
-      hits.idea.size    ? db.ideas.where('id').anyOf([...hits.idea]).toArray()       : Promise.resolve([]),
-      hits.snippet.size ? db.snippets.where('id').anyOf([...hits.snippet]).toArray() : Promise.resolve([]),
-      hits.ref.size     ? db.references.where('id').anyOf([...hits.ref]).toArray()   : Promise.resolve([]),
-      hits.meeting.size ? db.meetings.where('id').anyOf([...hits.meeting]).toArray() : Promise.resolve([]),
-    ]);
+    const hits = Object.fromEntries(types.map(t => [t, perWord.reduce((acc, m) => acc ? new Set([...acc].filter(id => m[t].has(id))) : m[t], null)]));
+    const load = (table, type) => hits[type].size ? db[table].where('id').anyOf([...hits[type]]).toArray() : Promise.resolve([]);
+    [projects, ideas, snippets, refs, meets, tasks, people] = await Promise.all([
+      load('projects', 'project'), load('ideas', 'idea'), load('snippets', 'snippet'), load('references', 'ref'),
+      load('meetings', 'meeting'), load('tasks', 'task'), load('collaborators', 'collab')]);
   } else {
-    [projects, ideas, snippets, refs, meets] = await Promise.all([
-      db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray(),
-      db.references.toArray(), db.meetings.toArray(),
+    [projects, ideas, snippets, refs, meets, tasks, people] = await Promise.all([
+      db.projects.toArray(), db.ideas.toArray(), db.snippets.toArray(), db.references.toArray(), db.meetings.toArray(),
+      db.tasks.toArray(), db.collaborators.toArray(),
     ]);
   }
 
   const groups = [];
 
-  // Navigation shortcuts (always shown when query is short)
+  // Vistas: mismos nombres que el menú, con sinónimos para encontrarlas escribiendo lo que uno recuerda
+  const go = (view, extra) => () => { closePalette(); extra?.(); navigate(view); };
   const navItems = [
-    { icon:'◈', label:'Dashboard',   sub:'Vista',    action: () => { closePalette(); navigate('dashboard'); } },
-    { icon:'⊞', label:'Kanban',      sub:'Vista',    action: () => { closePalette(); navigate('kanban'); } },
-    { icon:'◉', label:'Proyectos',   sub:'Vista',    action: () => { closePalette(); navigate('projects'); } },
-    { icon:'◎', label:'Ideas Inbox', sub:'Vista',    action: () => { closePalette(); navigate('ideas'); } },
-    { icon:'⟨/⟩',label:'Snippets',  sub:'Vista',    action: () => { closePalette(); navigate('snippets'); } },
-    { icon:'⊟', label:'FS Bridge',   sub:'Vista',    action: () => { closePalette(); navigate('filesystem'); } },
-    { icon:'⏱', label:'Timeline',      sub:'Vista', action: () => { closePalette(); navigate('timeline'); } },
-    { icon:'🎯', label:'Focus Feed',    sub:'Vista', action: () => { closePalette(); navigate('focus'); } },
-    { icon:'🔗', label:'Huérfanos',     sub:'Vista', action: () => { closePalette(); navigate('orphans'); } },
-    { icon:'◎', label:'Revisión rápida',sub:'Vista', action: () => { closePalette(); App.triageIdx = 0; navigate('triage'); } },
-    { icon:'📅', label:'Agenda',        sub:'Vista', action: () => { closePalette(); navigate('weekly'); } },
-    { icon:'📤', label:'Submissions',   sub:'Vista', action: () => { closePalette(); navigate('submissions'); } },
-    { icon:'🗓', label:'Reuniones',     sub:'Vista', action: () => { closePalette(); navigate('meetings'); } },
-    { icon:'📚', label:'Referencias',   sub:'Vista', action: () => { closePalette(); navigate('references'); } },
-    { icon:'👥', label:'Colaboradores', sub:'Vista', action: () => { closePalette(); navigate('collaborators'); } },
-  ].filter(n => !lq || foldText(n.label).includes(lq));
-  if (navItems.length) groups.push({ label: 'Vistas', items: navItems });
+    { icon: uiIcon('today'),         label: 'Hoy',                     keys: 'inicio tareas pendientes dashboard', action: go('dashboard') },
+    { icon: uiIcon('projects'),      label: 'Proyectos · Tablero',     keys: 'kanban columnas', action: go('kanban') },
+    { icon: uiIcon('list'),          label: 'Proyectos · Lista',       keys: 'tarjetas tabla', action: go('projects') },
+    { icon: uiIcon('timeline'),      label: 'Proyectos · Línea de tiempo', keys: 'timeline gantt plazos', action: go('timeline') },
+    { icon: uiIcon('nested'),        label: 'Proyectos · Jerarquía',   keys: 'anidados subproyectos arbol', action: go('nested') },
+    { icon: uiIcon('ideas'),         label: 'Ideas',                   keys: 'inbox bandeja captura', action: go('ideas') },
+    { icon: uiIcon('triage'),        label: 'Revisión rápida de ideas', keys: 'triage', action: go('triage', () => { App.triageIdx = 0; }) },
+    { icon: uiIcon('calendar'),      label: 'Calendario',              keys: 'agenda semana mes', action: go('weekly') },
+    { icon: uiIcon('network'),       label: 'Red',                     keys: 'grafo conexiones obsidian relaciones', action: go('network') },
+    { icon: uiIcon('references'),    label: 'Referencias',             keys: 'bibliografia papers bib zotero', action: go('references') },
+    { icon: uiIcon('snippets'),      label: 'Snippets',                keys: 'codigo scripts', action: go('snippets') },
+    { icon: uiIcon('star'),          label: 'Favoritos',               keys: 'destacados estrella', action: go('starred') },
+    { icon: uiIcon('meetings'),      label: 'Reuniones',               keys: 'actas acuerdos', action: go('meetings') },
+    { icon: uiIcon('collaborators'), label: 'Colaboradores',           keys: 'personas equipo contactos', action: go('collaborators') },
+    { icon: uiIcon('review'),        label: 'Revisión semanal',        keys: 'repaso', action: go('review') },
+    { icon: uiIcon('report'),        label: 'Informe de avance',       keys: 'reporte resumen', action: go('report') },
+    { icon: uiIcon('submissions'),   label: 'Submissions',             keys: 'envios revistas papers revision', action: go('submissions') },
+    { icon: uiIcon('areas'),         label: 'Áreas',                   keys: 'investigacion docencia gestion contexto', action: go('areas') },
+    { icon: uiIcon('archived'),      label: 'Archivados',              keys: 'archivo', action: go('archived') },
+    { icon: uiIcon('orphans'),       label: 'Elementos huérfanos',     keys: 'huerfanos sin proyecto', action: go('orphans') },
+    { icon: uiIcon('filesystem'),    label: 'FS Bridge',               keys: 'carpetas disco archivos', action: go('filesystem') },
+    { icon: uiIcon('tutorial'),      label: 'Tutorial',                keys: 'ayuda guia', action: go('tutorial') },
+    { icon: uiIcon('settings'),      label: 'Ajustes y backup',        keys: 'settings configuracion exportar importar copia seguridad drive cifrado', action: go('settings') },
+  ].map(n => ({ sub: 'Vista', ...n })).filter(n => !lq || foldText(n.label + ' ' + n.keys).includes(lq));
+
+  // Acciones: lo que se hace más seguido, sin tener que ir a la vista primero
+  const actionItems = [
+    { icon: uiIcon('capture'),  label: 'Capturar una tarea o idea', keys: 'nueva rapido anotar', hint: 'C', action: () => { closePalette(); focusCapture(); } },
+    { icon: uiIcon('project'),  label: 'Nuevo proyecto',           keys: 'crear paper grant curso', hint: 'N', action: () => { closePalette(); showAddProjectModal(); } },
+    { icon: uiIcon('ideas'),    label: 'Nueva idea',               keys: 'crear', action: () => { closePalette(); showAddIdeaModal(); } },
+    { icon: uiIcon('meetings'), label: 'Nueva reunión',            keys: 'crear acta', action: () => { closePalette(); showAddMeetingModal(); } },
+    { icon: uiIcon('today'),    label: 'Planificar mi día',        keys: 'agenda dia plan', action: () => { closePalette(); openDayPlanner(); } },
+    { icon: uiIcon('theme'),    label: 'Cambiar tema claro / oscuro', keys: 'modo oscuro claro noche', action: () => { closePalette(); $('themeToggle').click(); } },
+    { icon: uiIcon('keyboard'), label: 'Atajos de teclado',        keys: 'ayuda teclas', hint: '?', action: () => { closePalette(); openShortcutsHelp(); } },
+  ].map(n => ({ sub: n.hint ? `Acción · ${n.hint}` : 'Acción', ...n })).filter(n => !lq || foldText(n.label + ' ' + n.keys).includes(lq));
+  // Sin texto: primero lo que se hace; escribiendo: primero lo que coincide en vistas
+  const navGroup = navItems.length ? [{ label: 'Vistas', items: navItems }] : [];
+  const actGroup = actionItems.length ? [{ label: 'Acciones', items: actionItems }] : [];
+  groups.push(...(lq ? [...navGroup, ...actGroup] : [...actGroup, ...navGroup]));
 
   // -- Sugerencias contextuales: proyecto abierto en el Inspector --
   if (!lq && App._inspectedProjectId) {
@@ -12107,17 +12464,18 @@ async function _searchPalette(q) {
   if (lq) {
     const allItems = [
       ...projects.map(p => ({
-        score: _scoreMatch(lq, [
+        score: _scoreQuery(lq, qScore, [
           { text: p.title,       weight: 60 },
           { text: p.description, weight: 25 },
           { text: p.responsible, weight: 15 },
+          { text: p.targetVenue, weight: 10 },
           ...(p.tags||[]).map(t => ({ text: t, weight: 20 }))
         ]),
         icon: '◉', label: p.title, sub: p.type,
         action: () => { closePalette(); navigate('projects'); setTimeout(() => inspectProject(p.id), 120); }
       })),
       ...ideas.map(i => ({
-        score: _scoreMatch(lq, [
+        score: _scoreQuery(lq, qScore, [
           { text: i.title,   weight: 60 },
           { text: i.content, weight: 30 },
           ...(i.tags||[]).map(t => ({ text: t, weight: 20 }))
@@ -12126,7 +12484,7 @@ async function _searchPalette(q) {
         action: () => { closePalette(); navigate('ideas'); setTimeout(() => inspectIdea(i.id), 120); }
       })),
       ...snippets.map(s => ({
-        score: _scoreMatch(lq, [
+        score: _scoreQuery(lq, qScore, [
           { text: s.title,       weight: 60 },
           { text: s.description, weight: 25 },
           { text: s.code,        weight: 15 },
@@ -12138,24 +12496,39 @@ async function _searchPalette(q) {
         }, 120); }
       })),
       ...refs.map(r => ({
-        score: _scoreMatch(lq, [
+        score: _scoreQuery(lq, qScore, [
           { text: r.title,   weight: 60 },
           { text: r.authors, weight: 30 },
           { text: r.journal, weight: 15 },
-          { text: r.notes,   weight: 10 }
+          { text: r.notes,   weight: 20 },
+          { text: r.doi,     weight: 30 },
+          { text: r.citeKey, weight: 30 },
+          { text: [...(r.tags || []), ...(r.keywords || [])].join(' '), weight: 15 }
         ]),
         icon: '📚', label: r.title,
         sub: `${r.authors?.split(',')[0]||''} ${r.year||''}`.trim(),
         action: () => { closePalette(); navigate('references'); setTimeout(() => inspectReference(r.id), 120); }
       })),
       ...meets.map(m => ({
-        score: _scoreMatch(lq, [
+        score: _scoreQuery(lq, qScore, [
           { text: m.title,        weight: 60 },
           { text: m.agreements,   weight: 25 },
-          { text: m.participants, weight: 15 }
+          { text: m.participants, weight: 15 },
+          { text: (m.actionItems || []).map(a => a.text).join(' '), weight: 15 }
         ]),
         icon: '🗓', label: m.title, sub: formatDate(m.date),
         action: () => { closePalette(); navigate('meetings'); setTimeout(() => inspectMeeting(m.id), 120); }
+      })),
+      ...tasks.map(t => ({
+        score: _scoreQuery(lq, qScore, [{ text: t.title, weight: 60 }]) * (t.done ? 0.6 : 1),
+        icon: t.done ? '✔' : '✓', label: t.title,
+        sub: `Tarea${t.done ? ' hecha' : ''}${t.due ? ' · ' + dueLabel(t.due) : ''}`,
+        action: () => { closePalette(); if (t.projectId) { navigate('projects'); setTimeout(() => inspectProject(t.projectId), 120); } else navigate('dashboard'); }
+      })),
+      ...people.map(c => ({
+        score: _scoreQuery(lq, qScore, [{ text: c.name, weight: 70 }, { text: c.role, weight: 20 }, { text: c.affiliation, weight: 20 }, { text: c.email, weight: 30 }, { text: c.notes, weight: 10 }]),
+        icon: '👥', label: c.name, sub: [c.role, c.affiliation].filter(Boolean).join(' · ') || 'Persona',
+        action: () => { closePalette(); navigate('collaborators'); setTimeout(() => inspectCollaborator(c.id), 120); }
       })),
     ].filter(item => item.score > 0)
      .sort((a, b) => b.score - a.score)
@@ -12166,6 +12539,29 @@ async function _searchPalette(q) {
     // Sin query: mostrar vistas de navegación (comportamiento original)
   }
 
+  // «Crear»: lo escrito también puede convertirse en tarea / idea / proyecto / reunión (parser de captura rápida)
+  let createOnly = false;
+  if (lq.length >= 2) {
+    const [all, people] = await Promise.all([db.projects.toArray(), db.collaborators.toArray()]);
+    const base = parseCapture(q, all, new Date(), people);
+    if (base.title) {
+      const plain = c => [c.projectTitle && `en «${c.projectTitle}»`, c.assigneeName && `esperando a ${c.assigneeName}`, c.due && dueLabel(c.due),
+                          c.recurrence && `↻ ${recurrenceLabel(c.recurrence)}`, c.priority && `prioridad ${c.priority.toLowerCase()}`].filter(Boolean).join(' · ');
+      const mk = kind => {
+        const c = { ...base, kind };
+        return { icon: { task: '✓', idea: '◎', project: '◉', meeting: '🗓' }[kind], label: `Crear ${_KIND_LABEL[kind].toLowerCase()}: «${c.title}»`, sub: plain(c) || (kind === base.kind ? 'sugerido' : ''),
+          action: async () => {
+            closePalette();
+            try { showToast((await runCapture(c)) + ' ✓', 'success'); renderView(App.view); updateBadges(); }
+            catch (err) { showToast(err.message, 'error'); }
+          } };
+      };
+      const order = [base.kind, ...['task', 'idea', 'project', 'meeting'].filter(k => k !== base.kind)];
+      createOnly = !groups.length;
+      groups.push({ label: 'Crear con lo que escribiste', items: (base.explicit ? [base.kind] : order.slice(0, 3)).map(mk) });
+    }
+  }
+
   // Flatten for keyboard navigation
   _paletteResults = groups.flatMap(g => g.items);
   _paletteActiveIdx = _paletteResults.length > 0 ? 0 : -1;
@@ -12174,11 +12570,11 @@ async function _searchPalette(q) {
   if (!_paletteResults.length) {
     container.innerHTML = lq
       ? `<div class="palette-empty">Sin resultados para "${esc(q)}"</div>`
-      : `<div class="palette-empty" style="font-size:.8rem;color:var(--text-3);padding:16px">Escribe para buscar en proyectos, ideas, snippets, reuniones y referencias…</div>`;
+      : `<div class="palette-empty" style="font-size:.8rem;color:var(--text-3);padding:16px">Escribe para buscar en proyectos, ideas, tareas, personas, snippets (también su código), reuniones y referencias…</div>`;
     return;
   }
 
-  let html = ''; let globalIdx = 0;
+  let html = createOnly ? `<div class="palette-empty">Sin resultados para "${esc(q)}"</div>` : ''; let globalIdx = 0;
   for (const group of groups) {
     html += `<div class="palette-group-label">${esc(group.label)}</div>`;
     for (const item of group.items) {
@@ -12225,47 +12621,60 @@ function _initPalette() {
 // ==============================================================
 //  SUBTASKS (Ideas)
 // ==============================================================
-const _stTable = type => type === 'project' ? db.projects : db.ideas;
+// Las "subtareas" de proyectos e ideas son filas de la tabla `tasks` (ver Tasks en db.js): tienen fecha
+// opcional y se agregan en la vista Hoy junto con las tareas sueltas.
 const _stRefresh = (type, id) =>
   type === 'project' ? inspectProject(id) : inspectIdea(id);
 
-async function toggleSubtask(entityId, taskId, entityType = 'idea') {
-  const table  = _stTable(entityType);
-  const entity = await table.get(entityId);
-  const subtasks = (entity.subtasks || []).map(t =>
-    t.id === taskId ? { ...t, done: !t.done } : t
-  );
-  await dbWrite(() => table.update(entityId, { subtasks, updatedAt: new Date().toISOString() }));
+async function _stAfterChange(entityType, entityId) {
+  if (App.view === 'dashboard') renderView('dashboard');
+  else if (App.view === 'project-hub' && entityType === 'project') renderProjectHub();
+  else if (App.view === 'ideas') renderIdeas();
   _stRefresh(entityType, entityId);
+  updateBadges();
+}
+
+async function toggleSubtask(entityId, taskId, entityType = 'idea') {
+  const t = await db.tasks.get(taskId);
+  if (!t) return;
+  await dbWrite(() => Tasks.setDone(taskId, !t.done));
+  _stAfterChange(entityType, entityId);
 }
 
 async function deleteSubtask(entityId, taskId, entityType = 'idea') {
-  const table  = _stTable(entityType);
-  const entity = await table.get(entityId);
-  const subtasks = (entity.subtasks || []).filter(t => t.id !== taskId);
-  await dbWrite(() => table.update(entityId, { subtasks, updatedAt: new Date().toISOString() }));
-  _stRefresh(entityType, entityId);
+  await dbWrite(() => Tasks.remove(taskId));
+  _stAfterChange(entityType, entityId);
 }
 
 async function addSubtask(entityId, text, entityType = 'idea') {
   if (!text.trim()) return;
-  const table  = _stTable(entityType);
-  const entity = await table.get(entityId);
-  const subtasks = [
-    ...(entity.subtasks || []),
-    { id: Date.now(), text: text.trim(), done: false }
-  ];
-  await dbWrite(() => table.update(entityId, { subtasks, updatedAt: new Date().toISOString() }));
-  _stRefresh(entityType, entityId);
+  const due = document.getElementById(`stDue-${entityId}`)?.value || null;
+  let projectId = null, ideaId = null;
+  if (entityType === 'project') projectId = entityId;
+  else { ideaId = entityId; projectId = (await db.ideas.get(entityId))?.projectId ?? null; }
+  await dbWrite(() => Tasks.add({ title: text, due, projectId, ideaId }));
+  _stAfterChange(entityType, entityId);
 }
 
-function subtaskListHTML(entity, entityType = 'idea') {
-  const tasks = entity.subtasks || [];
+/** Etiqueta corta y legible de una fecha límite: "hoy", "mañana", "vie 6 nov", "hace 3 d". */
+function dueLabel(due) {
+  if (!due) return '';
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const d = Math.round((new Date(due + 'T00:00:00') - today) / 86400000);
+  if (d === 0) return 'hoy';
+  if (d === 1) return 'mañana';
+  if (d === -1) return 'ayer';
+  if (d < 0) return `hace ${-d} d`;
+  return new Date(due + 'T00:00:00').toLocaleDateString('es-CL', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+function subtaskListHTML(entity, entityType = 'idea', tasks = []) {
   const id    = entity.id;
   const done  = tasks.filter(t => t.done).length;
+  const todayISO = localDateISO();
   return `
     <div class="inspector-related-title">
-      Subtareas
+      Tareas
       ${tasks.length ? `<span class="subtask-count-badge">${done}/${tasks.length}</span>` : ''}
     </div>
     <div class="subtask-list" id="stList-${id}">
@@ -12273,20 +12682,25 @@ function subtaskListHTML(entity, entityType = 'idea') {
         <div class="subtask-item">
           <button class="subtask-check ${t.done ? 'done' : ''}"
                   data-toggle-st="${esc(t.id)}"
-                  data-entity-type="${entityType}">
+                  data-entity-type="${entityType}"
+                  aria-label="${t.done ? 'Marcar como pendiente' : 'Marcar como hecha'}">
             ${t.done ? '✓' : ''}
           </button>
-          <span class="subtask-text ${t.done ? 'done' : ''}">${esc(t.text)}</span>
+          <span class="subtask-text ${t.done ? 'done' : ''}">${esc(t.title)}</span>
+          <button class="subtask-due ${t.due && !t.done && t.due < todayISO ? 'overdue' : ''} ${t.due ? 'has-due' : ''}"
+                  data-st-due="${esc(t.id)}" data-st-value="${esc(t.due || '')}"
+                  title="${t.due ? 'Cambiar fecha' : 'Añadir fecha'}">${t.due ? esc(dueLabel(t.due)) : '📅'}</button>
           <button class="subtask-del"
                   data-del-st="${t.id}"
-                  data-entity-type="${entityType}">✕</button>
+                  data-entity-type="${entityType}" aria-label="Eliminar tarea">✕</button>
         </div>`).join('')}
     </div>
     <div class="subtask-add-row">
       <input class="subtask-add-input" id="stInput-${id}"
-             placeholder="Nueva subtarea…" maxlength="200">
+             placeholder="Nueva tarea…" maxlength="200">
+      <input class="subtask-due-input" type="date" id="stDue-${id}" title="Fecha límite (opcional)" aria-label="Fecha límite">
       <button class="btn btn-ghost btn-sm" id="stAddBtn-${id}"
-              data-entity-type="${entityType}">+</button>
+              data-entity-type="${entityType}" aria-label="Añadir tarea">+</button>
     </div>`;
 }
 

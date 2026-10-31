@@ -30,11 +30,44 @@ La aplicación ha sido desarrollada siguiendo los principios del "Modern Vanilla
 
 <!-- -->
 
+-   **Refresco inmediato de lo que ves**: cualquier escritura en la base de datos (desde el inspector, un modal, una tarjeta o la consola) avisa a un único punto central (`Live` en [app.js](app.js)), que repinta la vista abierta y el inspector sin vaciarlos, conservando el scroll de la página y de las listas internas (columnas del tablero). Si el manejador que guardó ya repintó, no se repite; si estás escribiendo en un campo, espera a que lo sueltes para no pisarte el texto; y un freno evita cadenas de repintados. Los cambios más frecuentes (completar una tarea, editar un campo del inspector) se muestran al instante y la base de datos se actualiza detrás.
+
+<!-- -->
+
 -   **Persistencia Robusta con Dexie.js**: Aunque IndexedDB es el motor subyacente, ResearchOS utiliza Dexie.js para estructurar una base de datos local relacional y transaccional. Esto permite ejecutar consultas indexadas rápidas, manejar migraciones de esquema automáticas y asegurar la integridad referencial entre proyectos, tareas y referencias bibliográficas. Todo opera de forma aislada dentro del sandbox de seguridad del navegador, garantizando que los datos de un proyecto no interfieran con otros.
 
 <!-- -->
 
 -   **Paradigma Zero-Backend y Despliegue Atómico**: La lógica de negocio reside íntegramente en el cliente. Esto no solo mejora la seguridad, sino que simplifica el despliegue a una simple entrega de activos estáticos (HTML, JS, CSS). No hay bases de datos SQL que configurar en un servidor, ni contenedores Docker que orquestar, ni configuraciones de Nginx o certificados SSL de servidor que gestionar. Es la definición más pura de "computación en el borde" (edge computing).
+
+## 🧭 Cómo se usa en el día a día
+
+La app está pensada para quien coordina varios frentes a la vez (investigación, docencia, gestión) y no quiere perderse entre capas:
+
+-   **Hoy** es el punto de partida. Muestra lo atrasado y lo de hoy, la semana (agrupada por día), los pendientes sin fecha, lo que esperas de otras personas, los proyectos sin siguiente paso, las ideas por revisar y lo que está esperando respuesta (un paper en revisión no genera alarmas). Las métricas viven plegadas en *Panorama*.
+-   **Captura rápida** (tecla `C`, o `Ctrl/⌘ + K` desde cualquier vista): `enviar borrador >vega viernes @alfa !alta` crea una tarea en ese proyecto, **esperando a** esa persona, con fecha y prioridad. `clase cada lunes hasta 15/12` crea una tarea recurrente. Prefijos `idea:`, `t:`, `p:` y `r:` fuerzan el tipo; sin nada de eso, lo escrito va a la bandeja de ideas.
+-   **Tareas** con fecha, responsable y repetición, en proyectos, ideas o sueltas; se completan, posponen y reasignan desde Hoy sin abrir nada. Cada tarjeta del Tablero muestra su avance (`✓ 2/5`) y su **próxima acción** (`→ Enviar carta · ayer`). Las plantillas de paper, grant, curso y ponencia crean sus tareas con fechas relativas a la fecha límite.
+-   **Personas**: la ficha de cada colaborador muestra lo que esperas de él o ella y copia una **agenda** lista para pegar; una reunión muestra los pendientes de sus asistentes.
+-   **Proyectos en una sola pantalla**, con pestañas Tablero · Lista · Línea de tiempo · Jerarquía. Una idea se convierte en tarea o proyecto con un clic.
+-   **Áreas como contexto**: elige un área en el menú lateral y Hoy, el Tablero y Proyectos muestran solo ese frente.
+-   **Enlaces `[[Título]]`** entre proyectos, ideas, snippets, referencias, reuniones y personas, con autocompletado; cada elemento muestra desde dónde lo enlazan.
+-   **Referencias**: importa el `.bib`/`.ris` de Zotero o Mendeley (sin duplicar), marca su estado de lectura y exporta BibTeX válido.
+-   **Calendario**: exporta fechas límite, tareas (con su repetición) y reuniones a `.ics`, e importa un `.ics` (p. ej. el horario de clases).
+-   **Revisión semanal** guiada de ocho pasos (ideas, atrasos, proyectos quietos, sin próxima acción, próximos 14 días, esperas, elementos sin proyecto y backup).
+-   **Copia automática a una carpeta** (Chrome/Edge): tus datos se duplican en la carpeta que elijas (Dropbox, Drive, Syncthing…) tras cada cambio. La app es **instalable (PWA)** y acepta *Compartir → ResearchOS* desde el móvil para capturar ideas.
+-   **Mi día**: `☀ Planificar mi día` (en Hoy) lista lo atrasado, lo de hoy y lo próximo; tú eliges qué harás según el **tiempo disponible** (por defecto 6 h) y el **tiempo estimado** de cada tarea (`~2h`, `~30m`, `~1h30` en la captura). Lo que no termines pasa solo al día siguiente, y el medidor avisa cuándo te pasas.
+-   **Red**: un grafo estilo Obsidian de todo lo que has guardado —proyectos, ideas, snippets, referencias, reuniones, personas, áreas y (opcional) tareas—, con las conexiones estructurales y tus enlaces `[[Título]]` (línea punteada). Filtros por tipo, búsqueda, zoom/arrastre, *grafo local* con doble clic (vecindad a N saltos) y clic para abrir el elemento.
+-   **Informe de avance** (Más → Informe de avance): qué lograste esta semana, este mes o el año (tareas, proyectos terminados, envíos, reuniones, lecturas), para tu memoria anual, tu CV o tu jefatura; se copia o descarga como Markdown.
+-   **Seguimiento de personas**: en la ficha de cada colaborador fija una cadencia («cada 2 semanas» con tu tesista). Hoy te avisa cuando toca escribirle, con un correo ya redactado con la agenda de pendientes; una reunión reciente cuenta como contacto.
+-   **Docencia**: en un proyecto de tipo *Curso*, `📅 Generar clases` crea una reunión por sesión (días de la semana, rango y feriados) y `📝 + Evaluación` crea la evaluación y su corrección con el tiempo estimado.
+-   **Manuscritos y grants**: en un *Paper*, `↩ Responder a revisores` convierte la revisión pegada en una tarea por comentario y copia la plantilla de carta; la plantilla *Ejecución de grant* programa rendiciones e informes de avance recurrentes.
+-   **Traer lo que ya tienes**: con la app vacía, Hoy ofrece crear áreas e importar `.bib/.ris`, tareas desde **CSV (Todoist, Notion, Excel)** o un backup anterior. Lo mismo está en Ajustes.
+-   **Búsqueda (Ctrl/⌘ + K)** encuentra proyectos, ideas, **tareas, personas**, referencias (también por notas, clave de cita y palabras clave), reuniones y **el código de los snippets**; con varias palabras, todas deben aparecer.
+-   **Teclado y ayudas**: `?` muestra todos los atajos; `/` lleva el cursor al filtro de la lista (Ideas, Snippets, Referencias, Reuniones, Colaboradores); `Ctrl/⌘ + Z` deshace lo último aunque el aviso ya haya desaparecido; `Alt + ←/→` recorre el historial; `Tab` + `Enter` abren filas y tarjetas. La paleta (`Ctrl/⌘ + K`) encuentra todas las vistas por sinónimos («grafo» → Red, «gantt» → Línea de tiempo) y ejecuta acciones (nuevo proyecto, planificar mi día, cambiar de tema).
+-   **Borrar sin miedo**: eliminar una idea, snippet, reunión, referencia, colaborador o proyecto no pregunta; en su lugar ofrece **Deshacer**. Solo se confirma (con un diálogo propio, no el del navegador) lo masivo o irreversible; «Borrar todos los datos» exige escribir `BORRAR`. Cerrar una ventana con texto sin guardar pide confirmación; en las ventanas, `Enter` en un campo de una línea guarda.
+-   **Móvil**: en pantallas estrechas aparece una barra inferior (Hoy · Proyectos · ＋ · Ideas · Más) y el botón `＋` captura desde cualquier vista sin cambiar de pantalla. Un aviso diario opcional (Ajustes → Planificación) recuerda lo que toca hoy mientras la app esté abierta.
+-   **Ajustes → Qué vistas usas** cuenta (solo en tu navegador) qué pantallas abres, para decidir qué te sobra.
+-   El menú lateral muestra solo lo esencial (Hoy, Proyectos, Ideas, Calendario); el resto está en grupos plegables, y lo avanzado (campos personalizados, Google Drive) en Ajustes → Avanzado.
 
 ## 📊 Funcionalidades Detalladas y Flujo de Trabajo Científico
 
@@ -97,9 +130,18 @@ Sirve los archivos: Debido a las estrictas políticas de seguridad de los navega
 
 Inicia tu Investigación: Abre tu navegador favorito y accede a <http://localhost:8000>. Experimenta inmediatamente el poder de una gestión científica local, privada y ultrarrápida.
 
+### 🔄 Usarlo en varios dispositivos
+
+*Ajustes → Sincronización entre dispositivos* (Chrome/Edge): eliges una carpeta compartida (Dropbox, Drive, Syncthing, OneDrive…) en cada equipo y ResearchOS deja allí un archivo por dispositivo, que los demás fusionan. No hay servidor ni cuenta. Cada registro lleva un identificador propio y una marca de tiempo; ante un conflicto **gana el cambio más reciente de cada registro**, y los borrados se propagan. Límites a tener en cuenta:
+
+-   La fusión es **por registro, no por campo**: si editas el mismo proyecto en dos equipos antes de sincronizar, se queda la versión más reciente completa.
+-   Depende de que los relojes de los equipos estén razonablemente en hora.
+-   Los archivos de sincronización **no están cifrados** (la carpeta es tan privada como tu nube). Para un backup protegido usa *Exportar cifrado*.
+-   La carpeta compartida requiere un navegador basado en Chromium; en otros navegadores sigue funcionando el export/import manual.
+
 ### 📴 Uso sin conexión
 
-Tras la **primera visita con conexión** (servida por `http://localhost` o `https://`), un *service worker* ([sw.js](sw.js)) guarda la app y sus librerías: las siguientes veces arranca sin Internet. Los archivos propios usan «red primero» (siempre ves tu última versión). Si abres `index.html` directamente (`file://`) la app funciona, pero necesita conexión la primera vez para descargar las librerías y no cachea nada. Si faltan librerías críticas, la app lo explica en pantalla en lugar de quedarse en blanco.
+Tras la **primera visita con conexión** (servida por `http://localhost` o `https://`), un *service worker* ([sw.js](sw.js)) guarda la app y sus librerías: las siguientes veces arranca sin Internet. Los archivos propios usan «red primero» (siempre ves tu última versión), pero si la red tarda más de 3,5 s se sirve la copia guardada, así una conexión lenta no deja la app colgada. Las librerías pesadas y opcionales (resaltado de código, LaTeX y Google Identity para Drive) **se descargan solo cuando se necesitan**: un arranque típico pide ~115 KB de librerías en vez de ~540 KB y no contacta a Google; igualmente quedan guardadas para el uso sin conexión. Si abres `index.html` directamente (`file://`) la app funciona, pero necesita conexión la primera vez para descargar las librerías y no cachea nada. Si faltan librerías críticas, la app lo explica en pantalla en lugar de quedarse en blanco.
 
 ### 🧪 Pruebas end-to-end
 
@@ -109,14 +151,14 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-La suite ([tests/e2e](tests/e2e)) usa Playwright, levanta su propio servidor estático y no necesita compilar nada. Las librerías de CDN se cachean en `tests/e2e/.cdn-cache` para que las pruebas sean rápidas y deterministas.
+La suite ([tests/e2e](tests/e2e)) cubre las vistas, la captura, las tareas, la sincronización entre dos «dispositivos», el grafo, la planificación, el informe, el módulo académico, la copia cifrada, la barra móvil, el barrido de XSS por cada campo de texto y un humo de rendimiento con ~7 000 elementos, y una auditoría de calidad que recorre todas las vistas a 360, 768, 1024 y 1440 px (sin desbordes) y comprueba nombres accesibles, ids únicos y consola limpia, y otra que verifica que cada cambio pequeño se ve al instante (sin vaciar el inspector ni perder el scroll), y otra («ux») con la coherencia visual, el teclado, los diálogos, los filtros de lista y el móvil. Usa Playwright, levanta su propio servidor estático y no necesita compilar nada. Las librerías de CDN se cachean en `tests/e2e/.cdn-cache` para que las pruebas sean rápidas y deterministas.
 
 ## Advertencia Crítica sobre la Gestión de Datos
 
 Al ser una aplicación Local-First, la responsabilidad de la seguridad física de la información recae enteramente en el usuario. Los datos residen exclusivamente en el almacenamiento persistente de su perfil de navegador.
 
 -   **Cuidado con la Limpieza Automática**: Las herramientas de "limpieza profunda" de sistema o extensiones que borran cookies y caché pueden eliminar la base de datos de IndexedDB si no se configuran excepciones para el dominio donde corre ResearchOS.
--   **Backups Periódicos Obligatorios**: Utilice la función integrada de Exportar JSON en el panel de configuración para realizar copias de seguridad de toda su base de conocimientos. La app te avisa si llevas más de 14 días sin exportar, descarga una copia automática antes de «Reemplazar todo» o «Borrar todos los datos», y pide al navegador almacenamiento persistente para evitar que lo evacúe. Guarde estos archivos en almacenamiento físico externo o nubes privadas cifradas.
+-   **Backups Periódicos Obligatorios**: Utilice la función integrada de Exportar JSON en el panel de configuración para realizar copias de seguridad de toda su base de conocimientos. La app te avisa si llevas más de 14 días sin exportar, descarga una copia automática antes de «Reemplazar todo» o «Borrar todos los datos», y pide al navegador almacenamiento persistente para evitar que lo evacúe. Guarde estos archivos en almacenamiento físico externo o nubes privadas cifradas. Para datos sensibles (estudiantes, evaluaciones, borradores de grants) usa **Ajustes → Copia cifrada**: AES-256-GCM con una clave derivada de tu contraseña (PBKDF2); la contraseña no se guarda en ningún sitio, así que **si la pierdes el archivo no se puede recuperar**.
 -   **Seguridad de Acceso Físico**: Si utiliza computadoras compartidas, recuerde que cualquier persona con acceso a su sesión de usuario en el navegador podrá visualizar su base de datos local. Recomendamos usar perfiles de navegador protegidos por contraseña.
 
 ## Una herramienta para la mente libre

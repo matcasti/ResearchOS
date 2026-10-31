@@ -6,7 +6,8 @@
   "scripts": {
     "serve": "python3 -m http.server 8000",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:compat": "CROSS_BROWSER=1 playwright test --project=firefox --project=webkit tests/e2e/smoke.spec.js tests/e2e/today.spec.js tests/e2e/network.spec.js tests/e2e/planner.spec.js tests/e2e/academic.spec.js tests/e2e/shell.spec.js"
   },
   "license": "GPL-3.0-or-later",
   "devDependencies": {

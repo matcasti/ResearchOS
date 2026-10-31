@@ -12,8 +12,8 @@ async function importText(page, backup, mode = 'merge') {
   await gotoView(page, 'settings');
   await page.locator('#importJsonInput').setInputFiles({ name: 'b.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
   await page.locator(mode === 'replace' ? '#importOptReplace' : '#importOptMerge').click();
-  if (mode === 'replace') page.once('dialog', d => d.accept());
   await page.locator('#importModeOk').click();
+  if (mode === 'replace') await page.locator('#confirmYes').click();
 }
 
 test.describe('Importación: merge sin pérdidas', () => {
@@ -66,8 +66,8 @@ test.describe('Importación: merge sin pérdidas', () => {
     await gotoView(page, 'settings');
     await page.locator('#importJsonInput').setInputFiles({ name: 'b.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
     await page.locator('#importOptReplace').click();
-    page.once('dialog', d => d.accept());
-    const [dl] = await Promise.all([page.waitForEvent('download'), page.locator('#importModeOk').click()]);
+    await page.locator('#importModeOk').click();
+    const [dl] = await Promise.all([page.waitForEvent('download'), page.locator('#confirmYes').click()]);
     expect(dl.suggestedFilename()).toMatch(/^researchos-antes-de-reemplazar-\d{4}-\d{2}-\d{2}\.json$/);
     const saved = JSON.parse(await fs.promises.readFile(await dl.path(), 'utf8'));
     expect(saved.projects.map(p => p.title).sort()).toEqual(['Dataset Beta', 'Grant Gamma', 'Paper Alfa']);
@@ -85,8 +85,9 @@ test.describe('Importación: merge sin pérdidas', () => {
     await openApp(page);
     await seed(page);
     await gotoView(page, 'settings');
-    page.on('dialog', d => d.accept());
-    const [dl] = await Promise.all([page.waitForEvent('download'), page.locator('#clearAllBtn').click()]);
+    await page.locator('#clearAllBtn').click();
+    await page.locator('#confirmInput').fill('BORRAR');
+    const [dl] = await Promise.all([page.waitForEvent('download'), page.locator('#confirmYes').click()]);
     expect(dl.suggestedFilename()).toContain('antes-de-borrar');
     await expect.poll(() => page.evaluate(() => db.projects.count())).toBe(0);
     expect(await page.evaluate(() => db.kanbanColumns.count())).toBe(6);
@@ -161,7 +162,6 @@ test.describe('Borrado en cascada y deshacer', () => {
     });
     await gotoView(page, 'kanban');
     await page.locator('.kanban-card', { hasText: 'Paper Alfa' }).click();
-    page.once('dialog', d => d.accept());
     await page.locator('#inspDeleteBtn').click();
     await expect.poll(() => page.evaluate(i => db.projects.get(i), ids.a)).toBeUndefined();
     const after = await page.evaluate(async b => ({
@@ -184,7 +184,6 @@ test.describe('Borrado en cascada y deshacer', () => {
     await openApp(page);
     await seed(page);
     await gotoView(page, 'ideas');
-    page.once('dialog', d => d.accept());
     await page.locator('.idea-item', { hasText: 'Idea dos' }).locator('.idea-delete-btn').click();
     await expect(page.locator('.idea-item', { hasText: 'Idea dos' })).toHaveCount(0);
     await page.locator('.toast-undo-btn').click();
@@ -198,8 +197,9 @@ test.describe('Columnas Kanban', () => {
     await seed(page);
     await gotoView(page, 'kanban');
     await page.locator('#kanbanManageCols').click();
-    page.once('dialog', d => { expect(d.message()).toContain('Se moverán a «Ideación»'); d.accept(); });
     await page.locator('.col-manage-row').nth(1).locator('.col-manage-del').click();
+    await expect(page.locator('#confirmMsg')).toContainText('Se moverán a «Ideación»');
+    await page.locator('#confirmYes').click();
     await page.locator('#colManageSave').click();
     await expect(page.locator('.toast.success').last()).toContainText('Columnas actualizadas');
     const r = await page.evaluate(async () => {

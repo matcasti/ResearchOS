@@ -2,6 +2,8 @@ const { test, expect } = require('@playwright/test');
 const { openApp, gotoView, seed } = require('./helpers');
 
 const box = page => page.locator('#projectsContainer');
+/** Los filtros están plegados por defecto (menos ruido): ábrelos antes de usarlos. */
+const openFilters = async page => { if (!(await page.locator('#filtersFold').evaluate(d => d.open))) await page.locator('#filtersFold > summary').click(); };
 
 test.describe('Vista Proyectos', () => {
   test('filtros por tipo, prioridad, columna y responsable; limpiar filtros', async ({ page }) => {
@@ -9,6 +11,7 @@ test.describe('Vista Proyectos', () => {
     await seed(page);
     await gotoView(page, 'projects');
     await expect(page.locator('#projectsContainer')).toContainText('Paper Alfa');
+    await openFilters(page);
     await page.locator('[data-ftype="Paper"]').click();
     await expect(box(page)).toContainText('Paper Alfa');
     await expect(box(page)).not.toContainText('Dataset Beta');
@@ -85,22 +88,23 @@ test.describe('Vista Proyectos', () => {
     await openApp(page);
     await seed(page);
     await gotoView(page, 'projects');
+    await openFilters(page);
     await page.locator('[data-ftype="Paper"]').click();
-    page.once('dialog', d => d.accept('Solo papers'));
     await page.locator('#saveViewBtn').click();
+    await page.locator('#confirmInput').fill('Solo papers');
+    await page.locator('#confirmYes').click();
     await expect(page.locator('.toast.success').last()).toContainText('Solo papers');
   });
 });
 
 test.describe('Inspector de proyecto', () => {
-  test('edición en línea (doble clic) de prioridad persiste', async ({ page }) => {
+  test('edición en línea (un clic) de prioridad persiste', async ({ page }) => {
     await openApp(page);
     await seed(page);
     await gotoView(page, 'kanban');
     await page.locator('.kanban-card', { hasText: 'Grant Gamma' }).click();
-    await page.locator('[data-inplace="priority"]').dblclick();
-    await page.locator('select.inplace-input').selectOption('Alta');
-    await page.locator('select.inplace-input').press('Enter');
+    await page.locator('[data-inplace="priority"]').click();
+    await page.locator('select.inplace-input').selectOption('Alta');                 // elegir guarda: no hace falta Enter
     await expect.poll(() => page.evaluate(() => db.projects.where('title').equals('Grant Gamma').first().then(p => p.priority))).toBe('Alta');
   });
 
@@ -109,11 +113,10 @@ test.describe('Inspector de proyecto', () => {
     await seed(page);
     await gotoView(page, 'kanban');
     await page.locator('.kanban-card', { hasText: 'Grant Gamma' }).click();
-    await page.locator('[data-inplace="columnId"]').dblclick();
+    await page.locator('[data-inplace="columnId"]').click();
     const sel = page.locator('select.inplace-input');
     const target = await sel.locator('option').nth(5).getAttribute('value');
-    await sel.selectOption(target);
-    await sel.press('Enter');
+    await sel.selectOption(target);                                                  // elegir guarda: no hace falta Enter
     await expect.poll(() => page.evaluate(() => db.projects.where('title').equals('Grant Gamma').first().then(p => p.columnId))).toBe(+target);
   });
 
@@ -206,6 +209,7 @@ test.describe('Selección masiva respeta los filtros', () => {
     await openApp(page);
     await seed(page);
     await gotoView(page, 'projects');
+    await openFilters(page);
     await page.locator('[data-ftype="Paper"]').click();       // 1 proyecto visible de 3
     await page.locator('#bulkToggleBtn').click();
     await page.locator('#bkSelectAll').click();

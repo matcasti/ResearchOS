@@ -124,7 +124,7 @@ test.describe('Importar / Borrar datos', () => {
     await openApp(page);
     await seed(page);
     const local = await page.evaluate(() => db.projects.orderBy('id').first());
-    const remote = { ...local, title: 'Proyecto remoto con mismo id' };
+    const remote = { ...local, uid: 'remoto-distinto-0001', title: 'Proyecto remoto con mismo id' };     // mismo id numérico, otra identidad
     const backup = { _version: 3, projects: [remote], ideas: [], snippets: [], resources: [], collaborators: [], kanbanColumns: [], snippetCollections: [], submissions: [], meetings: [], references: [], settings: [] };
     await gotoView(page, 'settings');
     await page.locator('#importJsonInput').setInputFiles({ name: 'b.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
@@ -150,8 +150,9 @@ test.describe('Importar / Borrar datos', () => {
     await openApp(page);
     await seed(page);
     await gotoView(page, 'settings');
-    page.on('dialog', d => d.accept());
     await page.locator('#clearAllBtn').click();
+    await page.locator('#confirmInput').fill('BORRAR');
+    await page.locator('#confirmYes').click();
     await expect.poll(async () => (await counts(page)).projects).toBe(0);
     const c = await counts(page);
     expect(c.meetings).toBe(0);
@@ -255,7 +256,6 @@ test.describe('Integridad referencial', () => {
     await seed(page);
     await gotoView(page, 'kanban');
     await page.locator('.kanban-card', { hasText: 'Paper Alfa' }).click();
-    page.once('dialog', d => d.accept());
     await page.locator('#inspDeleteBtn').click();
     await expect.poll(() => page.evaluate(() => db.projects.where('title').equals('Paper Alfa').count())).toBe(0);
     await gotoView(page, 'orphans');
@@ -269,8 +269,8 @@ test.describe('Integridad referencial', () => {
     await gotoView(page, 'kanban');
     await page.locator('#kanbanManageCols').click();
     const row = page.locator('.col-manage-row').nth(1); // "Limpieza de Datos" contiene Dataset Beta
-    page.once('dialog', d => d.accept());
     await row.locator('.col-manage-del').click();
+    await page.locator('#confirmYes').click();
     await page.locator('#colManageSave').click();
     await expect(page.locator('.toast.success').last()).toContainText('Columnas actualizadas');
     await expect(page.locator('.kanban-card', { hasText: 'Dataset Beta' })).toBeVisible();

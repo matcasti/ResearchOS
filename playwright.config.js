@@ -15,7 +15,14 @@ module.exports = defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    // Compatibilidad (opcional): CROSS_BROWSER=1 npm run test:e2e:compat  — Firefox y Safari (WebKit) con un subconjunto de pruebas
+    ...(process.env.CROSS_BROWSER ? [
+      { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+      { name: 'webkit',  use: { ...devices['Desktop Safari'] } },
+    ] : []),
+  ],
   webServer: {
     command: 'python3 -m http.server 4173',
     url: 'http://localhost:4173/index.html',

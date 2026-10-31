@@ -7,20 +7,18 @@
   <meta name="theme-color" content="#050810">
   <title>ResearchOS — Scientific Workflow Suite</title>
 
-  <!-- Syntax highlighting (dark theme) -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css" integrity="sha384-PiLidnnRuzFgp4qiN8oGNmktrV8ETL+6a8heAxljUX4A+3XWlocwaMn9duBUepfK" crossorigin="anonymous">
+  <!-- Las librerías pesadas y opcionales (highlight.js, KaTeX, Google Identity) se cargan solo cuando se necesitan: ver loadLib() en app.js -->
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
   <!-- marked.js para render Markdown -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js" integrity="sha384-odPBjvtXVM/5hOYIr3A1dB+flh0c3wAT3bSesIOqEGmyUA4JoKf/YTWy0XKOYAY7" crossorigin="anonymous"></script>
-  <!-- KaTeX para ecuaciones LaTeX -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
-  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
-  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js" integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
-  <!-- Google Identity Services — Drive Sync -->
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js" integrity="sha384-odPBjvtXVM/5hOYIr3A1dB+flh0c3wAT3bSesIOqEGmyUA4JoKf/YTWy0XKOYAY7" crossorigin="anonymous"></script>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
   <!-- App styles -->
   <link rel="stylesheet" href="style.css">
 </head>
 <body class="inspector-closed">
+  <a class="skip-link" id="skipLink" href="#mainContent">Saltar al contenido</a>
 
   <!-- Menú móvil (solo visible en pantallas ≤ 600 px) -->
   <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Abrir menú de navegación" aria-expanded="false" aria-controls="sidebar">☰</button>
@@ -40,79 +38,93 @@
     </div>
 
     <div id="researchStatus"></div>
+    <div id="contextSwitcher" class="context-switcher"></div>
 
     <nav class="sidebar-nav" aria-label="Vistas">
-      <div class="nav-section-label">Workspace</div>
-      <a class="nav-item active" data-view="dashboard" data-tooltip="Dashboard">
-        <span class="nav-icon">◈</span><span>Dashboard</span>
+      <a class="nav-item active" data-view="dashboard" data-tooltip="Hoy">
+        <span class="nav-icon" data-ico="today"></span><span>Hoy</span>
+        <span class="nav-badge" id="todayBadge">0</span>
       </a>
-      <a class="nav-item" data-view="kanban" data-tooltip="Kanban Board">
-        <span class="nav-icon">⊞</span><span>Kanban Board</span>
+      <a class="nav-item" data-view="kanban" data-views="kanban projects timeline nested" data-remember="proj-tab" data-tooltip="Proyectos">
+        <span class="nav-icon" data-ico="projects"></span><span>Proyectos</span>
       </a>
-      <a class="nav-item" data-view="projects" data-tooltip="Proyectos">
-        <span class="nav-icon">◉</span><span>Proyectos</span>
-      </a>
-      <a class="nav-item" data-view="timeline" data-tooltip="Timeline">
-        <span class="nav-icon">⏱</span><span>Timeline</span>
-      </a>
-      <a class="nav-item" data-view="areas" data-tooltip="Áreas">
-        <span class="nav-icon">⊡</span><span>Áreas</span>
-      </a>
-      <a class="nav-item" data-view="nested" data-tooltip="Anidados">
-        <span class="nav-icon">⬡</span><span>Anidados</span>
-      </a>
-
-      <div class="nav-section-label">Knowledge</div>
-      <a class="nav-item" data-view="ideas" data-tooltip="Ideas Inbox">
-        <span class="nav-icon">◎</span><span>Ideas Inbox</span>
+      <a class="nav-item" data-view="ideas" data-tooltip="Ideas">
+        <span class="nav-icon" data-ico="ideas"></span><span>Ideas</span>
         <span class="nav-badge" id="ideasBadge">0</span>
       </a>
-      <a class="nav-item" data-view="snippets" data-tooltip="Snippets">
-        <span class="nav-icon">⟨/⟩</span><span>Snippets</span>
+      <a class="nav-item" data-view="weekly" data-tooltip="Calendario">
+        <span class="nav-icon" data-ico="calendar"></span><span>Calendario</span>
       </a>
-      <a class="nav-item" data-view="starred" data-tooltip="Favoritos">
-        <span class="nav-icon">★</span><span>Favoritos</span>
-        <span class="nav-badge" id="starredBadge">0</span>
-      </a>
-
-      <div class="nav-section-label">Research Tools</div>
-      <a class="nav-item" data-view="focus" data-tooltip="Focus Feed">
-        <span class="nav-icon">🎯</span><span>Focus Feed</span>
-      </a>
-      <a class="nav-item" data-view="orphans" data-tooltip="Huérfanos">
-        <span class="nav-icon">🔗</span><span>Huérfanos</span>
-      </a>
-      <a class="nav-item" data-view="submissions" data-tooltip="Submissions">
-        <span class="nav-icon">📤</span><span>Submissions</span>
-        <span class="nav-badge" id="submissionsBadge">0</span>
-      </a>
-      <a class="nav-item" data-view="meetings" data-tooltip="Reuniones">
-        <span class="nav-icon">🗓</span><span>Reuniones</span>
-        <span class="nav-badge" id="meetingsBadge">0</span>
-      </a>
-      <a class="nav-item" data-view="references" data-tooltip="Referencias">
-        <span class="nav-icon">📚</span><span>Referencias</span>
-      </a>
-      <a class="nav-item" data-view="collaborators" data-tooltip="Colaboradores">
-        <span class="nav-icon">👥</span><span>Colaboradores</span>
-      </a>
-      <a class="nav-item" data-view="weekly" data-tooltip="Agenda">
-        <span class="nav-icon">📅</span><span>Agenda</span>
+      <a class="nav-item" data-view="network" data-tooltip="Red de conexiones">
+        <span class="nav-icon" data-ico="network"></span><span>Red</span>
       </a>
 
-      <div class="nav-section-label">Tools</div>
-      <a class="nav-item" data-view="filesystem" data-tooltip="FS Bridge">
-        <span class="nav-icon">⊟</span><span>FS Bridge</span>
-      </a>
-      <a class="nav-item" data-view="archived" data-tooltip="Archivados">
-        <span class="nav-icon">⊟</span><span>Archivados</span>
-        <span class="nav-badge" id="archivedBadge">0</span>
-      </a>
-      <a class="nav-item" data-view="tutorial" data-tooltip="Tutorial">
-        <span class="nav-icon">📖</span><span>Tutorial</span>
-      </a>
-      <a class="nav-item" data-view="settings" data-tooltip="Settings">
-        <span class="nav-icon">⚙</span><span>Settings &amp; Export</span>
+      <div class="nav-group" data-group="library">
+        <button class="nav-section-label nav-group-toggle" aria-expanded="false" aria-controls="navg-library">
+          <span>Biblioteca</span><span class="nav-group-chev" aria-hidden="true">▸</span><span class="nav-group-dot" aria-hidden="true"></span>
+        </button>
+        <div class="nav-group-body" id="navg-library">
+          <a class="nav-item" data-view="references" data-tooltip="Referencias">
+            <span class="nav-icon" data-ico="references"></span><span>Referencias</span>
+          </a>
+          <a class="nav-item" data-view="snippets" data-tooltip="Snippets">
+            <span class="nav-icon" data-ico="snippets"></span><span>Snippets</span>
+          </a>
+          <a class="nav-item" data-view="starred" data-tooltip="Favoritos">
+            <span class="nav-icon" data-ico="star"></span><span>Favoritos</span>
+            <span class="nav-badge" id="starredBadge">0</span>
+          </a>
+        </div>
+      </div>
+
+      <div class="nav-group" data-group="people">
+        <button class="nav-section-label nav-group-toggle" aria-expanded="false" aria-controls="navg-people">
+          <span>Personas</span><span class="nav-group-chev" aria-hidden="true">▸</span><span class="nav-group-dot" aria-hidden="true"></span>
+        </button>
+        <div class="nav-group-body" id="navg-people">
+          <a class="nav-item" data-view="meetings" data-tooltip="Reuniones">
+            <span class="nav-icon" data-ico="meetings"></span><span>Reuniones</span>
+            <span class="nav-badge" id="meetingsBadge">0</span>
+          </a>
+          <a class="nav-item" data-view="collaborators" data-tooltip="Colaboradores">
+            <span class="nav-icon" data-ico="collaborators"></span><span>Colaboradores</span>
+          </a>
+        </div>
+      </div>
+
+      <div class="nav-group" data-group="more">
+        <button class="nav-section-label nav-group-toggle" aria-expanded="false" aria-controls="navg-more">
+          <span>Más</span><span class="nav-group-chev" aria-hidden="true">▸</span><span class="nav-group-dot" aria-hidden="true"></span>
+        </button>
+        <div class="nav-group-body" id="navg-more">
+          <a class="nav-item" data-view="review" data-tooltip="Revisión semanal">
+            <span class="nav-icon" data-ico="review"></span><span>Revisión semanal</span>
+          </a>
+          <a class="nav-item" data-view="report" data-tooltip="Informe de avance">
+            <span class="nav-icon" data-ico="report"></span><span>Informe de avance</span>
+          </a>
+          <a class="nav-item" data-view="submissions" data-tooltip="Submissions">
+            <span class="nav-icon" data-ico="submissions"></span><span>Submissions</span>
+            <span class="nav-badge" id="submissionsBadge">0</span>
+          </a>
+          <a class="nav-item" data-view="areas" data-tooltip="Áreas">
+            <span class="nav-icon" data-ico="areas"></span><span>Áreas</span>
+          </a>
+          <a class="nav-item" data-view="archived" data-tooltip="Archivados">
+            <span class="nav-icon" data-ico="archived"></span><span>Archivados</span>
+            <span class="nav-badge" id="archivedBadge">0</span>
+          </a>
+          <a class="nav-item" data-view="filesystem" data-tooltip="Carpetas de proyecto en tu disco (FS Bridge)">
+            <span class="nav-icon" data-ico="filesystem"></span><span>FS Bridge</span>
+          </a>
+          <a class="nav-item" data-view="tutorial" data-tooltip="Tutorial">
+            <span class="nav-icon" data-ico="tutorial"></span><span>Tutorial</span>
+          </a>
+        </div>
+      </div>
+
+      <a class="nav-item nav-settings" data-view="settings" data-tooltip="Ajustes">
+        <span class="nav-icon" data-ico="settings"></span><span>Ajustes y backup</span>
       </a>
     </nav>
 
@@ -122,6 +134,7 @@
         <button class="nav-hist-btn" id="navForward" title="Adelante (Alt+→)"  disabled>→</button>
       </div>
       <button class="theme-toggle" id="themeToggle" title="Cambiar tema claro/oscuro" aria-label="Cambiar tema claro/oscuro">◑</button>
+      <button class="theme-toggle" id="shortcutsBtn" title="Atajos de teclado (?)" aria-label="Atajos de teclado" data-ico="keyboard" data-ico-size="16"></button>
       <div class="accent-picker" id="accentPicker">
         <button class="accent-swatch" data-accent="blue"   title="Azul"    style="background:#38bdf8"></button>
         <button class="accent-swatch" data-accent="green"  title="Verde"   style="background:#34d399"></button>
@@ -129,7 +142,7 @@
       </div>
       <div class="save-indicator" id="saveIndicator" title="Estado de sincronización con Google Drive">
         <span class="status-dot" id="syncDot"></span>
-        <span id="saveIndicatorText">Local Only</span>
+        <span id="saveIndicatorText">Solo local</span>
       </div>
       <div class="sidebar-author">
         Hecho con <span class="author-heart">♥</span> por Matías Castillo-Aguilar
@@ -138,7 +151,7 @@
   </aside>
 
   <!-- ── MAIN CONTENT ────────────────────────────────────── -->
-  <main class="main-content" id="mainContent" aria-live="polite">
+  <main class="main-content" id="mainContent" aria-live="polite" tabindex="-1">
     <!-- Views are rendered here by app.js -->
     <div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-3);font-family:var(--font-mono);font-size:.8rem;">
       Iniciando ResearchOS…
@@ -179,9 +192,17 @@
 
   <!-- ── SCRIPTS ─────────────────────────────────────────── -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/3.2.4/dexie.min.js" integrity="sha384-vG8R9Zn5YZHCeXt9gLNp8MnsUCqmIy7HPxhdOdLGa/30/c8uZXFrrN0iKGID/ZvC" crossorigin="anonymous"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha384-F/bZzf7p3Joyp5psL90p/p89AZJsndkSoGwRpXcZhleCWhd8SnRuoYo4d0yirjJp" crossorigin="anonymous"></script>
   <script src="db.js"></script>
+  <script src="icons.js"></script>
   <script src="app.js"></script>
+  <script src="today.js"></script>
+  <script src="network.js"></script>
+  <script src="planner.js"></script>
+  <script src="academic.js"></script>
+  <script src="vault.js"></script>
+  <script src="shell.js"></script>
+  <script src="sync.js"></script>
+  <script src="integrations.js"></script>
   <script>
     // Caché offline (solo http/https; file:// no admite service workers).
     if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
@@ -189,6 +210,8 @@
         navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(reg => {
           // Entrega al SW las librerías que esta visita ya descargó, para dejarlas en caché sin pedirlas otra vez.
           const urls = performance.getEntriesByType('resource').map(e => e.name).filter(u => /cdnjs\.cloudflare\.com|fonts\.(googleapis|gstatic)\.com/.test(u));
+          // Las librerías de carga perezosa (código, LaTeX) tampoco se han pedido aún: se guardan ya para que funcionen sin conexión.
+          for (const part of Object.values(LAZY_LIBS).flat()) { const u = part.css || part.js; if (/cdnjs\.cloudflare\.com/.test(u) && !urls.includes(u)) urls.push(u); }
           reg.active?.postMessage({ type: 'cache-cdn', urls });
         }).catch(() => {});
       });
@@ -209,7 +232,7 @@
       <div class="palette-hint-row">
         <span><kbd>↑↓</kbd> navegar</span>
         <span><kbd>↵</kbd> abrir</span>
-        <span><kbd>⌘K</kbd> cerrar</span>
+        <span><kbd id="paletteModKey">⌘K</kbd> cerrar</span>
       </div>
     </div>
   </div>

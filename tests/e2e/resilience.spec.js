@@ -6,14 +6,15 @@ test.describe('Dependencias externas', () => {
   test('sin Google Identity Services ni Google Fonts la app funciona igual', async ({ page }) => {
     const { errors } = await openApp(page); // en modo cache los hosts de Google se anulan
     await gotoView(page, 'settings');
+    await page.locator('#settingsAdvanced > summary').click();          // lo avanzado está plegado
     await expect(page.locator('#googleSyncSection')).toBeVisible();
-    await expect(page.locator('#saveIndicatorText')).toHaveText('Local Only');
+    await expect(page.locator('#saveIndicatorText')).toHaveText('Solo local');
     expect(errors).toEqual([]);
   });
 
-  test('el estado de sincronización se muestra como "Local Only" por defecto', async ({ page }) => {
+  test('el estado de sincronización se muestra como "Solo local" por defecto', async ({ page }) => {
     await openApp(page);
-    await expect(page.locator('#saveIndicatorText')).toHaveText('Local Only');
+    await expect(page.locator('#saveIndicatorText')).toHaveText('Solo local');
   });
 
   test('con la CDN inaccesible la app explica el problema en vez de quedarse en "Iniciando…"', async ({ page }) => {

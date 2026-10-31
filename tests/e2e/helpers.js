@@ -54,8 +54,21 @@ async function openApp(page, { welcomed = true, cdn = 'cache', url = '/index.htm
 }
 
 async function gotoView(page, view) {
-  await page.locator(`.nav-item[data-view="${view}"]`).click();
-  await expect(page.locator(`.nav-item[data-view="${view}"]`)).toHaveClass(/active/);
+  const item = page.locator(`.nav-item[data-view="${view}"]`);
+  const projectTab = ['kanban', 'projects', 'timeline', 'nested'].includes(view);   // el ítem «Proyectos» abre la última pestaña usada
+  if (projectTab || await item.count() === 0) {
+    // Vistas sin entrada propia en el menú (pestañas de Proyectos, Huérfanos…): se navega como lo haría un enlace interno.
+    await page.evaluate(v => navigate(v), view);
+  } else {
+    // Las vistas secundarias viven en grupos plegables: ábrelos si hace falta.
+    if (!(await item.isVisible())) await page.locator(`.nav-group:has(.nav-item[data-view="${view}"]) .nav-group-toggle`).click();
+    await item.click();
+    await expect(item).toHaveClass(/active/);
+  }
+  // La vista se pinta de forma asíncrona: espera a que termine antes de interactuar con ella.
+  await expect(page.locator('#mainContent')).toHaveAttribute('data-view', view);
+  // La entrada de la vista anima 200 ms (translateY): arrastres y clics por coordenadas deben esperar a que termine.
+  await page.evaluate(() => Promise.all(document.getElementById('mainContent').getAnimations().map(a => a.finished.catch(() => {}))));
 }
 
 module.exports = { openApp, gotoView };

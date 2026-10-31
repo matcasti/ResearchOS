@@ -42,7 +42,6 @@ test.describe('Ideas Inbox', () => {
     await expect.poll(() => page.evaluate(() => db.ideas.where('title').equals('Idea uno').first().then(i => i.status))).toBe('reviewed');
     await page.locator('.idea-item', { hasText: 'Idea uno' }).locator('.idea-star-btn').click();
     await expect.poll(() => page.evaluate(() => db.ideas.where('title').equals('Idea uno').first().then(i => !!i.starred))).toBe(true);
-    page.once('dialog', d => d.accept());
     await page.locator('.idea-item', { hasText: 'Idea dos' }).locator('.idea-delete-btn').click();
     await expect(page.locator('.idea-item')).toHaveCount(1);
   });
@@ -163,7 +162,6 @@ test.describe('Snippets', () => {
     await gotoView(page, 'snippets');
     await page.locator('.snippet-star-btn').first().click();
     await expect.poll(() => page.evaluate(() => db.snippets.toArray().then(a => a[0].starred))).toBe(true);
-    page.once('dialog', d => d.accept());
     await page.locator('.snippet-delete-btn').first().click();
     await expect.poll(() => count(page, 'snippets')).toBe(0);
   });

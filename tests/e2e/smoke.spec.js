@@ -3,7 +3,7 @@ const { openApp, gotoView } = require('./helpers');
 
 const VIEWS = [
   'dashboard', 'kanban', 'projects', 'timeline', 'areas', 'nested',
-  'ideas', 'snippets', 'starred', 'focus', 'orphans', 'submissions',
+  'ideas', 'snippets', 'starred', 'orphans', 'submissions',
   'meetings', 'references', 'collaborators', 'weekly', 'filesystem',
   'archived', 'tutorial', 'settings',
 ];

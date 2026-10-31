@@ -66,7 +66,10 @@ function localDateISO(d = new Date()) {
 
 /** `YYYY-MM-DD` válido o null. Evita que un valor arbitrario llegue a atributos HTML. */
 function isoDateOrNull(v) {
-  return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+  const [y, m, day] = v.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, day));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === day ? v : null;      // rechaza «2026-02-31»
 }
 
 const _CSS_COLOR_RE = /^(#[0-9a-f]{3,8}|(rgb|hsl)a?\(\s*[\d.\s,%\/-]+\)|var\(--[\w-]+\)|[a-z]{3,20})$/i;
@@ -80,20 +83,234 @@ function foldText(s) {
   return String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 }
 
+/** Normaliza un nombre de persona para comparar «Dra. Vega», «vega» y «María Vega» (sin títulos ni tildes). */
+function nameKey(s) {
+  return foldText(s).replace(/\b(dr|dra|prof|profa|lic|mg|msc|phd|sr|sra)\b\.?/g, '').replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+/** ¿Se refieren `a` y `b` a la misma persona? Exacto, o un nombre contenido en el otro («vega» ⊆ «maria vega»). */
+function sameName(a, b) {
+  const x = nameKey(a), y = nameKey(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const tx = x.split(' '), ty = y.split(' ');
+  const [small, big] = tx.length <= ty.length ? [tx, ty] : [ty, tx];
+  return small.every(w => big.includes(w)) && small.join('').length > 2;
+}
+
+// Version 5: tareas como entidad propia (con fecha, ligadas opcionalmente a un proyecto o a una idea).
+// Reemplaza a las "subtareas" embebidas en proyectos e ideas, que no podían tener fecha ni verse en conjunto.
+// `done` no se indexa (los booleanos no son claves válidas en IndexedDB).
+db.version(5).stores({
+  tasks: '++id, projectId, ideaId, due, createdAt, updatedAt'
+}).upgrade(async tx => {
+  const now = new Date().toISOString();
+  const tasks = tx.table('tasks');
+  for (const p of await tx.table('projects').toArray()) {
+    if (!Array.isArray(p.subtasks) || !p.subtasks.length) continue;
+    for (const t of p.subtasks)
+      await tasks.add({ title: String(t.text ?? ''), done: !!t.done, doneAt: t.done ? now : null, due: null,
+                        projectId: p.id, ideaId: null, createdAt: p.updatedAt || now, updatedAt: now });
+    await tx.table('projects').update(p.id, { subtasks: [] });
+  }
+  for (const i of await tx.table('ideas').toArray()) {
+    if (!Array.isArray(i.subtasks) || !i.subtasks.length) continue;
+    for (const t of i.subtasks)
+      await tasks.add({ title: String(t.text ?? ''), done: !!t.done, doneAt: t.done ? now : null, due: null,
+                        projectId: i.projectId ?? null, ideaId: i.id, createdAt: i.updatedAt || now, updatedAt: now });
+    await tx.table('ideas').update(i.id, { subtasks: [] });
+  }
+});
+
+// Version 6: identidad global (`uid`) y lápidas de borrado, para sincronizar entre dispositivos.
+// Los ids numéricos son locales de cada navegador; el `uid` identifica al mismo registro en todos.
+const SYNC_TABLES = ['projects', 'ideas', 'snippets', 'snippetCollections', 'resources', 'collaborators',
+                     'kanbanColumns', 'submissions', 'meetings', 'references', 'tasks'];
+
+/** Hash FNV-1a de 32 bits (hex). Sirve para identidades deterministas, no criptográficas. */
+function _fnv(str, seed = 0x811c9dc5) {
+  let h = seed >>> 0;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, '0');
+}
+/**
+ * UID determinista para registros que no lo traen (datos anteriores a la v6 o backups antiguos):
+ * dos dispositivos que ya compartían los mismos datos por exportación obtienen el MISMO uid y no se duplican al sincronizar.
+ */
+function legacyUid(table, r) {
+  const label = String(r.title ?? r.name ?? r.text ?? '').toLowerCase().trim();
+  const key = `${table}|${r.createdAt || ''}|${label}`;
+  return `l-${table.slice(0, 3)}-${_fnv(key)}${_fnv(key, 0x9747b28c)}`;
+}
+function newUid() {
+  return (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}${Math.random().toString(16).slice(2)}`);
+}
+
+const SyncState = {
+  applying: 0, legacy: 0, deleted: new Map(),         // flags de contexto + borrados de esta sesión (para deshacer)
+  listeners: [],                                      // se avisa de cualquier cambio local (sincronización, copia automática…)
+  touch() { for (const fn of this.listeners) { try { fn(); } catch {} } },
+};
+
+db.version(6).stores({
+  projects:           '++id, title, type, status, columnId, responsible, responsibleId, deadline, priority, createdAt, updatedAt, archived, starred, parentId, uid',
+  ideas:              '++id, title, content, status, projectId, starred, createdAt, updatedAt, deadline, uid',
+  snippets:           '++id, title, language, code, description, projectId, collectionId, starred, createdAt, updatedAt, uid',
+  snippetCollections: '++id, name, color, createdAt, uid',
+  resources:          '++id, title, url, filePath, type, projectId, ideaId, createdAt, uid',
+  collaborators:      '++id, name, email, role, affiliation, createdAt, uid',
+  kanbanColumns:      '++id, title, order, color, isDefault, wip, uid',
+  submissions:        '++id, title, type, status, projectId, targetVenue, deadlineAt, submittedAt, createdAt, updatedAt, uid',
+  meetings:           '++id, title, date, projectId, createdAt, updatedAt, uid',
+  references:         '++id, title, authors, year, journal, doi, projectId, createdAt, updatedAt, uid',
+  tasks:              '++id, projectId, ideaId, due, createdAt, updatedAt, uid',
+  tombstones:         '++id, uid, table',
+}).upgrade(async tx => {
+  const now = new Date().toISOString();
+  for (const t of SYNC_TABLES)
+    await tx.table(t).toCollection().modify(r => {
+      if (!r.uid) r.uid = legacyUid(t, r);
+      if (!r.updatedAt) r.updatedAt = r.createdAt || now;
+    });
+});
+
+// Ganchos: todo registro nuevo recibe uid; toda modificación actualiza `updatedAt` (base de «gana el cambio más reciente»);
+// todo borrado deja una lápida para que los demás dispositivos también lo borren.
+for (const t of SYNC_TABLES) {
+  db[t].hook('creating', (primKey, obj) => {
+    if (!obj.uid) obj.uid = SyncState.legacy ? legacyUid(t, obj) : newUid();
+    if (!obj.updatedAt) obj.updatedAt = obj.createdAt || new Date().toISOString();
+    if (!SyncState.applying) SyncState.touch();
+    if (SyncState.deleted.has(obj.uid) && !SyncState.applying) {           // «Deshacer» de un borrado: el registro vuelve y debe ganar a su lápida
+      obj.updatedAt = new Date().toISOString();
+      SyncState.deleted.delete(obj.uid);
+      const uid = obj.uid;
+      setTimeout(() => db.tombstones.where('uid').equals(uid).delete().catch(() => {}), 0);   // fuera de la transacción en curso
+    }
+  });
+  db[t].hook('updating', mods => {
+    if (SyncState.applying) return undefined;
+    SyncState.touch();
+    if ('updatedAt' in mods) return undefined;
+    return { updatedAt: new Date().toISOString() };
+  });
+  db[t].hook('deleting', function (primKey, obj) {
+    if (SyncState.applying || !obj?.uid) return;
+    this.onsuccess = () => {
+      const deletedAt = new Date().toISOString();
+      SyncState.deleted.set(obj.uid, deletedAt);
+      SyncState.touch();
+      setTimeout(() => db.tombstones.add({ uid: obj.uid, table: t, deletedAt }).catch(() => {}), 0);   // fuera de la transacción en curso
+    };
+  });
+}
+
 // -- Seed defaults on first run -------------------------------
 async function seedDefaults() {
   const colCount = await db.kanbanColumns.count();
   if (colCount === 0) {
-    await db.kanbanColumns.bulkAdd([
+    SyncState.legacy++;                   // las columnas por defecto tienen el mismo uid en todos los dispositivos
+    try { await db.kanbanColumns.bulkAdd([
       { title: 'Ideación',          order: 0, color: '#3b82f6', isDefault: true },
       { title: 'Limpieza de Datos', order: 1, color: '#f59e0b', isDefault: true },
       { title: 'Análisis',          order: 2, color: '#8b5cf6', isDefault: true },
       { title: 'Escritura',         order: 3, color: '#10b981', isDefault: true },
       { title: 'Peer Review',       order: 4, color: '#f97316', isDefault: true },
       { title: 'Completado',        order: 5, color: '#14b8a6', isDefault: true },
-    ]);
+    ]); } finally { SyncState.legacy--; }
   }
 }
+
+// -- Tareas ----------------------------------------------------
+// { id, title, done, doneAt, due:'YYYY-MM-DD'|null, projectId|null, ideaId|null, areaId|null (solo sueltas), priority, effort (minutos)|null,
+//   planDate:'YYYY-MM-DD'|null (día en que la haré), createdAt, updatedAt }
+const Tasks = {
+  /** Valida una regla de repetición: { freq: 'daily'|'weekly'|'monthly', interval >= 1, until: 'YYYY-MM-DD'|null } o null. */
+  cleanRecurrence(r) {
+    if (!r || !['daily', 'weekly', 'monthly'].includes(r.freq)) return null;
+    const interval = Math.max(1, Math.min(52, Math.round(+r.interval) || 1));
+    return { freq: r.freq, interval, until: isoDateOrNull(r.until) };
+  },
+  /** Siguiente fecha de una tarea recurrente a partir de `due` (o de hoy), o null si ya pasó `until`. */
+  nextDue(due, rec) {
+    const base = new Date((due || localDateISO()) + 'T12:00:00');
+    if (rec.freq === 'daily') base.setDate(base.getDate() + rec.interval);
+    else if (rec.freq === 'weekly') base.setDate(base.getDate() + 7 * rec.interval);
+    else {                                                   // mensual: conserva el día, ajustando a fin de mes (31 → 28/30)
+      const day = base.getDate();
+      base.setDate(1); base.setMonth(base.getMonth() + rec.interval);
+      base.setDate(Math.min(day, new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate()));
+    }
+    const next = localDateISO(base);
+    return rec.until && next > rec.until ? null : next;
+  },
+  /** Minutos enteros entre 1 y 1440 (24 h), o null. */
+  cleanEffort(m) { const n = Math.round(+m); return Number.isFinite(n) && n >= 1 ? Math.min(1440, n) : null; },
+  async add({ title, due = null, projectId = null, ideaId = null, areaId = null, priority = null, assigneeId = null, recurrence = null, effort = null, planDate = null }) {
+    const text = String(title ?? '').trim();
+    if (!text) return null;
+    const now = new Date().toISOString();
+    const rec = Tasks.cleanRecurrence(recurrence);
+    return db.tasks.add({ title: text, done: false, doneAt: null, due: isoDateOrNull(due) || (rec ? localDateISO() : null),
+      projectId: projectId ?? null, ideaId: ideaId ?? null, areaId: projectId ? null : (areaId ?? null),
+      priority: priority || null, assigneeId: assigneeId ?? null, recurrence: rec, effort: Tasks.cleanEffort(effort), planDate: isoDateOrNull(planDate),
+      createdAt: now, updatedAt: now });
+  },
+  /**
+   * Marca como hecha (o reabre). Si la tarea es recurrente, al completarla nace la siguiente ocurrencia.
+   * Devuelve el id de la ocurrencia creada (para poder deshacer) o null.
+   */
+  async setDone(id, done) {
+    const now = new Date().toISOString();
+    const t = await db.tasks.get(id);
+    if (!t) return null;
+    await db.tasks.update(id, { done: !!done, doneAt: done ? now : null, updatedAt: now });
+    if (done && !t.done && t.recurrence) {
+      const next = Tasks.nextDue(t.due, t.recurrence);
+      if (next) { const { id: _drop, ...rest } = t; return db.tasks.add({ ...rest, done: false, doneAt: null, due: next, planDate: null, createdAt: now, updatedAt: now }); }
+    }
+    return null;
+  },
+  async setAssignee(id, assigneeId) { await db.tasks.update(id, { assigneeId: assigneeId ?? null, updatedAt: new Date().toISOString() }); },
+  async setRecurrence(id, rec) {
+    const t = await db.tasks.get(id);
+    const clean = Tasks.cleanRecurrence(rec);
+    await db.tasks.update(id, { recurrence: clean, due: t.due || (clean ? localDateISO() : null), updatedAt: new Date().toISOString() });
+  },
+  async setDue(id, due)   { await db.tasks.update(id, { due: isoDateOrNull(due), updatedAt: new Date().toISOString() }); },
+  async setEffort(id, minutes) { await db.tasks.update(id, { effort: Tasks.cleanEffort(minutes), updatedAt: new Date().toISOString() }); },
+  async setPlan(id, date) { await db.tasks.update(id, { planDate: isoDateOrNull(date), updatedAt: new Date().toISOString() }); },
+  async remove(id)        { await db.tasks.delete(id); },
+  /** Tareas de un proyecto (type='project') o de una idea (type='idea'), en orden de creación. */
+  async forEntity(type, id) {
+    const col = type === 'project' ? 'projectId' : 'ideaId';
+    const rows = await db.tasks.where(col).equals(id).toArray();
+    // las tareas de una idea llevan también su projectId: en el proyecto solo se listan las propias
+    return (type === 'project' ? rows.filter(t => !t.ideaId) : rows).sort((a, b) => a.id - b.id);
+  },
+  /** Mapa projectId → {total, done, late} (late = vencidas sin completar). Para las insignias de las tarjetas. */
+  async statsByProject() {
+    const today = localDateISO(), map = {};
+    for (const t of await db.tasks.filter(t => t.projectId != null && !t.ideaId).toArray()) {
+      const c = map[t.projectId] || (map[t.projectId] = { total: 0, done: 0, late: 0, next: null });
+      c.total++; if (t.done) c.done++; else if (t.due && t.due < today) c.late++;
+      // «Próxima acción»: la tarea abierta propia con fecha más cercana (las sin fecha, después)
+      if (!t.done && !t.assigneeId) {
+        const better = !c.next || (t.due || '9999') < (c.next.due || '9999') || ((t.due || '9999') === (c.next.due || '9999') && t.id < c.next.id);
+        if (better) c.next = { id: t.id, title: t.title, due: t.due || null };
+      }
+    }
+    return map;
+  },
+  /** Mapa ideaId → {total, done} para los contadores de la lista de ideas. */
+  async countsByIdea() {
+    const map = {};
+    for (const t of await db.tasks.filter(t => t.ideaId != null).toArray()) {
+      const c = map[t.ideaId] || (map[t.ideaId] = { total: 0, done: 0 });
+      c.total++; if (t.done) c.done++;
+    }
+    return map;
+  },
+};
 
 // -- Query helpers --------------------------------------------
 
@@ -222,48 +439,28 @@ async function getDashboardStats() {
   return { projects, ideas, snippets, ideaUnread, recentProjects };
 }
 
-/** Returns a map { 'YYYY-MM-DD': count } of activity over the last 365 days */
-async function getActivityHeatmap() {
-  const since = new Date();
-  since.setFullYear(since.getFullYear() - 1);
-  const sinceISO = since.toISOString();
-
-  const [projects, ideas, snippets] = await Promise.all([
-    db.projects.where('updatedAt').above(sinceISO).toArray(),
-    db.ideas.where('updatedAt').above(sinceISO).toArray(),
-    db.snippets.where('updatedAt').above(sinceISO).toArray(),
-  ]);
-
-  const map = {};
-  const stamp = iso => iso ? localDateISO(new Date(iso)) : null;
-  [...projects, ...ideas, ...snippets].forEach(item => {
-    const d = stamp(item.updatedAt);
-    if (d) map[d] = (map[d] || 0) + 1;
-  });
-  return map;
-}
-
 // -- Full export / import -------------------------------------
 
 const BACKUP_TABLES = ['projects', 'ideas', 'snippets', 'resources', 'collaborators',
-                       'kanbanColumns', 'snippetCollections', 'submissions', 'meetings', 'references'];
+                       'kanbanColumns', 'snippetCollections', 'submissions', 'meetings', 'references', 'tasks'];
 
 // Claves de Google Drive/auth que son device-specific y no deben exportarse
 const _SETTINGS_EXCLUDE = new Set([
   'google_access_token', 'google_token_expiry',
   'google_drive_file_id', 'google_user_email',
+  'backup-dir-handle', 'sync-dir-handle',       // handles de carpeta: no son serializables ni sirven en otro navegador
 ]);
 
 // Claves device-specific que se preservan aunque se haga un reemplazo total
 const _SETTINGS_PRESERVE = new Set([
   'google_access_token', 'google_token_expiry', 'google_drive_file_id',
   'google_user_email',   'google_sync_last',    'google_auto_sync',
-  'google_auto_save_on_change',
+  'google_auto_save_on_change', 'backup-dir-handle', 'sync-dir-handle',
 ]);
 
 async function exportAllData() {
   const [projects, ideas, snippets, resources, collaborators,
-         kanbanColumns, snippetCollections, submissions, meetings, references,
+         kanbanColumns, snippetCollections, submissions, meetings, references, tasks,
          allSettings] =
     await Promise.all([
       db.projects.toArray(),
@@ -276,6 +473,7 @@ async function exportAllData() {
       db.submissions.toArray(),
       db.meetings.toArray(),
       db.references.toArray(),
+      db.tasks.toArray(),
       db.settings.toArray(),
     ]);
 
@@ -286,7 +484,7 @@ async function exportAllData() {
     { _app: 'ResearchOS', _version: 3, exportedAt: new Date().toISOString(),
       projects, ideas, snippets, resources, collaborators,
       kanbanColumns, snippetCollections,
-      submissions, meetings, references, settings },
+      submissions, meetings, references, tasks, settings },
     null, 2
   );
 }
@@ -309,9 +507,14 @@ function sanitizeBackup(raw) {
   const strs  = a => Array.isArray(a) ? a.map(x => String(x ?? '').trim()).filter(Boolean) : [];
   const str   = v => v == null ? '' : String(v);
   const rows  = t => (Array.isArray(raw[t]) ? raw[t] : []).filter(isObj).map(r => ({ ...r }));
-  const withId = r => { const id = num(r.id); if (id !== null && id > 0) r.id = id; else delete r.id; return r; };
+  const withId = r => {
+    const id = num(r.id); if (id !== null && id > 0) r.id = id; else delete r.id;
+    if (typeof r.uid !== 'string' || !/^[\w:.-]{6,80}$/.test(r.uid)) delete r.uid;       // uid ajeno inválido → se regenera
+    return r;
+  };
   const items = (a, textKey = 'text') => (Array.isArray(a) ? a : []).filter(isObj).map((x, i) => ({
-    ...x, id: num(x.id) ?? (Date.now() + i), [textKey]: str(x[textKey]), done: !!x.done }));
+    ...x, id: num(x.id) ?? (Date.now() + i), [textKey]: str(x[textKey]), done: !!x.done,
+    due: isoDateOrNull(x.due), assigneeId: num(x.assigneeId), doneAt: x.done ? (str(x.doneAt) || null) : null }));
 
   // Los registros sin sello de tiempo desaparecerían de las listas ordenadas por createdAt/updatedAt (índices de IndexedDB).
   const now = new Date().toISOString();
@@ -323,7 +526,9 @@ function sanitizeBackup(raw) {
     order: num(r.order) ?? i, wip: num(r.wip) || null }));
   out.snippetCollections = rows('snippetCollections').map(r => withId({
     ...r, name: str(r.name) || 'Colección', color: cssColor(r.color, '#38bdf8') }));
-  out.collaborators = rows('collaborators').map(r => withId({ ...r, name: str(r.name) || '?', createdAt: str(r.createdAt) || now }));
+  out.collaborators = rows('collaborators').map(r => withId({ ...r, name: str(r.name) || '?', createdAt: str(r.createdAt) || now,
+    lastContact: isoDateOrNull(r.lastContact), followSnoozeUntil: isoDateOrNull(r.followSnoozeUntil),
+    followUpDays: [7, 14, 30, 90, 180].includes(+r.followUpDays) ? +r.followUpDays : null }));
   out.projects = rows('projects').map(r => withId({
     ...r, ...stamps(r), title: str(r.title), tags: strs(r.tags), coauthors: strs(r.coauthors),
     deadline: isoDateOrNull(r.deadline), columnId: num(r.columnId), parentId: num(r.parentId),
@@ -337,7 +542,7 @@ function sanitizeBackup(raw) {
   out.ideas = rows('ideas').map(r => withId({
     ...r, ...stamps(r), title: str(r.title), content: str(r.content), tags: strs(r.tags),
     projectId: num(r.projectId), projectIds: nums(r.projectIds),
-    deadline: isoDateOrNull(r.deadline), subtasks: items(r.subtasks) }));
+    deadline: isoDateOrNull(r.deadline) }));
   out.snippets = rows('snippets').map(r => withId({
     ...r, ...stamps(r), title: str(r.title), code: str(r.code),
     language: str(r.language).replace(/[^\w+#. -]/g, '').trim() || 'Other', tags: strs(r.tags),
@@ -347,7 +552,26 @@ function sanitizeBackup(raw) {
     projectId: num(r.projectId), actionItems: items(r.actionItems) }));
   out.references = rows('references').map(r => withId({
     ...r, ...stamps(r), title: str(r.title), tags: strs(r.tags), projectId: num(r.projectId),
-    year: Number.isInteger(+r.year) && +r.year > 0 ? +r.year : null }));
+    year: Number.isInteger(+r.year) && +r.year > 0 ? +r.year : null,
+    readStatus: ['toread', 'reading', 'read'].includes(r.readStatus) ? r.readStatus : null, citeKey: str(r.citeKey),
+    readAt: r.readStatus === 'read' ? (str(r.readAt) || null) : null }));
+  // Tareas. Los backups anteriores guardaban "subtareas" dentro de proyectos e ideas: se convierten en tareas.
+  const mkTask = (t, extra) => ({ title: str(t.title ?? t.text), done: !!t.done, doneAt: t.done ? (str(t.doneAt) || now) : null,
+    due: isoDateOrNull(t.due), projectId: null, ideaId: null, areaId: num(t.areaId),
+    assigneeId: num(t.assigneeId), recurrence: Tasks.cleanRecurrence(t.recurrence), effort: Tasks.cleanEffort(t.effort), planDate: isoDateOrNull(t.planDate),
+    priority: ['Alta', 'Media', 'Baja'].includes(t.priority) ? t.priority : null, ...stamps(t), ...extra });
+  if (Array.isArray(raw.tasks)) {
+    out.tasks = rows('tasks').map(r => withId(mkTask(r, { projectId: num(r.projectId), ideaId: num(r.ideaId) })));
+  } else {
+    out.tasks = [];
+    for (const p of out.projects) for (const t of (Array.isArray(p.subtasks) ? p.subtasks : []).filter(isObj))
+      if (p.id != null) out.tasks.push(mkTask(t, { projectId: p.id }));
+    for (const i of out.ideas) for (const t of (Array.isArray(i.subtasks) ? i.subtasks : []).filter(isObj))
+      if (i.id != null) out.tasks.push(mkTask(t, { ideaId: i.id, projectId: i.projectId ?? null }));
+  }
+  out.projects.forEach(p => { p.subtasks = []; });
+  out.ideas.forEach(i => { i.subtasks = []; });
+
   out.submissions = rows('submissions').map(r => withId({ ...r, projectId: num(r.projectId) }));
   out.resources   = rows('resources').map(r => withId({ ...r, projectId: num(r.projectId), ideaId: num(r.ideaId) }));
 
@@ -373,15 +597,21 @@ function _parseBackup(input) {
 /** Reemplaza TODOS los datos por los del backup. Valida antes de borrar; la transacción es atómica. */
 async function importAllData(jsonString) {
   const data = _parseBackup(jsonString);
+  SyncState.legacy++; SyncState.applying++;                // registros sin uid → uid determinista; sin tocar updatedAt
+  try {
   await db.transaction('rw',
     [db.projects, db.ideas, db.snippets, db.resources, db.collaborators,
      db.kanbanColumns, db.snippetCollections, db.submissions, db.meetings,
-     db.references, db.settings],
+     db.references, db.tasks, db.settings, db.tombstones],
     async () => {
       // Rescatar settings device-specific antes de limpiar
       const preserved = await db.settings
         .filter(s => _SETTINGS_PRESERVE.has(s.key))
         .toArray();
+      // Lo que existía y ya no estará debe borrarse también en los demás dispositivos
+      const previous = [];
+      for (const t of SYNC_TABLES) for (const r of await db[t].toArray()) if (r.uid) previous.push({ uid: r.uid, table: t });
+      await db.tombstones.clear();
 
       await Promise.all([
         db.projects.clear(),           db.ideas.clear(),
@@ -389,7 +619,7 @@ async function importAllData(jsonString) {
         db.collaborators.clear(),      db.kanbanColumns.clear(),
         db.snippetCollections.clear(), db.submissions.clear(),
         db.meetings.clear(),           db.references.clear(),
-        db.settings.clear(),
+        db.tasks.clear(),              db.settings.clear(),
       ]);
 
       // Settings del backup (sin credenciales) + settings device-specific preservadas
@@ -406,10 +636,17 @@ async function importAllData(jsonString) {
         db.submissions.bulkAdd(data.submissions),
         db.meetings.bulkAdd(data.meetings),
         db.references.bulkAdd(data.references),
+        db.tasks.bulkAdd(data.tasks),
         db.settings.bulkPut([...importedSettings, ...preserved]),
       ]);
+      const kept = new Set();
+      for (const t of SYNC_TABLES) for (const r of await db[t].toArray()) kept.add(r.uid);
+      const now = new Date().toISOString();
+      const gone = previous.filter(x => !kept.has(x.uid)).map(x => ({ ...x, deletedAt: now }));
+      if (gone.length) await db.tombstones.bulkAdd(gone);
     }
   );
+  } finally { SyncState.legacy--; SyncState.applying--; }
   // Un backup sin columnas dejaría el Kanban vacío e inutilizable.
   await seedDefaults();
   return Object.fromEntries(BACKUP_TABLES.map(t => [t, data[t].length]));
@@ -428,16 +665,20 @@ async function mergeAllData(jsonString) {
   const summary = { added: {}, skipped: {} };
   const bump = (kind, t) => { summary[kind][t] = (summary[kind][t] || 0) + 1; };
 
+  SyncState.legacy++; SyncState.applying++;
+  try {
   await db.transaction('rw',
     [db.projects, db.ideas, db.snippets, db.resources,
      db.collaborators, db.kanbanColumns, db.snippetCollections,
-     db.submissions, db.meetings, db.references, db.settings],
+     db.submissions, db.meetings, db.references, db.tasks, db.settings],
     async () => {
-      const maps = { kanbanColumns: new Map(), collaborators: new Map(),
-                     snippetCollections: new Map(), projects: new Map(), areas: new Map() };
+      const maps = { kanbanColumns: new Map(), collaborators: new Map(), snippetCollections: new Map(),
+                     projects: new Map(), ideas: new Map(), areas: new Map() };
       const label = r => foldText(r.title ?? r.name ?? '').trim();
       const keyByTitle    = r => label(r);
       const keyByIdentity = r => `${r.createdAt || ''}|${label(r)}`;
+      // Identidad real = uid. Un registro sin uid (backup antiguo) se reconoce por su uid determinista o, si no, por contenido.
+      const uidOf = (name, r) => r.uid || legacyUid(name, r);
       const mapId  = (m, v) => (v == null ? null : (m.get(v) ?? null));
       const mapIds = (m, a) => (a || []).map(v => m.get(v)).filter(v => v != null);
 
@@ -445,16 +686,18 @@ async function mergeAllData(jsonString) {
         const table    = db[name];
         const existing = await table.toArray();
         const byKey    = new Map(existing.map(r => [keyFn(r), r]));
+        const byUid    = new Map(existing.filter(r => r.uid).map(r => [r.uid, r]));
         const usedIds  = new Set(existing.map(r => r.id));
         const added    = [];
         for (const raw of data[name]) {
           const rec   = translate ? translate({ ...raw }) : { ...raw };
-          const twin  = byKey.get(keyFn(rec));
+          const twin  = byUid.get(uidOf(name, rec)) || (rec.uid ? null : byKey.get(keyFn(rec)));
           if (twin) { maps[name]?.set(raw.id, twin.id); bump('skipped', name); continue; }
           if (rec.id != null && usedIds.has(rec.id)) delete rec.id;
           const newId = await table.add(rec);
           usedIds.add(newId);
           byKey.set(keyFn(rec), { ...rec, id: newId });
+          if (rec.uid || SyncState.legacy) byUid.set(uidOf(name, rec), { ...rec, id: newId });
           maps[name]?.set(raw.id, newId);
           added.push({ newId, raw });
           bump('added', name);
@@ -505,6 +748,9 @@ async function mergeAllData(jsonString) {
       await mergeTable('references', keyByIdentity, proj);
       await mergeTable('submissions', keyByIdentity, proj);
       await mergeTable('resources',  keyByIdentity, r => ({ ...proj(r), ideaId: null }));
+      await mergeTable('tasks',      keyByIdentity, r => ({ ...proj(r), ideaId: mapId(maps.ideas, r.ideaId),
+                                                            assigneeId: mapId(maps.collaborators, r.assigneeId),
+                                                            areaId: r.projectId ? null : mapId(maps.areas, r.areaId) }));
 
       // 5) Settings: solo claves que no existen localmente (y nunca credenciales)
       const have = new Set((await db.settings.toArray()).map(s => s.key));
@@ -512,7 +758,23 @@ async function mergeAllData(jsonString) {
       if (fresh.length) await db.settings.bulkAdd(fresh);
     }
   );
+  } finally { SyncState.legacy--; SyncState.applying--; }
   return summary;
+}
+
+/**
+ * Elimina una idea junto con sus tareas (eran su lista de subtareas). Devuelve `undo()` que lo restaura todo.
+ */
+async function deleteIdeaCascade(id) {
+  let idea = null, tasks = [];
+  await db.transaction('rw', [db.ideas, db.tasks], async () => {
+    idea  = await db.ideas.get(id);
+    if (!idea) return;
+    tasks = await db.tasks.where('ideaId').equals(id).toArray();
+    await db.tasks.bulkDelete(tasks.map(t => t.id));
+    await db.ideas.delete(id);
+  });
+  return async () => { if (!idea) return; await db.ideas.put(idea); if (tasks.length) await db.tasks.bulkPut(tasks); };
 }
 
 /** Texto legible de un resultado de merge: "12 nuevos · 3 ya existían". */
@@ -527,14 +789,19 @@ async function clearAllData() {
   await db.transaction('rw',
     [db.projects, db.ideas, db.snippets, db.resources, db.collaborators,
      db.kanbanColumns, db.snippetCollections, db.submissions, db.meetings,
-     db.references, db.settings],
+     db.references, db.tasks, db.settings, db.tombstones],
     async () => {
+      const now = new Date().toISOString(), gone = [];
+      for (const t of SYNC_TABLES) for (const r of await db[t].toArray()) if (r.uid) gone.push({ uid: r.uid, table: t, deletedAt: now });
+      await db.tombstones.clear();
+      await db.tombstones.bulkAdd(gone);
       await Promise.all([
         db.projects.clear(),           db.ideas.clear(),
         db.snippets.clear(),           db.resources.clear(),
         db.collaborators.clear(),      db.kanbanColumns.clear(),
         db.snippetCollections.clear(), db.submissions.clear(),
         db.meetings.clear(),           db.references.clear(),
+        db.tasks.clear(),
       ]);
       await db.settings.filter(s => !_SETTINGS_PRESERVE.has(s.key)).delete();
     });
@@ -550,10 +817,15 @@ async function deleteProjectCascade(id) {
   const restore = [];   // [tabla, id, campos previos]
   let snapshot = null;
   await db.transaction('rw',
-    [db.projects, db.ideas, db.snippets, db.meetings, db.references, db.submissions, db.resources],
+    [db.projects, db.ideas, db.snippets, db.meetings, db.references, db.submissions, db.resources, db.tasks],
     async () => {
       snapshot = await db.projects.get(id);
       if (!snapshot) return;
+      // Las tareas del proyecto pasan a ser tareas sueltas y conservan su área, para no perderlas.
+      for (const t of await db.tasks.where('projectId').equals(id).toArray()) {
+        restore.push(['tasks', t.id, { projectId: id, areaId: t.areaId ?? null }]);
+        await db.tasks.update(t.id, { projectId: null, areaId: snapshot.areaId ?? null });
+      }
       for (const c of await db.projects.where('parentId').equals(id).toArray()) {
         restore.push(['projects', c.id, { parentId: c.parentId }]);
         await db.projects.update(c.id, { parentId: snapshot.parentId ?? null });
@@ -579,6 +851,233 @@ async function deleteProjectCascade(id) {
     await db.projects.put(snapshot);
     for (const [t, rid, fields] of restore) await db[t].update(rid, fields);
   };
+}
+
+// -- Importar referencias: BibTeX y RIS ------------------------
+/** Convierte los comandos LaTeX más comunes de un campo BibTeX en texto plano (acentos, &, %, llaves). */
+function _unTeX(v) {
+  const acc = { "'": '\u0301', '`': '\u0300', '"': '\u0308', '^': '\u0302', '~': '\u0303', 'c': '\u0327' };
+  return String(v ?? '')
+    .replace(/\\([`'"^~c])\s*\{?\\?([A-Za-z])\}?/g, (m, a, ch) => (ch + acc[a]).normalize('NFC'))
+    .replace(/\\(&|%|_|#|\$)/g, '$1')
+    .replace(/\\ss\b/g, 'ß').replace(/\\o\b/g, 'ø').replace(/\\O\b/g, 'Ø').replace(/\\aa\b/g, 'å').replace(/\\ae\b/g, 'æ')
+    .replace(/[{}]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function _bibClosing(text, openIdx) {
+  let depth = 0;
+  for (let i = openIdx; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\\') { i++; continue; }
+    if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) return i;
+  }
+  return text.length - 1;
+}
+
+/** Lee un archivo .bib → [{ type, key, fields }] (campos en minúsculas, ya sin LaTeX). */
+function parseBibtex(text) {
+  const src = String(text ?? '');
+  const out = [];
+  let i = 0;
+  while (i < src.length) {
+    const at = src.indexOf('@', i);
+    if (at < 0) break;
+    const m = /^@\s*([A-Za-z]+)\s*([{(])/.exec(src.slice(at, at + 60));
+    if (!m) { i = at + 1; continue; }
+    const type = m[1].toLowerCase();
+    const open = at + m[0].length - 1;
+    if (['comment', 'string', 'preamble'].includes(type)) { i = _bibClosing(src, open) + 1; continue; }
+    const end = m[2] === '{' ? _bibClosing(src, open) : src.indexOf(')', open);
+    const body = src.slice(open + 1, end < 0 ? src.length : end);
+    const comma = body.indexOf(',');
+    const key = (comma < 0 ? body : body.slice(0, comma)).trim();
+    const fields = {};
+    let pos = comma < 0 ? body.length : comma + 1;
+    while (pos < body.length) {
+      while (pos < body.length && /[\s,]/.test(body[pos])) pos++;
+      const eq = body.indexOf('=', pos);
+      if (eq < 0) break;
+      const name = body.slice(pos, eq).trim().toLowerCase();
+      pos = eq + 1;
+      while (pos < body.length && /\s/.test(body[pos])) pos++;
+      let value = '';
+      if (body[pos] === '{') { const e = _bibClosing(body, pos); value = body.slice(pos + 1, e); pos = e + 1; }
+      else if (body[pos] === '"') {
+        let e = pos + 1, depth = 0;
+        while (e < body.length && !(body[e] === '"' && depth === 0)) { if (body[e] === '\\') e++; else if (body[e] === '{') depth++; else if (body[e] === '}') depth--; e++; }
+        value = body.slice(pos + 1, e); pos = e + 1;
+      } else { const t = /^[^,\s]+/.exec(body.slice(pos)); value = t ? t[0] : ''; pos += value.length; }
+      if (name) fields[name] = _unTeX(value);
+    }
+    if (Object.keys(fields).length) out.push({ type, key, fields });
+    i = (end < 0 ? src.length : end) + 1;
+  }
+  return out;
+}
+
+/** Entradas .bib → registros de referencia de la app. */
+function bibtexToReferences(entries) {
+  return entries.map(({ key, fields: f }) => ({
+    title: f.title || '', citeKey: key || '',
+    authors: (f.author || '').split(/\s+and\s+/i).map(a => a.trim()).filter(Boolean).join('; '),
+    year: Number.isInteger(+(String(f.year || f.date || '').match(/\d{4}/) || [])[0]) ? +String(f.year || f.date).match(/\d{4}/)[0] : null,
+    journal: f.journal || f.booktitle || f.publisher || '', doi: (f.doi || '').replace(/^https?:\/\/(dx\.)?doi\.org\//i, ''),
+    url: f.url || '', volume: f.volume || '', pages: (f.pages || '').replace(/--+/g, '–'),
+    tags: (f.keywords || '').split(/[,;]/).map(t => t.trim()).filter(Boolean), notes: (f.abstract || f.note || '').slice(0, 1500),
+  })).filter(r => r.title);
+}
+
+/** Lee un archivo RIS → registros de referencia. */
+function parseRIS(text) {
+  const out = [];
+  let cur = null;
+  for (const raw of String(text ?? '').split(/\r?\n/)) {
+    const m = /^([A-Z][A-Z0-9])\s{2}-\s?(.*)$/.exec(raw);
+    if (!m) continue;
+    const [, tag, val] = m, v = val.trim();
+    if (tag === 'TY') { cur = { authors: [], tags: [], sp: '', ep: '' }; continue; }
+    if (!cur) continue;
+    if (tag === 'ER') {
+      out.push({ title: cur.title || '', citeKey: '', authors: cur.authors.join('; '), year: cur.year || null,
+        journal: cur.journal || '', doi: cur.doi || '', url: cur.url || '', volume: cur.volume || '',
+        pages: [cur.sp, cur.ep].filter(Boolean).join('–'), tags: cur.tags, notes: (cur.notes || '').slice(0, 1500) });
+      cur = null; continue;
+    }
+    if (tag === 'AU' || tag === 'A1') cur.authors.push(v);
+    else if (tag === 'TI' || tag === 'T1') cur.title = cur.title || v;
+    else if (tag === 'JO' || tag === 'JF' || tag === 'T2' || tag === 'JA') cur.journal = cur.journal || v;
+    else if (tag === 'PY' || tag === 'Y1' || tag === 'DA') { const y = (v.match(/\d{4}/) || [])[0]; if (y && !cur.year) cur.year = +y; }
+    else if (tag === 'DO') cur.doi = v.replace(/^https?:\/\/(dx\.)?doi\.org\//i, '');
+    else if (tag === 'UR') cur.url = cur.url || v;
+    else if (tag === 'VL') cur.volume = v;
+    else if (tag === 'SP') cur.sp = v;
+    else if (tag === 'EP') cur.ep = v;
+    else if (tag === 'KW') cur.tags.push(v);
+    else if (tag === 'AB' || tag === 'N2') cur.notes = v;
+  }
+  return out.filter(r => r.title);
+}
+
+/** Clave de duplicados de una referencia: DOI si hay, si no título+año sin tildes. */
+const refDedupeKey = r => r.doi ? `doi:${foldText(r.doi).trim()}` : `t:${foldText(r.title).replace(/[^a-z0-9]/g, '')}|${r.year || ''}`;
+
+/** Guarda referencias nuevas (omite las que ya existen). Devuelve { added, skipped }. */
+async function importReferences(records, { projectId = null } = {}) {
+  const existing = new Set((await db.references.toArray()).map(refDedupeKey));
+  const now = new Date().toISOString();
+  const fresh = [];
+  for (const r of records) {
+    const k = refDedupeKey(r);
+    if (existing.has(k)) continue;
+    existing.add(k);
+    fresh.push({ ...r, projectId, readStatus: 'toread', createdAt: now, updatedAt: now });
+  }
+  if (fresh.length) await db.references.bulkAdd(fresh);
+  return { added: fresh.length, skipped: records.length - fresh.length };
+}
+
+// -- Calendario .ics ---------------------------------------------
+const _icsEsc = v => String(v ?? '').replace(/\\/g, '\\\\').replace(/;/g, '\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+const _icsDate = iso => iso.replace(/-/g, '');
+function _icsFold(line) {                                  // líneas de ≤ 70 caracteres, continuación con espacio
+  const out = []; let rest = line;
+  while (rest.length > 70) { out.push(rest.slice(0, 70)); rest = ' ' + rest.slice(70); }
+  out.push(rest);
+  return out.join('\r\n');
+}
+
+/** Genera un .ics (eventos de día completo) con fechas límite, tareas con fecha y reuniones. */
+async function buildICS() {
+  const [projects, tasks, meetings, collabs] = await Promise.all([
+    db.projects.toArray(), db.tasks.toArray(), db.meetings.toArray(), db.collaborators.toArray()]);
+  const who = Object.fromEntries(collabs.map(c => [c.id, c.name]));
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//ResearchOS//ES', 'CALSCALE:GREGORIAN', 'X-WR-CALNAME:ResearchOS'];
+  const event = ({ uid, date, summary, desc = '', rrule = '' }) => {
+    const end = new Date(date + 'T12:00:00'); end.setDate(end.getDate() + 1);
+    lines.push('BEGIN:VEVENT', `UID:${uid}@researchos`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${_icsDate(date)}`,
+      `DTEND;VALUE=DATE:${_icsDate(localDateISO(end))}`, `SUMMARY:${_icsEsc(summary)}`);
+    if (desc) lines.push(`DESCRIPTION:${_icsEsc(desc)}`);
+    if (rrule) lines.push(rrule);
+    lines.push('TRANSP:TRANSPARENT', 'END:VEVENT');
+  };
+  for (const p of projects.filter(p => !p.archived && p.deadline))
+    event({ uid: `p${p.id}`, date: p.deadline, summary: `⏱ Entrega: ${p.title}`, desc: `${p.type} · prioridad ${p.priority || '—'}` });
+  for (const t of tasks.filter(t => !t.done && t.due)) {
+    const r = t.recurrence;
+    const rrule = r ? `RRULE:FREQ=${r.freq.toUpperCase()};INTERVAL=${r.interval}${r.until ? `;UNTIL=${_icsDate(r.until)}` : ''}` : '';
+    event({ uid: `t${t.id}`, date: t.due, summary: `${t.assigneeId ? '⏳' : '☐'} ${t.title}`, rrule,
+            desc: t.assigneeId ? `Esperando a ${who[t.assigneeId] || 'otra persona'}` : '' });
+  }
+  for (const m of meetings.filter(m => m.date))
+    event({ uid: `m${m.id}`, date: m.date, summary: `🗓 ${m.title}`, desc: m.participants ? `Participantes: ${m.participants}` : '' });
+  lines.push('END:VCALENDAR');
+  return lines.map(_icsFold).join('\r\n') + '\r\n';
+}
+
+/**
+ * Lee un .ics → [{ title, date }] con los eventos de [from, to] (expande repeticiones diarias, semanales y mensuales).
+ * Soporta DTSTART con fecha, fecha-hora local o UTC (Z), INTERVAL, COUNT, UNTIL y BYDAY.
+ */
+function parseICS(text, { from = localDateISO(), to = null, cap = 400 } = {}) {
+  const unfolded = String(text ?? '').replace(/\r?\n[ \t]/g, '');
+  const toDate = new Date(from + 'T12:00:00'); toDate.setDate(toDate.getDate() + 90);
+  const limit = to || localDateISO(toDate);
+  const blocks = unfolded.split(/BEGIN:VEVENT/i).slice(1).map(b => b.split(/END:VEVENT/i)[0]);
+  const prop = (b, name) => { const m = new RegExp(`^${name}([;:][^\\r\\n]*)$`, 'im').exec(b); return m ? m[1] : null; };
+  const unesc = v => v.replace(/\\n/gi, ' ').replace(/\\([,;\\])/g, '$1').trim();
+  const parseDT = raw => {
+    const m = /(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/.exec(raw);
+    if (!m) return null;
+    if (m[7]) { const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])); return localDateISO(d); }   // UTC → fecha local
+    return `${m[1]}-${m[2]}-${m[3]}`;
+  };
+  const WD = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+  const events = [];
+  for (const b of blocks) {
+    const sm = prop(b, 'SUMMARY'); const ds = prop(b, 'DTSTART');
+    if (!sm || !ds) continue;
+    const start = parseDT(ds.split(':').pop());
+    if (!start) continue;
+    const title = unesc(sm.slice(sm.indexOf(':') + 1));
+    const rr = prop(b, 'RRULE');
+    const rule = rr ? Object.fromEntries(rr.slice(1).split(';').map(kv => kv.split('='))) : null;
+    const dates = [];
+    if (!rule || !['DAILY', 'WEEKLY', 'MONTHLY'].includes(rule.FREQ)) dates.push(start);
+    else {
+      const interval = Math.max(1, +rule.INTERVAL || 1);
+      // UNTIL se toma por su fecha tal cual (sin pasar a hora local): «hasta el 18» incluye el 18 aunque el sello venga en UTC
+      const until = rule.UNTIL ? `${rule.UNTIL.slice(0, 4)}-${rule.UNTIL.slice(4, 6)}-${rule.UNTIL.slice(6, 8)}` : null;
+      const count = rule.COUNT ? +rule.COUNT : Infinity;
+      const days = rule.BYDAY ? rule.BYDAY.split(',').map(d => WD[d.slice(-2)]).filter(d => d !== undefined) : null;
+      let produced = 0;
+      const cur = new Date(start + 'T12:00:00');
+      for (let guard = 0; guard < 4000 && produced < count; guard++) {
+        const iso = localDateISO(cur);
+        if (iso > limit || (until && iso > until)) break;
+        if (rule.FREQ === 'WEEKLY' && days) {
+          // todos los días BYDAY de esta semana (a partir del inicio), luego salta `interval` semanas
+          const weekStart = new Date(cur); weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+          for (const d of days.slice().sort((a, b) => a - b)) {
+            const day = new Date(weekStart); day.setDate(day.getDate() + d);
+            const di = localDateISO(day);
+            if (di < start || di > limit || (until && di > until) || produced >= count) continue;
+            dates.push(di); produced++;
+          }
+          cur.setDate(cur.getDate() + 7 * interval);
+          continue;
+        }
+        dates.push(iso); produced++;
+        if (rule.FREQ === 'DAILY') cur.setDate(cur.getDate() + interval);
+        else if (rule.FREQ === 'WEEKLY') cur.setDate(cur.getDate() + 7 * interval);
+        else cur.setMonth(cur.getMonth() + interval);
+      }
+    }
+    for (const date of dates) if (date >= from && date <= limit) events.push({ title, date });
+    if (events.length >= cap) break;
+  }
+  return events.sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)).slice(0, cap);
 }
 
 // -- Meetings helpers -----------------------------------------

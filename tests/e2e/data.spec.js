@@ -17,8 +17,8 @@ async function importJson(page, text, mode) {
   await gotoView(page, 'settings');
   await page.locator('#importJsonInput').setInputFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(text) });
   await page.locator(mode === 'replace' ? '#importOptReplace' : '#importOptMerge').click();
-  if (mode === 'replace') page.once('dialog', d => d.accept());   // además se descarga una copia previa (no hace falta esperarla)
   await page.locator('#importModeOk').click();
+  if (mode === 'replace') await page.locator('#confirmYes').click();   // además se descarga una copia previa (no hace falta esperarla)
 }
 
 test.describe('Backup JSON', () => {
@@ -52,7 +52,7 @@ test.describe('Backup JSON', () => {
     await openApp(page);
     await seed(page);
     const json = JSON.parse(await exportJson(page));
-    json.projects = [{ ...json.projects[0], id: 100, title: 'Proyecto importado' }];
+    json.projects = [{ ...json.projects[0], id: 100, uid: 'otro-dispositivo-0001', title: 'Proyecto importado' }];   // otra identidad (uid)
     json.ideas = []; json.snippets = []; json.meetings = []; json.references = []; json.collaborators = [];
     await importJson(page, JSON.stringify(json), 'merge');
     await expect(page.locator('.toast.success').last()).toContainText('Importado (merge)');
