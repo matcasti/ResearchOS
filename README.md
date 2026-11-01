@@ -30,7 +30,7 @@ La aplicación ha sido desarrollada siguiendo los principios del "Modern Vanilla
 
 <!-- -->
 
--   **Refresco inmediato de lo que ves**: cualquier escritura en la base de datos (desde el inspector, un modal, una tarjeta o la consola) avisa a un único punto central (`Live` en [app.js](app.js)), que repinta la vista abierta y el inspector sin vaciarlos, conservando el scroll de la página y de las listas internas (columnas del tablero). Si el manejador que guardó ya repintó, no se repite; si estás escribiendo en un campo, espera a que lo sueltes para no pisarte el texto; si tienes un botón pulsado (entre «pulsar» y «soltar») tampoco repinta, para que el clic no se pierda, y un freno evita cadenas de repintados. Las capturas (barra de Hoy, idea rápida, «→ Tarea / → Proyecto») ignoran un segundo Enter o clic mientras guardan, así que un doble toque no crea duplicados. Los textos larguísimos sin espacios (URLs, DOIs, nombres) se parten dentro de su caja en lugar de desbordarla. Los cambios más frecuentes (completar una tarea, editar un campo del inspector) se muestran al instante y la base de datos se actualiza detrás.
+-   **Refresco inmediato de lo que ves**: cualquier escritura en la base de datos (desde el inspector, un modal, una tarjeta o la consola) avisa a un único punto central (`Live` en [app.js](src/core/app.js)), que repinta la vista abierta y el inspector sin vaciarlos, conservando el scroll de la página y de las listas internas (columnas del tablero). Si el manejador que guardó ya repintó, no se repite; si estás escribiendo en un campo, espera a que lo sueltes para no pisarte el texto; si tienes un botón pulsado (entre «pulsar» y «soltar») tampoco repinta, para que el clic no se pierda, y un freno evita cadenas de repintados. Las capturas (barra de Hoy, idea rápida, «→ Tarea / → Proyecto») ignoran un segundo Enter o clic mientras guardan, así que un doble toque no crea duplicados. Los textos larguísimos sin espacios (URLs, DOIs, nombres) se parten dentro de su caja en lugar de desbordarla. Los cambios más frecuentes (completar una tarea, editar un campo del inspector) se muestran al instante y la base de datos se actualiza detrás.
 
 <!-- -->
 
@@ -112,6 +112,31 @@ El diseño visual y técnico de ResearchOS busca reducir la fatiga cognitiva dur
 -   **marked.js** (v9.1.6): Compilador de Markdown altamente optimizado para documentos extensos.
 -   **KaTeX** (v0.16.9): El motor de renderizado matemático más rápido de la web, diseñado para no bloquear el hilo principal de ejecución.
 
+## 🗂️ Estructura del repositorio
+
+Sin paso de compilación: lo que ves aquí es lo que ejecuta el navegador. Ninguna carpeta pasa de 5 archivos; la raíz guarda los 7 que por convención deben estar ahí (los de arriba más `LICENSE.md`, `README.md`, `package.json`, `package-lock.json` y `ResearchOS.Rproj`).
+
+```
+index.html            Página única: carga estilos y scripts en este orden
+sw.js                 Service worker (vive en la raíz para controlar toda la app)
+assets/
+  style.css           Estilos
+  manifest.webmanifest  Instalación como app (PWA)
+  icons/              Iconos de la app
+src/
+  core/               Base: db.js (datos), icons.js, app.js (núcleo y vistas), shell.js (barra móvil y captura)
+  modules/            Funciones por área: today.js (Hoy), network.js (Red), planner.js (Mi día e informe),
+                      academic.js (docencia y manuscritos), tour.js (recorrido guiado y primeros pasos)
+  services/           Datos y sincronización: vault.js (copia cifrada), sync.js (entre dispositivos),
+                      integrations.js (copia automática y .ics), sample.js (datos de ejemplo)
+docs/                 CHANGELOG.md
+tests/
+  playwright.config.js
+  e2e/                helpers.js y las pruebas por tema: app/ · views/ · data/ · features/ · onboarding/ · quality/ · robustness/
+```
+
+El orden de los scripts importa (cada uno usa los globales del anterior); está en `index.html`.
+
 ## 🔌 Guía de Inicio y Despliegue sin Fricciones
 
 ResearchOS no tiene una fase de "build" ni requiere compiladores previos. El código que ves en el repositorio es exactamente el código que ejecuta tu navegador.
@@ -154,7 +179,9 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-La suite ([tests/e2e](tests/e2e)) cubre las vistas, la captura, las tareas, la sincronización entre dos «dispositivos», el grafo, la planificación, el informe, el módulo académico, la copia cifrada, la barra móvil, el barrido de XSS por cada campo de texto y un humo de rendimiento con ~7 000 elementos, y una auditoría de calidad que recorre todas las vistas a 360, 768, 1024 y 1440 px (sin desbordes) y comprueba nombres accesibles, ids únicos y consola limpia, otra («overflow») que repite el barrido a 320, 360 y 1280 px con el laboratorio de ejemplo y con textos larguísimos sin espacios (URLs, DOIs, nombres) para asegurar que nada se sale de su caja, y otra que verifica que cada cambio pequeño se ve al instante (sin vaciar el inspector ni perder el scroll), otras para el ejemplo dinámico (`sample`), el recorrido (`tour`), la integridad de datos (`integrity`: copia → vaciar → restaurar con el escenario completo, fusiones, recuperación ante fallos, horario de verano y zonas horarias), y otra («ux») con la coherencia visual, el teclado, los diálogos, los filtros de lista y el móvil. Usa Playwright, levanta su propio servidor estático y no necesita compilar nada. Las librerías de CDN se cachean en `tests/e2e/.cdn-cache` para que las pruebas sean rápidas y deterministas.
+Las pruebas están en [tests/e2e](tests/e2e), agrupadas por tema (`app/`, `views/`, `data/`, `features/`, `onboarding/`, `quality/`, `robustness/`) y su configuración en `tests/playwright.config.js`: usa siempre `npm run test:e2e` (o `npx playwright test -c tests`).
+
+La suite cubre las vistas, la captura, las tareas, la sincronización entre dos «dispositivos», el grafo, la planificación, el informe, el módulo académico, la copia cifrada, la barra móvil, el barrido de XSS por cada campo de texto y un humo de rendimiento con ~7 000 elementos, y una auditoría de calidad que recorre todas las vistas a 360, 768, 1024 y 1440 px (sin desbordes) y comprueba nombres accesibles, ids únicos y consola limpia, otra («overflow») que repite el barrido a 320, 360 y 1280 px con el laboratorio de ejemplo y con textos larguísimos sin espacios (URLs, DOIs, nombres) para asegurar que nada se sale de su caja, y otra que verifica que cada cambio pequeño se ve al instante (sin vaciar el inspector ni perder el scroll), otras para el ejemplo dinámico (`sample`), el recorrido (`tour`), la integridad de datos (`integrity`: copia → vaciar → restaurar con el escenario completo, fusiones, recuperación ante fallos, horario de verano y zonas horarias), y otra («ux») con la coherencia visual, el teclado, los diálogos, los filtros de lista y el móvil. Usa Playwright, levanta su propio servidor estático y no necesita compilar nada. Las librerías de CDN se cachean en `tests/e2e/.cdn-cache` para que las pruebas sean rápidas y deterministas.
 
 ## Advertencia Crítica sobre la Gestión de Datos
 

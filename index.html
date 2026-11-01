@@ -11,11 +11,11 @@
   <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
   <!-- marked.js para render Markdown -->
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js" integrity="sha384-odPBjvtXVM/5hOYIr3A1dB+flh0c3wAT3bSesIOqEGmyUA4JoKf/YTWy0XKOYAY7" crossorigin="anonymous"></script>
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
-  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="manifest" href="assets/manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="assets/icons/icon.svg">
+  <link rel="apple-touch-icon" href="assets/icons/icon-192.png">
   <!-- App styles -->
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="assets/style.css">
 </head>
 <body class="inspector-closed">
   <a class="skip-link" id="skipLink" href="#mainContent">Saltar al contenido</a>
@@ -194,19 +194,19 @@
 
   <!-- ── SCRIPTS ─────────────────────────────────────────── -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/3.2.4/dexie.min.js" integrity="sha384-vG8R9Zn5YZHCeXt9gLNp8MnsUCqmIy7HPxhdOdLGa/30/c8uZXFrrN0iKGID/ZvC" crossorigin="anonymous"></script>
-  <script src="db.js"></script>
-  <script src="icons.js"></script>
-  <script src="app.js"></script>
-  <script src="today.js"></script>
-  <script src="network.js"></script>
-  <script src="planner.js"></script>
-  <script src="academic.js"></script>
-  <script src="vault.js"></script>
-  <script src="shell.js"></script>
-  <script src="sample.js"></script>
-  <script src="tour.js"></script>
-  <script src="sync.js"></script>
-  <script src="integrations.js"></script>
+  <script src="src/core/db.js"></script>
+  <script src="src/core/icons.js"></script>
+  <script src="src/core/app.js"></script>
+  <script src="src/modules/today.js"></script>
+  <script src="src/modules/network.js"></script>
+  <script src="src/modules/planner.js"></script>
+  <script src="src/modules/academic.js"></script>
+  <script src="src/services/vault.js"></script>
+  <script src="src/core/shell.js"></script>
+  <script src="src/services/sample.js"></script>
+  <script src="src/modules/tour.js"></script>
+  <script src="src/services/sync.js"></script>
+  <script src="src/services/integrations.js"></script>
   <script>
     // Caché offline (solo http/https; file:// no admite service workers).
     if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
