@@ -1,7 +1,6 @@
 // Exportar / importar / backup — el contrato de "tus datos son tuyos".
 const fs = require('fs');
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed } = require('../helpers');
 
 const tables = ['projects', 'ideas', 'snippets', 'references', 'meetings', 'collaborators'];
 const counts = page => page.evaluate(async t => Object.fromEntries(await Promise.all(
@@ -60,12 +59,16 @@ test.describe('Backup JSON', () => {
     expect(await page.evaluate(() => db.projects.get(100).then(p => p.title))).toBe('Proyecto importado');
   });
 
-  test('archivo que no es JSON muestra error y no modifica datos', async ({ page }) => {
+  test('un archivo que no es JSON, o un JSON que no es un backup, muestra error y no modifica datos', async ({ page }) => {
     await openApp(page);
     await seed(page);
     await gotoView(page, 'settings');
     await page.locator('#importJsonInput').setInputFiles({ name: 'x.json', mimeType: 'application/json', buffer: Buffer.from('esto no es json') });
     await expect(page.locator('.toast.error')).toContainText('Error al leer el archivo');
+    expect((await counts(page)).projects).toBe(3);
+    await page.locator('#importJsonInput').setInputFiles({ name: 'package.json', mimeType: 'application/json', buffer: Buffer.from('{"name":"otra-cosa","version":"1.0.0"}') });
+    await expect(page.locator('.toast.error').last()).toContainText('no contiene datos de ResearchOS');
+    await expect(page.locator('#modalOverlay')).not.toHaveClass(/visible/);   // ni siquiera se ofrece importar
     expect((await counts(page)).projects).toBe(3);
   });
 

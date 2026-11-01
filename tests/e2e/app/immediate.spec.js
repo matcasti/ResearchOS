@@ -1,5 +1,4 @@
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed } = require('../helpers');
 
 // Un cambio, por pequeño que sea, se ve al instante: en la vista abierta, en el inspector y en el menú, sin recargar
 // ni navegar, y sin que el inspector se vacíe ni la lista salte al principio.

@@ -1,6 +1,5 @@
 // Planificación del día (tiempo estimado, «Mi día», capacidad), informe de avance y recordatorios.
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed } = require('../helpers');
 
 const projects = [{ id: 1, title: 'Paper Alfa' }];
 const parse = (page, raw) => page.evaluate(([r, pr]) => parseCapture(r, pr, new Date('2026-10-31T12:00:00'), []), [raw, projects]);   // sábado

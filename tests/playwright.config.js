@@ -13,7 +13,8 @@ module.exports = defineConfig({
   fullyParallel: true,
   workers: process.env.CI ? 2 : 2,   // cada worker es un Chromium: más de 2 satura la RAM de portátiles de 8 GB
   retries: 0,
-  reporter: [['list'], ['html', { open: 'never', outputFolder: path.join(ROOT, 'playwright-report') }]],
+  // «dot» imprime un carácter por prueba y el detalle solo de las que fallan; para ver cada prueba: --reporter=list
+  reporter: [['dot'], ['html', { open: 'never', outputFolder: path.join(ROOT, 'playwright-report') }]],
   use: {
     baseURL: 'http://localhost:4173',
     serviceWorkers: 'block',   // el SW de la app interferiría con el mock de la CDN; tiene su propio test

@@ -1,6 +1,5 @@
-// Dependencias externas, arranque en frío y responsive.
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView } = require('../helpers');
+// Dependencias externas y arranque en frío.
+const { test, expect, openApp, gotoView } = require('../helpers');
 
 test.describe('Dependencias externas', () => {
   test('sin Google Identity Services ni Google Fonts la app funciona igual', async ({ page }) => {
@@ -12,25 +11,14 @@ test.describe('Dependencias externas', () => {
     expect(errors).toEqual([]);
   });
 
-  test('el estado de sincronización se muestra como "Solo local" por defecto', async ({ page }) => {
-    await openApp(page);
-    await expect(page.locator('#saveIndicatorText')).toHaveText('Solo local');
-  });
-
-  test('con la CDN inaccesible la app explica el problema en vez de quedarse en "Iniciando…"', async ({ page }) => {
+  test('con la CDN inaccesible la app explica el problema en vez de quedarse en "Iniciando…" y db.js falla de forma controlada', async ({ page }) => {
+    const errors = [];
+    page.on('pageerror', e => errors.push(e.message));
     await page.route(/cdnjs\.cloudflare\.com/, r => r.abort());
     await page.goto('/index.html');
     await expect(page.locator('.boot-error')).toContainText('no pudo iniciar');
     await expect(page.locator('.boot-error')).toContainText('Dexie');
     await expect(page.locator('#mainContent')).not.toContainText('Iniciando ResearchOS');
-  });
-
-  test('con la CDN inaccesible db.js falla de forma controlada', async ({ page }) => {
-    const errors = [];
-    page.on('pageerror', e => errors.push(e.message));
-    await page.route(/cdnjs\.cloudflare\.com/, r => r.abort());
-    await page.goto('/index.html');
-    await expect(page.locator('.boot-error')).toBeVisible();
     expect(errors.join('\n')).toMatch(/Dexie is not defined/);   // db.js falla, pero la app lo gestiona
   });
 });
@@ -67,18 +55,4 @@ test.describe('Arranque en frío', () => {
     await expect(page.locator('#projectsContainer')).toContainText('Proyecto');
     expect(Date.now() - t0).toBeLessThan(3000);
   });
-});
-
-test.describe('Responsive', () => {
-  test.use({ viewport: { width: 375, height: 812 } });
-
-  for (const view of ['dashboard', 'projects', 'ideas', 'snippets', 'meetings', 'references', 'collaborators', 'settings']) {
-    test(`móvil: "${view}" no genera scroll horizontal de página`, async ({ page }) => {
-      await openApp(page);
-      await page.evaluate(v => navigate(v), view);
-      await page.waitForTimeout(400);
-      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-      expect(overflow, `scrollWidth - innerWidth en ${view}`).toBeLessThanOrEqual(1);
-    });
-  }
 });

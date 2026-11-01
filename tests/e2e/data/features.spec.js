@@ -1,8 +1,7 @@
 // Mejoras añadidas tras la revisión inicial: importación robusta, CSV, borrado en cascada, sanitizador,
 // accesibilidad, avisos de backup y modo sin conexión.
 const fs = require('fs');
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed } = require('../helpers');
 
 const DAY = 86400000;
 const emptyBackup = extra => ({ _app: 'ResearchOS', _version: 3, projects: [], ideas: [], snippets: [], resources: [], collaborators: [],
@@ -90,6 +89,7 @@ test.describe('Importación: merge sin pérdidas', () => {
     const [dl] = await Promise.all([page.waitForEvent('download'), page.locator('#confirmYes').click()]);
     expect(dl.suggestedFilename()).toContain('antes-de-borrar');
     await expect.poll(() => page.evaluate(() => db.projects.count())).toBe(0);
+    expect(await page.evaluate(() => Promise.all([db.meetings.count(), db.references.count(), db.ideas.count()]))).toEqual([0, 0, 0]);
     expect(await page.evaluate(() => db.kanbanColumns.count())).toBe(6);
   });
 
@@ -131,6 +131,7 @@ test.describe('CSV', () => {
     await page.evaluate(async () => {
       const p = await db.projects.where('title').equals('Paper Alfa').first();
       await db.projects.where('title').equals('Dataset Beta').modify({ parentId: p.id });
+      await db.projects.update(p.id, { description: 'Objetivo.\n\n## Estructura\n- Introducción\n- Métodos' });   // descripción multilínea: no debe crear filas fantasma
     });
     await gotoView(page, 'settings');
     const [dl] = await Promise.all([page.waitForEvent('download'), page.locator('#exportCsvBtn').click()]);
@@ -144,9 +145,9 @@ test.describe('CSV', () => {
       const cols = Object.fromEntries((await db.kanbanColumns.toArray()).map(c => [c.id, c.title]));
       const a = await db.projects.where('title').equals('Paper Alfa').first();
       const b = await db.projects.where('title').equals('Dataset Beta').first();
-      return { colB: cols[b.columnId], parentOk: b.parentId === a.id, hist: b.columnHistory?.length };
+      return { colB: cols[b.columnId], parentOk: b.parentId === a.id, hist: b.columnHistory?.length, desc: a.description.includes('## Estructura') };
     });
-    expect(r).toEqual({ colB: 'Limpieza de Datos', parentOk: true, hist: 1 });
+    expect(r).toEqual({ colB: 'Limpieza de Datos', parentOk: true, hist: 1, desc: true });
   });
 });
 

@@ -1,5 +1,4 @@
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed } = require('../helpers');
 
 // Recorrido guiado interactivo y lista de primeros pasos.
 
@@ -12,7 +11,7 @@ const inside = (inner, outer) => inner.x >= outer.x - 1 && inner.y >= outer.y - 
 const overlaps = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 
 test.describe('Cómo se llega al recorrido', () => {
-  test('la bienvenida ofrece tres caminos y «Recorrido guiado» lo inicia', async ({ page }) => {
+  test('la bienvenida ofrece tres caminos y «Recorrido guiado» lo inicia; también desde el Tutorial, la paleta, Hoy vacío y Ajustes', async ({ page }) => {
     await openApp(page, { welcomed: false });
     await expect(page.locator('#welcomeTour')).toBeVisible();
     await expect(page.locator('#welcomeLoadDemo')).toBeVisible();
@@ -22,10 +21,8 @@ test.describe('Cómo se llega al recorrido', () => {
     await expect(page.locator('#tourLayer')).toBeVisible();
     await expect(title(page)).toHaveText('Bienvenido/a a ResearchOS');
     await expect(page.locator('.tour-count')).toHaveText('Paso 1 de 16');
-  });
+    await page.evaluate(() => Tour.end(false));
 
-  test('desde el Tutorial, la paleta, Hoy vacío y Ajustes', async ({ page }) => {
-    await openApp(page);
     await gotoView(page, 'tutorial');
     await page.locator('#tourStartBtn').click();
     await expect(page.locator('#tourLayer')).toBeVisible();
@@ -47,11 +44,28 @@ test.describe('Cómo se llega al recorrido', () => {
 });
 
 test.describe('Cómo funciona', () => {
-  test('con la app vacía ofrece el ejemplo; elegirlo carga los datos y sigue', async ({ page }) => {
+  test('con la app vacía: «Empezar vacía» no carga nada, los pasos que necesitan datos se saltan, «Saltar este paso» no obliga y elegir el ejemplo lo carga', async ({ page }) => {
     const { errors } = await openApp(page);
     await page.evaluate(() => Tour.start({ restart: true }));
     await expect(page.locator('.tour-choices .btn')).toHaveCount(2);
     await expect(page.locator('[data-tour="next"]')).toBeHidden();
+    await page.locator('.tour-choices .btn-ghost').click();                              // «Empezar vacía»
+    await expect(title(page)).toHaveText('Hoy: tu punto de partida');
+    expect(await page.evaluate(() => db.projects.count())).toBe(0);
+
+    await goTo(page, 'hoy');                                                              // sin tareas ni proyectos, los pasos que los necesitan se saltan
+    expect(await page.evaluate(() => !Tour.steps.find(s => s.id === 'completar').needs())).toBe(true);
+    await goTo(page, 'tablero');
+    expect(await page.evaluate(() => [!Tour.steps.find(s => s.id === 'abrir').needs(), !Tour.steps.find(s => s.id === 'ficha').needs()])).toEqual([true, true]);
+    await page.evaluate(() => Tour.next());                                               // y al avanzar de verdad no se detiene en ellos
+    await expect(title(page)).toHaveText('Cuatro formas de ver lo mismo', { timeout: 8000 });
+
+    await goTo(page, 'captura');                                                          // «Saltar este paso» no obliga a hacerlo
+    await page.locator('[data-tour="next"]').click();
+    await expect(title(page)).not.toHaveText('Captura sin pensar dónde va');
+    expect(await page.evaluate(() => db.tasks.count())).toBe(0);
+
+    await page.evaluate(() => { Tour.end(false); return Tour.start({ restart: true }); });   // elegir el ejemplo carga los datos y sigue
     await page.locator('.tour-choices .btn-primary').click();
     await expect(title(page)).toHaveText('Hoy: tu punto de partida');
     expect(await page.evaluate(() => hasSampleData())).toBe(true);
@@ -59,74 +73,31 @@ test.describe('Cómo funciona', () => {
     expect(errors).toEqual([]);
   });
 
-  test('con la app vacía, «Empezar vacía» sigue sin cargar nada', async ({ page }) => {
-    await openApp(page);
-    await page.evaluate(() => Tour.start({ restart: true }));
-    await page.locator('.tour-choices .btn-ghost').click();
-    await expect(title(page)).toHaveText('Hoy: tu punto de partida');
-    expect(await page.evaluate(() => db.projects.count())).toBe(0);
-  });
-
-  test('con datos propios no ofrece cargar ejemplo ni toca nada', async ({ page }) => {
+  test('con datos: el foco rodea el elemento y lo de fuera queda bloqueado, los atajos no abren nada tapado, «Tu turno» se detecta y Esc pausa y se retoma', async ({ page }) => {
     await openApp(page);
     await seed(page);
-    await page.evaluate(() => Tour.start({ restart: true }));
+    await page.evaluate(() => Tour.start({ restart: true }));                             // con datos propios no ofrece cargar ejemplo ni toca nada
     await expect(page.locator('.tour-choices')).toBeHidden();
     await expect(page.locator('.tour-body')).toContainText('datos reales');
     expect(await page.evaluate(() => hasSampleData())).toBe(false);
-  });
 
-  test('el foco rodea el elemento real y el cartel no lo tapa', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    for (const [id, selector] of [['captura', '#captureForm'], ['plan', '#todayRoot .today-actions'], ['pestanas', '.proj-tabs']]) {
+    for (const [id, selector] of [['captura', '#captureForm'], ['plan', '#todayRoot .today-actions'], ['pestanas', '.proj-tabs']]) {   // el foco rodea el elemento real y el cartel no lo tapa
       await goTo(page, id);
       await expect(page.locator('.tour-ring')).toBeVisible();
       await expect.poll(async () => inside(await page.locator(selector).boundingBox(), await page.locator('.tour-ring').boundingBox())).toBe(true);
       const card = await page.locator('.tour-card').boundingBox(), target = await page.locator(selector).boundingBox();
       if (target.height < 600 && target.width < 900) expect(overlaps(card, target), id).toBe(false);
     }
-  });
 
-  test('lo de fuera del foco queda bloqueado, lo de dentro responde', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    await goTo(page, 'captura');
+    await goTo(page, 'captura');                                                          // lo de fuera del foco queda bloqueado, lo de dentro responde
     const before = await page.evaluate(() => App.view);
-    await page.mouse.click(30, 300);                                                    // sobre el menú lateral, atenuado
+    await page.mouse.click(30, 300);                                                      // sobre el menú lateral, atenuado
     await page.waitForTimeout(250);
     expect(await page.evaluate(() => App.view)).toBe(before);
-    await page.locator('#captureInput').click();                                        // dentro del foco
+    await page.locator('#captureInput').click();
     await expect(page.locator('#captureInput')).toBeFocused();
-  });
 
-  test('flechas navegan, Esc pausa y el recorrido se retoma donde quedó', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    await page.evaluate(() => Tour.start({ restart: true }));
-    await page.locator('#tourTitle').click();
-    await page.keyboard.press('ArrowRight');
-    await expect(title(page)).toHaveText('Hoy: tu punto de partida');
-    await page.keyboard.press('ArrowRight');
-    await expect(title(page)).toHaveText('Captura sin pensar dónde va');
-    await page.locator('.tour-body').click();                                          // el foco sale del campo de captura: las flechas vuelven a navegar
-    await page.keyboard.press('ArrowLeft');
-    await expect(title(page)).toHaveText('Hoy: tu punto de partida');
-    await page.keyboard.press('Escape');
-    await expect(page.locator('#tourLayer')).toHaveCount(0);
-    await expect(page.locator('.toast', { hasText: 'Recorrido en pausa' })).toBeVisible();
-    expect(await page.evaluate(() => Tour.state().step)).toBe(1);
-    await gotoView(page, 'tutorial');
-    await expect(page.locator('#tourStartBtn')).toHaveText('Retomar el recorrido');
-    await page.locator('#tourStartBtn').click();
-    await expect(title(page)).toHaveText('Hoy: tu punto de partida');
-  });
-
-  test('«Tu turno»: crear una tarea en la captura avanza solo; el botón escribe el ejemplo', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    await goTo(page, 'captura');
-    await expect(page.locator('.tour-task')).toContainText('Tu turno');
+    await expect(page.locator('.tour-task')).toContainText('Tu turno');                   // «Tu turno»: crear una tarea en la captura avanza solo
     await expect(page.locator('[data-tour="next"]')).toHaveText('Saltar este paso →');
     await page.locator('[data-task-fill]').click();
     await expect(page.locator('#captureInput')).toHaveValue('revisar el manuscrito mañana !alta');
@@ -134,14 +105,17 @@ test.describe('Cómo funciona', () => {
     await expect(page.locator('.tour-task.is-done')).toContainText('¡Muy bien!');
     await expect(title(page)).toHaveText(/Completa tareas|Planifica el día/, { timeout: 5000 });
     expect(await page.evaluate(() => db.tasks.filter(t => t.title.startsWith('revisar el manuscrito')).count())).toBe(1);
-  });
 
-  test('«Tu turno»: completar una tarea, abrir un proyecto y abrir la paleta se detectan', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
+    await goTo(page, 'hoy');                                                              // los atajos no abren nada tapado por la capa
+    await page.locator('.tour-body').click();
+    for (const k of ['n', '?', 'Control+k', 'Control+z']) await page.keyboard.press(k);
+    await page.waitForTimeout(250);
+    await expect(page.locator('#modalOverlay')).not.toHaveClass(/visible/);
+    await expect(page.locator('#paletteOverlay')).not.toHaveClass(/open/);
+
     await page.evaluate(() => Tasks.add({ title: 'Para completar', due: localDateISO() }));
-    await goTo(page, 'completar');
-    await page.locator('#todayRoot .tw-check').first().click();
+    await goTo(page, 'completar');                                                        // «Tu turno»: completar una tarea, abrir un proyecto, abrir la paleta
+    await page.locator('#todayRoot .tw-row', { hasText: 'Para completar' }).locator('.tw-check').click();
     await expect(page.locator('.tour-task.is-done')).toBeVisible();
     await goTo(page, 'abrir');
     await page.locator('.kanban-card').first().click();
@@ -149,101 +123,71 @@ test.describe('Cómo funciona', () => {
     await expect(title(page)).toHaveText('La ficha del proyecto', { timeout: 5000 });
     await expect(page.locator('#inspectorPanel')).toBeVisible();
     await goTo(page, 'buscar');
-    await page.keyboard.press('Control+k');
+    await page.keyboard.press('Control+k');                                               // Ctrl+K solo funciona en el paso del buscador
     await expect(page.locator('.tour-task.is-done')).toBeVisible();
     await expect.poll(async () => inside(await page.locator('#paletteInput').boundingBox(), await page.locator('.tour-ring').boundingBox())).toBe(true);
-    await page.keyboard.press('Escape');                                              // Esc cierra la paleta, no el recorrido
+    await page.keyboard.press('Escape');                                                  // Esc cierra la paleta, no el recorrido
     await expect(page.locator('#paletteOverlay')).not.toHaveClass(/open/);
     await expect(page.locator('#tourLayer')).toBeVisible();
-  });
 
-  test('«Saltar este paso» no obliga a hacerlo', async ({ page }) => {
-    await openApp(page);
-    await goTo(page, 'captura');
-    await page.locator('[data-tour="next"]').click();
-    await expect(title(page)).not.toHaveText('Captura sin pensar dónde va');
-    expect(await page.evaluate(() => db.tasks.count())).toBe(0);
-  });
-
-  test('sin tareas ni proyectos, los pasos que los necesitan se saltan', async ({ page }) => {
-    await openApp(page);
-    await goTo(page, 'hoy');
-    expect(await page.evaluate(() => !Tour.steps.find(s => s.id === 'completar').needs())).toBe(true);
-    await goTo(page, 'tablero');
-    expect(await page.evaluate(() => [!Tour.steps.find(s => s.id === 'abrir').needs(), !Tour.steps.find(s => s.id === 'ficha').needs()])).toEqual([true, true]);
-    // y al avanzar de verdad no se detiene en ellos
-    await page.evaluate(() => Tour.show(Tour.steps.findIndex(s => s.id === 'tablero')));
-    await page.evaluate(() => Tour.next());
-    await expect(title(page)).toHaveText('Cuatro formas de ver lo mismo', { timeout: 8000 });
-  });
-
-  test('el último paso con ejemplo cargado deja quitarlo; termina el recorrido', async ({ page }) => {
-    await openApp(page);
-    await page.evaluate(() => loadSampleData());
-    await goTo(page, 'fin');
-    await expect(page.locator('.tour-choices .btn')).toHaveCount(2);
-    await page.locator('.tour-choices .btn-primary').click();
+    await page.evaluate(() => { Tour.end(false); return Tour.start({ restart: true }); });   // flechas navegan, Esc pausa y el recorrido se retoma donde quedó
+    await page.locator('#tourTitle').click();
+    await page.keyboard.press('ArrowRight');
+    await expect(title(page)).toHaveText('Hoy: tu punto de partida');
+    await page.keyboard.press('ArrowRight');
+    await expect(title(page)).toHaveText('Captura sin pensar dónde va');
+    await page.locator('.tour-body').click();                                             // el foco sale del campo de captura: las flechas vuelven a navegar
+    await page.keyboard.press('ArrowLeft');
+    await expect(title(page)).toHaveText('Hoy: tu punto de partida');
+    await page.keyboard.press('Escape');
     await expect(page.locator('#tourLayer')).toHaveCount(0);
-    expect(await page.evaluate(() => hasSampleData())).toBe(false);
-    expect(await page.evaluate(() => Tour.state().done)).toBe(true);
-    await expect(page.locator('.toast', { hasText: 'Recorrido completado' })).toBeVisible();
+    await expect(page.locator('.toast', { hasText: 'Recorrido en pausa' }).last()).toBeVisible();
+    expect(await page.evaluate(() => Tour.state().step)).toBe(1);
+    await gotoView(page, 'tutorial');
+    await expect(page.locator('#tourStartBtn')).toHaveText('Retomar el recorrido');
+    await page.locator('#tourStartBtn').click();
+    await expect(title(page)).toHaveText('Hoy: tu punto de partida');
   });
 
-  test('recorre los 16 pasos con «Siguiente» sin errores ni textos rotos', async ({ page }) => {
+  test('con el ejemplo cargado recorre los 16 pasos con «Siguiente» sin errores ni textos rotos; el último deja quitarlo y termina', { tag: '@slow' }, async ({ page }) => {
     test.setTimeout(120_000);
     const { errors } = await openApp(page);
     await page.evaluate(() => loadSampleData());
     await page.evaluate(() => Tour.start({ restart: true }));
     for (let n = 0; n < 16; n++) {
       await expect(page.locator('.tour-card')).not.toHaveClass(/is-loading/);
-      const text = await page.locator('.tour-card').innerText();
-      expect(text).not.toMatch(/undefined|NaN|\[object/);
-      const last = await page.evaluate(() => Tour.i === Tour.steps.length - 1);
-      if (last) break;
+      expect(await page.locator('.tour-card').innerText()).not.toMatch(/undefined|NaN|\[object/);
+      if (await page.evaluate(() => Tour.i === Tour.steps.length - 1)) break;
       await page.evaluate(() => Tour.next());
       await page.waitForFunction(() => Tour.active && !Tour.card.classList.contains('is-loading'));
     }
     expect(await page.evaluate(() => Tour.i)).toBe(15);
+    await expect(page.locator('.tour-choices .btn')).toHaveCount(2);
+    await page.locator('.tour-choices .btn-primary').click();                             // «Quitar el ejemplo» y terminar
+    await expect(page.locator('#tourLayer')).toHaveCount(0);
+    expect(await page.evaluate(() => hasSampleData())).toBe(false);
+    expect(await page.evaluate(() => Tour.state().done)).toBe(true);
+    await expect(page.locator('.toast', { hasText: 'Recorrido completado' })).toBeVisible();
     expect(errors).toEqual([]);
-  });
-});
-
-test.describe('Atajos durante el recorrido', () => {
-  test('N, C, ? y Ctrl+K no abren nada tapado por la capa; Ctrl+K sí en el paso del buscador', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    await goTo(page, 'hoy');
-    await page.locator('.tour-body').click();
-    for (const k of ['n', '?', 'Control+k', 'Control+z']) await page.keyboard.press(k);
-    await page.waitForTimeout(250);
-    await expect(page.locator('#modalOverlay')).not.toHaveClass(/visible/);
-    await expect(page.locator('#paletteOverlay')).not.toHaveClass(/open/);
-    await goTo(page, 'buscar');
-    await page.keyboard.press('Control+k');
-    await expect(page.locator('#paletteOverlay')).toHaveClass(/open/);
   });
 });
 
 test.describe('Móvil', () => {
   test.use({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true });
 
-  test('el cartel se ancla arriba o abajo sin tapar el elemento y cabe en la pantalla', async ({ page }) => {
+  test('el cartel se ancla arriba o abajo sin tapar el elemento y cabe en la pantalla; el paso de áreas se salta', async ({ page }) => {
     await openApp(page);
     await seed(page);
     for (const [id, selector] of [['captura', '#captureForm'], ['menu', '#mobileBar'], ['plan', '#todayRoot .today-actions']]) {
       await goTo(page, id);
       await expect(page.locator('.tour-ring')).toBeVisible();
-      const card = await page.locator('.tour-card').boundingBox(), target = await page.locator(selector).boundingBox();
-      expect(card.x).toBeGreaterThanOrEqual(0); expect(card.x + card.width).toBeLessThanOrEqual(390);
-      expect(card.y).toBeGreaterThanOrEqual(0); expect(card.y + card.height).toBeLessThanOrEqual(800);
-      expect(overlaps(card, target), id).toBe(false);
+      // el cartel termina de colocarse tras la animación: se mide cuando ya no se mueve
+      await expect.poll(async () => {
+        const card = await page.locator('.tour-card').boundingBox(), target = await page.locator(selector).boundingBox();
+        return card.x >= 0 && card.x + card.width <= 390 && card.y >= 0 && card.y + card.height <= 800 && !overlaps(card, target);
+      }, { message: id }).toBe(true);
     }
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-  });
-
-  test('el paso de áreas se salta (el selector está en el menú)', async ({ page }) => {
-    await openApp(page);
-    await page.evaluate(() => Tour.start({ restart: true }));
     expect(await page.evaluate(() => Tour.steps.find(s => s.id === 'areas').skipIf())).toBe(true);
   });
 });
@@ -278,29 +222,24 @@ test.describe('Primeros pasos en Hoy', () => {
     await expect(page.locator('.onboard')).toBeVisible();
   });
 
-  test('mover un proyecto de columna cuenta; los datos de ejemplo no cuentan como propios', async ({ page }) => {
-    await openApp(page);
-    await page.evaluate(() => loadSampleData());
-    await gotoView(page, 'dashboard');
-    await expect(page.locator('.onb-count')).toHaveText('1/7');                          // solo las áreas (vienen con el ejemplo); lo demás es de ejemplo
-    await page.evaluate(async () => { const p = await db.projects.toCollection().first(); const cols = await db.kanbanColumns.toArray(); await recordColumnChange(p.id, cols.find(c => c.id !== p.columnId).id); });
-    await gotoView(page, 'dashboard');
-    await expect(page.locator('.onb-count')).toHaveText('2/7');
-  });
-
-  test('con el ejemplo cargado la lista empieza plegada; se despliega y recuerda la elección', async ({ page }) => {
+  test('con el ejemplo cargado la lista empieza plegada y se despliega recordando la elección; mover un proyecto de columna cuenta y lo de ejemplo no', async ({ page }) => {
     await openApp(page);
     await page.evaluate(() => loadSampleData());
     await gotoView(page, 'dashboard');
     await expect(page.locator('.onboard')).toHaveClass(/is-collapsed/);
     await expect(page.locator('#obList')).toBeHidden();
     await expect(page.locator('#obTour')).toHaveCount(0);                                // el recorrido ya está en el aviso del ejemplo
+    await expect(page.locator('.onb-count')).toHaveText('1/7');                          // solo las áreas (vienen con el ejemplo); lo demás es de ejemplo
     await page.locator('#obToggle').click();
     await expect(page.locator('#obList')).toBeVisible();
     await expect(page.locator('#obToggle')).toHaveAttribute('aria-expanded', 'true');
     await gotoView(page, 'ideas');
     await gotoView(page, 'dashboard');
     await expect(page.locator('#obList')).toBeVisible();
+    await page.evaluate(async () => { const p = await db.projects.toCollection().first(); const cols = await db.kanbanColumns.toArray(); await recordColumnChange(p.id, cols.find(c => c.id !== p.columnId).id); });
+    await gotoView(page, 'ideas');
+    await gotoView(page, 'dashboard');
+    await expect(page.locator('.onb-count')).toHaveText('2/7');
   });
 
   test('quien ya tiene mucho material no ve la guía', async ({ page }) => {

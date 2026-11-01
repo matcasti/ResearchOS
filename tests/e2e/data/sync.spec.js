@@ -1,7 +1,6 @@
 // Sincronización entre dispositivos: identidad (uid), «gana el más reciente», lápidas de borrado,
 // referencias entre registros y transporte por carpeta compartida. Cada «dispositivo» es un contexto de navegador aparte.
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed } = require('../helpers');
 
 const BASE = 'http://localhost:4173';
 async function device(browser) {

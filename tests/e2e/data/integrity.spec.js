@@ -1,5 +1,4 @@
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView } = require('../helpers');
+const { test, expect, openApp, gotoView } = require('../helpers');
 
 // Integridad de datos con el escenario más completo (el ejemplo): copiar, restaurar y fusionar no pierde ni mezcla nada.
 

@@ -10,6 +10,11 @@ Todos los cambios relevantes de ResearchOS, de lo más reciente a lo más antigu
 
 - **Repositorio más fácil de recorrer.** El código pasa de 13 archivos sueltos en la raíz a `src/` (`core/`, `modules/` y `services/`), los estilos, el manifiesto y los iconos a `assets/`, el registro de cambios a `docs/` y las pruebas a siete carpetas por tema dentro de `tests/e2e/`. Ninguna carpeta pasa de 5 archivos. La aplicación funciona igual: solo cambian las rutas internas y la caché offline se renueva.
 - **Pruebas:** la configuración de Playwright ahora vive en `tests/`; se lanzan con `npm run test:e2e` (o `npx playwright test -c tests`).
+- **Batería de pruebas más ligera:** de 481 pruebas a 259 sin perder cobertura relevante (cada una recorre ahora un tema entero sobre una sola carga de la app), y el tiempo de la suite completa baja de unos 7 minutos a menos de 4. Los tres recorridos por todas las vistas que se repetían en varios archivos quedan en uno por propósito (vistas vacías, ejemplo con datos y desbordes).
+- **Dos velocidades de prueba:** `npm run test:e2e` ejecuta todo y `npm run test:e2e:quick` omite las 8 más pesadas (marcadas `@slow`) y ahorra cerca de un 15 % más.
+- **Salida más corta:** las pruebas imprimen un carácter por prueba y solo detallan las que fallan.
+- **Barrido de seguridad (XSS) más rápido:** prueba todos los campos a la vez y solo repite campo por campo, para señalar al culpable, si algo llegara a ejecutarse; pasó de casi 3 minutos a unos segundos.
+- **Pruebas más estables:** las que cargan fórmulas (KaTeX) ya no esperan ~5 s a que se cierre una descarga de tipografías, y se corrigió una prueba del recorrido guiado en móvil que a veces fallaba por medir antes de que terminara la animación.
 
 ---
 

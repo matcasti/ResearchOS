@@ -1,5 +1,4 @@
-const { test, expect } = require('@playwright/test');
-const { openApp, seed } = require('../helpers');
+const { test, expect, openApp, seed } = require('../helpers');
 
 // En América, entre las 21:00 y las 24:00 la fecha UTC ya es la de mañana. Todo lo que dice «hoy» debe usar la fecha local.
 test.use({ timezoneId: 'America/Santiago' });
@@ -9,9 +8,11 @@ test.describe('De noche, la fecha es la local', () => {
     await page.clock.install({ time: new Date('2031-03-12T23:40:00-03:00') });          // 02:40 UTC del día 13
   });
 
-  test('«hoy» es el 12 aunque en UTC ya sea 13', async ({ page }) => {
+  test('«hoy» es el 12 aunque en UTC ya sea 13, también en la fecha por defecto de una reunión', async ({ page }) => {
     await openApp(page);
     expect(await page.evaluate(() => [localDateISO(), new Date().toISOString().slice(0, 10)])).toEqual(['2031-03-12', '2031-03-13']);
+    await page.evaluate(() => showAddMeetingModal());
+    await expect(page.locator('#am-date')).toHaveValue('2031-03-12');
   });
 
   test('marcar un paper como «enviado» guarda la fecha local', async ({ page }) => {

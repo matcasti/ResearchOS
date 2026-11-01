@@ -1,22 +1,20 @@
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed } = require('../helpers');
 
 // Mejoras de uso: coherencia visual, teclado, diálogos propios, protección ante pérdidas y mensajes claros.
+// Cada prueba recorre varias comprobaciones sobre una sola carga de la app (un paso por mejora).
 
 const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u;
 
 test.describe('Coherencia visual', () => {
-  test('el menú usa iconos de línea (SVG), sin emojis mezclados con símbolos', async ({ page }) => {
+  test('iconos de línea sin emojis, títulos iguales al menú, tipografía de la app, flecha de los desplegables y contraste suficiente', async ({ page }) => {
     await openApp(page);
+    await seed(page);
+
     const icons = await page.locator('.sidebar-nav .nav-icon').evaluateAll(els => els.map(e => ({ svg: !!e.querySelector('svg'), text: e.textContent.trim() })));
     expect(icons.length).toBeGreaterThan(15);
     for (const i of icons) { expect(i.svg).toBe(true); expect(i.text).toBe(''); }
     expect(await page.locator('#mobileBar .mb-icon svg').count()).toBe(5);
-  });
 
-  test('los títulos de las vistas llevan el mismo nombre que el menú y ningún emoji', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
     const expected = { weekly: 'Calendario', submissions: 'Submissions', meetings: 'Reuniones', references: 'Referencias', collaborators: 'Colaboradores', starred: 'Favoritos', settings: 'Ajustes y backup', ideas: 'Ideas', timeline: 'Línea de tiempo' };
     for (const [view, title] of Object.entries(expected)) {
       await gotoView(page, view);
@@ -24,12 +22,8 @@ test.describe('Coherencia visual', () => {
       expect(t, view).toBe(title);
       expect(EMOJI.test(t), view).toBe(false);
     }
-  });
 
-  test('botones, campos y desplegables usan la tipografía de la app', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    for (const view of ['dashboard', 'kanban', 'ideas', 'snippets', 'projects', 'settings']) {
+    for (const view of ['dashboard', 'kanban', 'ideas', 'snippets', 'projects', 'settings']) {            // botones, campos y desplegables usan la tipografía de la app
       await gotoView(page, view);
       const bad = await page.evaluate(() => {
         const body = getComputedStyle(document.body).fontFamily;
@@ -40,26 +34,17 @@ test.describe('Coherencia visual', () => {
       });
       expect(bad, view).toEqual([]);
     }
-  });
 
-  test('los desplegables muestran su flecha', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    await gotoView(page, 'references');
-    const bg = await page.locator('#mainContent select.form-select').first().evaluate(e => getComputedStyle(e).backgroundImage);
-    expect(bg).toContain('svg');
-  });
+    await gotoView(page, 'references');                                                                    // los desplegables muestran su flecha
+    expect(await page.locator('#mainContent select.form-select').first().evaluate(e => getComputedStyle(e).backgroundImage)).toContain('svg');
 
-  test('el texto secundario tiene contraste suficiente (≥ 4,5:1) en tema oscuro y claro', async ({ page }) => {
-    await openApp(page);
-    const ratios = await page.evaluate(() => {
+    const ratios = await page.evaluate(() => {                                                              // texto secundario ≥ 4,5:1 en tema oscuro y claro
       const lum = hex => { const c = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(v => v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4); return .2126 * c[0] + .7152 * c[1] + .0722 * c[2]; };
       const out = {};
       for (const theme of ['dark', 'light']) {
         document.documentElement.setAttribute('data-theme', theme);
         const cs = getComputedStyle(document.documentElement);
-        const fg = cs.getPropertyValue('--text-3').trim(), bg = cs.getPropertyValue('--bg-card').trim();
-        const [a, b] = [lum(fg), lum(bg)];
+        const [a, b] = [lum(cs.getPropertyValue('--text-3').trim()), lum(cs.getPropertyValue('--bg-card').trim())];
         out[theme] = (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
       }
       return out;
@@ -68,10 +53,27 @@ test.describe('Coherencia visual', () => {
     expect(ratios.light).toBeGreaterThanOrEqual(4.5);
   });
 
-  test('la vista activa del menú nunca queda escondida bajo el pie (pantallas bajas)', async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 640 });
+  test('botones de solo símbolo con tooltip y nombre accesible, filtro de Ideas junto a la lista y vista activa del menú visible en pantallas bajas', async ({ page }) => {
     await openApp(page);
-    await gotoView(page, 'dashboard');
+    await seed(page);
+    for (const view of ['kanban', 'projects', 'ideas', 'snippets', 'network']) {
+      await gotoView(page, view);
+      const bad = await page.evaluate(() => [...document.querySelectorAll('#mainContent button')]
+        .filter(b => b.getBoundingClientRect().width > 0 && !/\p{L}/u.test(b.textContent) && !b.querySelector('svg'))
+        .filter(b => !(b.getAttribute('aria-label') && b.title)).map(b => b.className + ' ' + b.textContent.trim()));
+      expect(bad, view).toEqual([]);
+    }
+
+    await page.evaluate(async () => {
+      const now = new Date().toISOString();
+      for (const t of ['a', 'b', 'c']) await db.ideas.add({ title: 'Extra ' + t, content: '', status: 'unread', projectId: null, projectIds: [], tags: [], subtasks: [], createdAt: now, updatedAt: now });
+    });
+    await gotoView(page, 'ideas');                                                                          // el filtro queda justo encima de la lista, no encima del formulario
+    const [bar, list, form] = await Promise.all([page.locator('.list-filter').boundingBox(), page.locator('#ideasList').boundingBox(), page.locator('#ideaTitleInput').boundingBox()]);
+    expect(bar.y).toBeGreaterThan(form.y);
+    expect(list.y - (bar.y + bar.height)).toBeLessThan(40);
+
+    await page.setViewportSize({ width: 1280, height: 640 });                                               // pantallas bajas: la vista activa no queda bajo el pie
     for (const view of ['submissions', 'report', 'archived', 'settings']) {
       await page.evaluate(v => navigate(v), view);
       await page.waitForFunction(v => document.getElementById('mainContent').dataset.view === v, view);
@@ -83,33 +85,6 @@ test.describe('Coherencia visual', () => {
       });
       expect(ok, view).toBe(true);
     }
-  });
-});
-
-test.describe('Botones de solo símbolo', () => {
-  test('tienen tooltip y nombre accesible a la vez (✕, ⋯, ⊞, ☆…)', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    for (const view of ['kanban', 'projects', 'ideas', 'snippets', 'network']) {
-      await gotoView(page, view);
-      const bad = await page.evaluate(() => [...document.querySelectorAll('#mainContent button')]
-        .filter(b => b.getBoundingClientRect().width > 0 && !/\p{L}/u.test(b.textContent) && !b.querySelector('svg'))
-        .filter(b => !(b.getAttribute('aria-label') && b.title)).map(b => b.className + ' ' + b.textContent.trim()));
-      expect(bad, view).toEqual([]);
-    }
-  });
-
-  test('el filtro de Ideas queda justo encima de la lista, no encima del formulario de captura', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    await page.evaluate(async () => {
-      const now = new Date().toISOString();
-      for (const t of ['a', 'b', 'c']) await db.ideas.add({ title: 'Extra ' + t, content: '', status: 'unread', projectId: null, projectIds: [], tags: [], subtasks: [], createdAt: now, updatedAt: now });
-    });
-    await gotoView(page, 'ideas');
-    const [bar, list, form] = await Promise.all([page.locator('.list-filter').boundingBox(), page.locator('#ideasList').boundingBox(), page.locator('#ideaTitleInput').boundingBox()]);
-    expect(bar.y).toBeGreaterThan(form.y);
-    expect(list.y - (bar.y + bar.height)).toBeLessThan(40);
   });
 });
 
@@ -130,11 +105,28 @@ test.describe('Teclado', () => {
     await expect(page.locator('.breadcrumb-bar .bc-item.link, .proj-tab').first()).toBeVisible();
   });
 
-  test('«?» muestra los atajos; no se activa escribiendo en un campo', async ({ page }) => {
+  test('con la app vacía: «Saltar al contenido», estados vacíos con botón, «?» muestra los atajos, Ctrl+C no captura y Alt+←/→ recorren el historial', async ({ page, browserName }) => {
     await openApp(page);
+    if (browserName !== 'webkit') {                                                                         // Safari no enfoca los enlaces con Tab salvo que el usuario lo active
+      await page.keyboard.press('Tab');
+      const skip = page.locator('#skipLink');
+      await expect(skip).toBeFocused();
+      await expect.poll(async () => (await skip.boundingBox()).y).toBeGreaterThanOrEqual(0);              // termina de bajar al enfocarlo
+      await page.keyboard.press('Enter');
+      await expect(page.locator('#mainContent')).toBeFocused();
+    }
+
+    for (const [view, cta, modal] of [['meetings', 'meeting', /reuni/i], ['collaborators', 'collaborator', /colaborador/i], ['snippets', 'snippet', /snippet/i], ['references', 'reference', /referencia/i]]) {
+      await gotoView(page, view);                                                                           // los estados vacíos ofrecen el botón para empezar
+      await page.locator(`#mainContent [data-empty-cta="${cta}"]`).click();
+      await expect(page.locator('#modalTitle')).toContainText(modal);
+      await page.keyboard.press('Escape');
+      await expect(page.locator('#modalOverlay')).not.toHaveClass(/visible/);
+    }
+
     await gotoView(page, 'ideas');
     await page.locator('#mainContent').click({ position: { x: 5, y: 5 } });
-    await page.keyboard.press('?');
+    await page.keyboard.press('?');                                                                         // «?» muestra los atajos…
     await expect(page.locator('#modal')).toContainText('Atajos de teclado');
     await expect(page.locator('#modal')).toContainText('Vista anterior');
     await page.keyboard.press('Escape');
@@ -142,28 +134,20 @@ test.describe('Teclado', () => {
     await page.locator('#shortcutsBtn').click();
     await expect(page.locator('#modal')).toContainText('Atajos de teclado');
     await page.keyboard.press('Escape');
-    await page.locator('input.form-input, textarea').first().focus();
+    await page.locator('input.form-input, textarea').first().focus();                                       // …pero no escribiendo en un campo
     await page.keyboard.type('¿qué?');
     await expect(page.locator('#modalOverlay')).not.toHaveClass(/visible/);
-  });
 
-  test('Ctrl+C con la página enfocada copia: no dispara «Capturar» ni cambia de vista', async ({ page }) => {
-    await openApp(page);
-    await gotoView(page, 'ideas');
-    await page.locator('#mainContent').click({ position: { x: 5, y: 5 } });
+    await page.locator('#mainContent').click({ position: { x: 5, y: 5 } });                                 // Ctrl+C con la página enfocada copia: no dispara «Capturar» ni cambia de vista
     await page.keyboard.press('Control+c');
     await page.keyboard.press('Control+s');
     await page.keyboard.press('Meta+c');
     await page.waitForTimeout(250);
     expect(await page.evaluate(() => App.view)).toBe('ideas');
-    // ...y la tecla suelta sí funciona
-    await page.keyboard.press('c');
+    await page.keyboard.press('c');                                                                         // ...y la tecla suelta sí funciona
     await expect.poll(() => page.evaluate(() => App.view)).toBe('dashboard');
     await expect(page.locator('#captureInput')).toBeFocused();
-  });
 
-  test('Alt+← y Alt+→ recorren el historial de vistas', async ({ page }) => {
-    await openApp(page);
     await gotoView(page, 'ideas');
     await gotoView(page, 'snippets');
     await page.locator('#mainContent').click({ position: { x: 5, y: 5 } });
@@ -172,25 +156,17 @@ test.describe('Teclado', () => {
     await page.keyboard.press('Alt+ArrowRight');
     await expect.poll(() => page.evaluate(() => App.view)).toBe('snippets');
   });
-
-  test('«Saltar al contenido» aparece con Tab y mueve el foco al contenido', async ({ page, browserName }) => {
-    test.skip(browserName === 'webkit', 'Safari no enfoca los enlaces con Tab salvo que el usuario lo active en sus preferencias');
-    await openApp(page);
-    await page.keyboard.press('Tab');
-    const skip = page.locator('#skipLink');
-    await expect(skip).toBeFocused();
-    await expect.poll(async () => (await skip.boundingBox()).y).toBeGreaterThanOrEqual(0);      // termina de bajar al enfocarlo
-    await page.keyboard.press('Enter');
-    await expect(page.locator('#mainContent')).toBeFocused();
-  });
 });
 
 test.describe('Paleta de comandos', () => {
-  test('encuentra todas las vistas por sinónimos y ofrece acciones', async ({ page }) => {
+  test('encuentra vistas por sinónimos y ofrece acciones; escribir y pulsar Enter enseguida actúa sobre lo escrito; una búsqueda lenta no pisa a la última', async ({ page }) => {
     await openApp(page);
     await seed(page);
     await page.keyboard.press('Control+k');
     await expect(page.locator('.palette-group-label').first()).toHaveText('Acciones');
+    await expect(page.locator('.palette-item-icon svg').first()).toBeVisible();                              // iconos de línea y tecla del sistema en el pie
+    expect(await page.locator('.palette-item-icon svg').count()).toBeGreaterThan(5);
+    await expect(page.locator('#paletteModKey')).toHaveText(/^(⌘|Ctrl)K$/);
     for (const [q, label] of [['ajustes', 'Ajustes y backup'], ['grafo', 'Red'], ['informe', 'Informe de avance'], ['archivo', 'Archivados'], ['estrella', 'Favoritos'], ['gantt', 'Proyectos · Línea de tiempo']]) {
       await page.locator('#paletteInput').fill(q);
       await expect(page.locator('.palette-item-label', { hasText: label }).first()).toBeVisible();
@@ -200,64 +176,18 @@ test.describe('Paleta de comandos', () => {
     await page.locator('#paletteInput').fill('ajustes');
     await page.keyboard.press('Enter');
     await expect.poll(() => page.evaluate(() => App.view)).toBe('settings');
-  });
 
-  test('iconos de línea y tecla del sistema en el pie', async ({ page }) => {
-    await openApp(page);
-    await page.keyboard.press('Control+k');
-    await expect(page.locator('.palette-item-icon svg').first()).toBeVisible();
-    expect(await page.locator('.palette-item-icon svg').count()).toBeGreaterThan(5);
-    await expect(page.locator('#paletteModKey')).toHaveText(/^(⌘|Ctrl)K$/);
-  });
-});
-
-test.describe('Ventanas: el foco inicial no le roba el texto a quien ya está escribiendo', () => {
-  test('en cada formulario, el campo en el que escribes conserva el foco (no hay foco diferido)', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    const stolen = await page.evaluate(async () => {
-      const out = [];
-      const p = await db.projects.toCollection().first();
-      const opens = {
-        reunión: () => showAddMeetingModal(), idea: () => showAddIdeaModal(), snippet: () => showAddSnippetModal(), referencia: () => showAddReferenceModal(),
-        colaborador: () => showAddCollaboratorModal(), submission: () => showAddSubmissionModal(), proyecto: () => { App._projectTemplate = 'blank'; App._skipTemplateStep = true; return showAddProjectModal(); },
-        'idea desde el proyecto': async () => { await inspectProject(p.id); document.querySelector('[data-qa="idea"]')?.click(); },
-      };
-      for (const [name, open] of Object.entries(opens)) {
-        await open();
-        const fields = [...document.querySelectorAll('#modalContent input.form-input:not([type=hidden]):not([type=date]), #modalContent textarea')].filter(f => f.offsetParent);
-        const target = fields[fields.length - 1];
-        if (!target || fields.length < 2) { closeModal(); continue; }
-        target.focus();                                                                 // la persona ya pasó a otro campo...
-        await new Promise(r => setTimeout(r, 220));                                      // ...y ningún foco diferido puede devolverla al primero
-        if (document.activeElement !== target) out.push(`${name}: el foco volvió a ${document.activeElement.id || document.activeElement.tagName}`);
-        closeModal();
-      }
-      return out;
-    });
-    expect(stolen).toEqual([]);
-  });
-});
-
-test.describe('Paleta: escribir y pulsar Enter enseguida', () => {
-  test('actúa sobre lo escrito, no sobre los resultados anteriores (seis veces seguidas)', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 6; i++) {                                                                           // Enter sin esperar a que se pinten los resultados, seis veces seguidas
       await page.keyboard.press('Control+k');
       await page.locator('#paletteInput').fill('recorrido');
-      await page.keyboard.press('Enter');                                              // sin esperar a que se pinten los resultados
+      await page.keyboard.press('Enter');
       await expect(page.locator('#tourLayer')).toBeVisible();
       await page.evaluate(() => Tour.end(false));
       await expect(page.locator('#tourLayer')).toHaveCount(0);
     }
-  });
 
-  test('una búsqueda lenta anterior no pisa a la última', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
     await page.keyboard.press('Control+k');
-    await page.evaluate(() => {                                                          // la primera consulta tarda más que la segunda
+    await page.evaluate(() => {                                                                             // la primera consulta tarda más que la segunda
       const real = window._buildSearchIndex; let first = true;
       window._buildSearchIndex = async () => { if (first) { first = false; await new Promise(r => setTimeout(r, 300)); } return real(); };
       App._searchIdxDirty = true;
@@ -270,68 +200,10 @@ test.describe('Paleta: escribir y pulsar Enter enseguida', () => {
   });
 });
 
-test.describe('Avisos y diálogos', () => {
-  test('los avisos se pueden cerrar, no se apilan más de 4 y los errores duran más', async ({ page }) => {
-    await openApp(page);
-    await page.evaluate(() => { for (let i = 0; i < 7; i++) showToast('Aviso ' + i, 'info'); });
-    await expect(page.locator('.toast')).toHaveCount(4);
-    await page.locator('.toast .toast-close').first().click();
-    await expect(page.locator('.toast')).toHaveCount(3);
-    await page.evaluate(() => { document.querySelectorAll('.toast').forEach(t => t.remove()); showToast('Algo falló', 'error'); });
-    await page.waitForTimeout(3800);
-    await expect(page.locator('.toast.error')).toHaveCount(1);       // un aviso normal ya habría desaparecido (3,2 s)
-  });
-
-  test('borrar todos los datos exige escribir BORRAR y Esc cancela', async ({ page }) => {
+test.describe('Ventanas y formularios', () => {
+  test('cerrar con texto pide confirmar, Enter guarda, un campo obligatorio vacío se marca y el foco inicial no le roba el texto a quien ya escribe', async ({ page }) => {
     await openApp(page);
     await seed(page);
-    await gotoView(page, 'settings');
-    await page.locator('#clearAllBtn').click();
-    await expect(page.locator('#confirmInput')).toBeFocused();             // pide escribir BORRAR: el foco va al campo
-    await expect(page.locator('#confirmYes')).toBeDisabled();
-    await page.locator('#confirmInput').fill('borr');
-    await expect(page.locator('#confirmYes')).toBeDisabled();
-    await page.keyboard.press('Escape');
-    await expect(page.locator('.confirm-overlay')).toHaveCount(0);
-    expect(await page.evaluate(() => db.projects.count())).toBe(3);
-    await page.locator('#clearAllBtn').click();
-    await page.locator('#confirmInput').fill('borrar');
-    await expect(page.locator('#confirmYes')).toBeEnabled();
-    await page.locator('#confirmNo').click();
-    expect(await page.evaluate(() => db.projects.count())).toBe(3);
-  });
-
-  test('eliminar sin preguntar y deshacer: ideas, snippets, reuniones, referencias y colaboradores', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    await gotoView(page, 'collaborators');
-    await page.locator('.collab-card', { hasText: 'Dra. Vega' }).click();
-    await page.locator('#collabDeleteBtn').click();
-    await expect(page.locator('.confirm-overlay')).toHaveCount(0);
-    await expect.poll(() => page.evaluate(() => db.collaborators.count())).toBe(0);
-    await page.locator('.toast-undo-btn').click();
-    await expect.poll(() => page.evaluate(() => db.collaborators.count())).toBe(1);
-  });
-
-  test('eliminar varias ideas pide confirmar con el diálogo propio y se puede deshacer', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    await gotoView(page, 'ideas');
-    await page.locator('#ideaBulkToggle').click();
-    await page.locator('#ibSelectAll').click();
-    await page.locator('#ibDelete').click();
-    await expect(page.locator('#confirmTitle')).toContainText('2 idea');
-    await expect(page.locator('#confirmNo')).toBeFocused();                // lo destructivo empieza con «Cancelar» enfocado
-    await page.locator('#confirmYes').click();
-    await expect.poll(() => page.evaluate(() => db.ideas.count())).toBe(0);
-    await page.locator('.toast-undo-btn').click();
-    await expect.poll(() => page.evaluate(() => db.ideas.count())).toBe(2);
-  });
-});
-
-test.describe('Formularios', () => {
-  test('cerrar una ventana con texto escrito pide confirmar; sin cambios cierra al instante', async ({ page }) => {
-    await openApp(page);
     await gotoView(page, 'ideas');
     await page.keyboard.press('n');
     await expect(page.locator('#modalOverlay')).toHaveClass(/visible/);
@@ -348,75 +220,118 @@ test.describe('Formularios', () => {
     await expect(page.locator('#confirmYes')).toBeVisible();
     await page.locator('#confirmYes').click();
     await expect(page.locator('#modalOverlay')).not.toHaveClass(/visible/);
-  });
 
-  test('Enter en un campo de una línea guarda con el botón principal', async ({ page }) => {
-    await openApp(page);
-    await gotoView(page, 'ideas');
-    await page.keyboard.press('n');
+    await page.keyboard.press('n');                                              // Enter en un campo de una línea guarda con el botón principal
     await page.locator('#modal input.form-input').first().fill('Idea por Enter');
     await page.keyboard.press('Enter');
     await expect.poll(() => page.evaluate(() => db.ideas.where('title').equals('Idea por Enter').count())).toBe(1);
     await expect(page.locator('#modalOverlay')).not.toHaveClass(/visible/);
-  });
 
-  test('un campo obligatorio vacío se marca y recibe el foco', async ({ page }) => {
-    await openApp(page);
-    await gotoView(page, 'ideas');
-    await page.keyboard.press('n');
+    await page.keyboard.press('n');                                              // un campo obligatorio vacío se marca y recibe el foco
     await page.locator('#modal .modal-footer .btn-primary').click();
     const title = page.locator('#modal input.form-input').first();
     await expect(title).toHaveClass(/is-invalid/);
     await expect(title).toBeFocused();
     await title.fill('x');
     await expect(title).not.toHaveClass(/is-invalid/);
+    await page.keyboard.press('Escape');
+    await page.locator('#confirmYes').click();
+
+    const stolen = await page.evaluate(async () => {                             // en cada formulario, el campo en el que escribes conserva el foco (no hay foco diferido)
+      const out = [];
+      const p = await db.projects.toCollection().first();
+      const opens = {
+        reunión: () => showAddMeetingModal(), idea: () => showAddIdeaModal(), snippet: () => showAddSnippetModal(), referencia: () => showAddReferenceModal(),
+        colaborador: () => showAddCollaboratorModal(), submission: () => showAddSubmissionModal(), proyecto: () => { App._projectTemplate = 'blank'; App._skipTemplateStep = true; return showAddProjectModal(); },
+        'idea desde el proyecto': async () => { await inspectProject(p.id); document.querySelector('[data-qa="idea"]')?.click(); },
+      };
+      for (const [name, open] of Object.entries(opens)) {
+        await open();
+        const fields = [...document.querySelectorAll('#modalContent input.form-input:not([type=hidden]):not([type=date]), #modalContent textarea')].filter(f => f.offsetParent);
+        const target = fields[fields.length - 1];
+        if (!target || fields.length < 2) { closeModal(); continue; }
+        target.focus();                                                           // la persona ya pasó a otro campo...
+        await new Promise(r => setTimeout(r, 220));                                // ...y ningún foco diferido puede devolverla al primero
+        if (document.activeElement !== target) out.push(`${name}: el foco volvió a ${document.activeElement.id || document.activeElement.tagName}`);
+        closeModal();
+      }
+      return out;
+    });
+    expect(stolen).toEqual([]);
   });
 });
 
-test.describe('Listas', () => {
-  test('el filtro de la lista aparece con 4+ elementos, cuenta, se enfoca con «/» y sobrevive a los repintados', async ({ page }) => {
+test.describe('Avisos, diálogos y listas', () => {
+  test('los avisos se cierran y no se apilan; borrar todo exige escribir BORRAR; eliminar se puede deshacer (también con Ctrl+Z); el filtro de la lista sobrevive a los repintados', async ({ page }) => {
     await openApp(page);
     await seed(page);
-    await page.evaluate(async () => {
+    await page.evaluate(() => { for (let i = 0; i < 7; i++) showToast('Aviso ' + i, 'info'); });             // los avisos se pueden cerrar, no se apilan más de 4 y los errores duran más
+    await expect(page.locator('.toast')).toHaveCount(4);
+    await page.locator('.toast .toast-close').first().click();
+    await expect(page.locator('.toast')).toHaveCount(3);
+    await page.evaluate(() => { document.querySelectorAll('.toast').forEach(t => t.remove()); showToast('Algo falló', 'error'); });
+    await page.waitForTimeout(3800);
+    await expect(page.locator('.toast.error')).toHaveCount(1);                    // un aviso normal ya habría desaparecido (3,2 s)
+
+    await gotoView(page, 'settings');                                             // borrar todos los datos exige escribir BORRAR y Esc cancela
+    await page.locator('#clearAllBtn').click();
+    await expect(page.locator('#confirmInput')).toBeFocused();
+    await expect(page.locator('#confirmYes')).toBeDisabled();
+    await page.locator('#confirmInput').fill('borr');
+    await expect(page.locator('#confirmYes')).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.confirm-overlay')).toHaveCount(0);
+    expect(await page.evaluate(() => db.projects.count())).toBe(3);
+    await page.locator('#clearAllBtn').click();
+    await page.locator('#confirmInput').fill('borrar');
+    await expect(page.locator('#confirmYes')).toBeEnabled();
+    await page.locator('#confirmNo').click();
+    expect(await page.evaluate(() => db.projects.count())).toBe(3);
+
+    await gotoView(page, 'collaborators');                                        // eliminar sin preguntar y deshacer
+    await page.locator('.collab-card', { hasText: 'Dra. Vega' }).click();
+    await page.locator('#collabDeleteBtn').click();
+    await expect(page.locator('.confirm-overlay')).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => db.collaborators.count())).toBe(0);
+    await page.locator('.toast-undo-btn').last().click();
+    await expect.poll(() => page.evaluate(() => db.collaborators.count())).toBe(1);
+
+    await gotoView(page, 'ideas');                                                // eliminar varias ideas pide confirmar con el diálogo propio y se puede deshacer
+    await page.locator('#ideaBulkToggle').click();
+    await page.locator('#ibSelectAll').click();
+    await page.locator('#ibDelete').click();
+    await expect(page.locator('#confirmTitle')).toContainText('2 idea');
+    await expect(page.locator('#confirmNo')).toBeFocused();                        // lo destructivo empieza con «Cancelar» enfocado
+    await page.locator('#confirmYes').click();
+    await expect.poll(() => page.evaluate(() => db.ideas.count())).toBe(0);
+    await page.locator('.toast-undo-btn').last().click();
+    await expect.poll(() => page.evaluate(() => db.ideas.count())).toBe(2);
+
+    await page.evaluate(async () => {                                              // el filtro de la lista aparece con 4+ elementos, cuenta, se enfoca con «/» y sobrevive a los repintados
       const now = new Date().toISOString();
       for (const t of ['Muestreo en turberas', 'Modelo de ocupación', 'Análisis de isótopos']) await db.ideas.add({ title: t, content: '', status: 'unread', projectId: null, projectIds: [], tags: [], subtasks: [], createdAt: now, updatedAt: now });
     });
+    await gotoView(page, 'dashboard');
     await gotoView(page, 'ideas');
     const input = page.locator('#listFilterInput');
     await expect(input).toBeVisible();
     await page.locator('#mainContent').click({ position: { x: 5, y: 5 } });
     await page.keyboard.press('/');
     await expect(input).toBeFocused();
-    await page.keyboard.type('isotopos');                                        // sin acentos también encuentra «isótopos»
+    await page.keyboard.type('isotopos');                                          // sin acentos también encuentra «isótopos»
     await expect(page.locator('.idea-item:not(.lf-hide)')).toHaveCount(1);
     await expect(page.locator('#listFilterCount')).toHaveText('1 de 5');
     await page.keyboard.type(' zzz');
     await expect(page.locator('.list-filter-empty')).toContainText('Ninguna coincide');
-    await page.evaluate(() => db.ideas.where('title').equals('Idea uno').modify({ starred: true }));   // repintado por cambio de datos...
+    await page.evaluate(() => db.ideas.where('title').equals('Idea uno').modify({ starred: true }));         // repintado por cambio de datos...
     await page.locator('#mainContent').click({ position: { x: 5, y: 5 } });
     await page.waitForTimeout(500);
-    await expect(page.locator('#listFilterInput')).toHaveValue('isotopos zzz');                       // ...y el filtro sigue ahí
+    await expect(page.locator('#listFilterInput')).toHaveValue('isotopos zzz');                              // ...y el filtro sigue ahí
     await page.locator('#listFilterInput').press('Escape');
     await expect(page.locator('.idea-item.lf-hide')).toHaveCount(0);
     await expect(page.locator('#listFilterCount')).toHaveText('');
-  });
 
-  test('los estados vacíos ofrecen el botón para empezar', async ({ page }) => {
-    await openApp(page);
-    for (const [view, cta, modal] of [['meetings', 'meeting', /reuni/i], ['collaborators', 'collaborator', /colaborador/i], ['snippets', 'snippet', /snippet/i], ['references', 'reference', /referencia/i]]) {
-      await gotoView(page, view);
-      await page.locator(`#mainContent [data-empty-cta="${cta}"]`).click();
-      await expect(page.locator('#modalTitle')).toContainText(modal);
-      await page.keyboard.press('Escape');
-      await expect(page.locator('#modalOverlay')).not.toHaveClass(/visible/);
-    }
-  });
-
-  test('Ctrl+Z deshace el último borrado aunque el aviso ya haya desaparecido', async ({ page }) => {
-    await openApp(page);
-    await seed(page);
-    await gotoView(page, 'ideas');
-    await page.locator('.idea-item', { hasText: 'Idea dos' }).locator('.idea-delete-btn').click();
+    await page.locator('.idea-item', { hasText: 'Idea dos' }).locator('.idea-delete-btn').click();           // Ctrl+Z deshace el último borrado aunque el aviso ya haya desaparecido
     await expect(page.locator('.idea-item', { hasText: 'Idea dos' })).toHaveCount(0);
     await page.evaluate(() => document.querySelectorAll('.toast').forEach(t => t.remove()));
     await page.locator('#mainContent').click({ position: { x: 5, y: 5 } });

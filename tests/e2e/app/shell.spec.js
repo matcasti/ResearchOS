@@ -2,8 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed } = require('../helpers');
 
 const tmpFile = (name, content) => { const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ros-')), name); fs.writeFileSync(p, content); return p; };
 

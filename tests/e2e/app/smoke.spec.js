@@ -1,5 +1,4 @@
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView } = require('../helpers');
+const { test, expect, openApp, gotoView } = require('../helpers');
 
 const VIEWS = [
   'dashboard', 'kanban', 'projects', 'timeline', 'areas', 'nested',
@@ -8,20 +7,19 @@ const VIEWS = [
   'archived', 'tutorial', 'settings',
 ];
 
-test('la app arranca y muestra el dashboard', async ({ page }) => {
+// Una sola carga de la app: arranca y recorre todas las vistas vacías; cada fallo dice en qué vista ocurrió.
+test('la app arranca y todas las vistas se pintan sin errores', async ({ page }) => {
   const { errors } = await openApp(page);
   await expect(page).toHaveTitle(/ResearchOS/);
   await expect(page.locator('.nav-item[data-view="dashboard"]')).toHaveClass(/active/);
   expect(errors).toEqual([]);
-});
-
-for (const view of VIEWS) {
-  test(`vista "${view}" renderiza sin errores`, async ({ page }) => {
-    const { errors } = await openApp(page);
+  const bad = [];
+  let seen = 0;
+  for (const view of VIEWS) {
     await gotoView(page, view);
-    await page.waitForTimeout(400);
-    const html = await page.locator('#mainContent').innerHTML();
-    expect(html.length).toBeGreaterThan(200);
-    expect(errors).toEqual([]);
-  });
-}
+    await page.waitForTimeout(80);                                       // un fallo asíncrono del pintado llega unos ms después
+    if ((await page.locator('#mainContent').innerHTML()).length < 200) bad.push(`${view}: vacía`);
+    if (errors.length > seen) { bad.push(`${view}: ${errors.slice(seen).join(' | ')}`); seen = errors.length; }
+  }
+  expect(bad).toEqual([]);
+});

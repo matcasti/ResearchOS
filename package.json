@@ -6,6 +6,7 @@
   "scripts": {
     "serve": "python3 -m http.server 8000",
     "test:e2e": "playwright test -c tests",
+    "test:e2e:quick": "playwright test -c tests --grep-invert @slow",
     "test:e2e:ui": "playwright test -c tests --ui",
     "test:e2e:compat": "CROSS_BROWSER=1 playwright test -c tests --project=firefox --project=webkit app/smoke.spec.js views/today.spec.js views/network.spec.js features/planner.spec.js features/academic.spec.js app/shell.spec.js"
   },

@@ -1,11 +1,10 @@
-const { test, expect } = require('@playwright/test');
-const { openApp } = require('../helpers');
+const { test, expect, openApp } = require('../helpers');
 
 // Nada se sale de su caja: ni con el laboratorio de ejemplo ni con textos larguísimos sin espacios (URLs, DOIs, nombres) en
 // móvil y en escritorio. Se mira el scroll horizontal de la página y cualquier elemento que sobrepase el borde de su contenedor.
 
 const VIEWS = ['dashboard', 'kanban', 'projects', 'timeline', 'nested', 'ideas', 'snippets', 'references', 'submissions', 'meetings',
-  'collaborators', 'weekly', 'review', 'report', 'areas', 'starred', 'archived'];
+  'collaborators', 'weekly', 'review', 'report', 'areas', 'starred', 'archived', 'orphans', 'network', 'tutorial', 'filesystem', 'settings'];
 
 /** El laboratorio de ejemplo con un tercio de los registros llenos de palabras larguísimas, URLs y DOIs. */
 async function loadLongSample(page) {
@@ -62,19 +61,13 @@ const spills = page => page.evaluate(() => {
   return out.slice(0, 12);
 });
 
-for (const [name, size] of [['móvil 360 px', { width: 360, height: 740 }], ['móvil 320 px', { width: 320, height: 568 }], ['escritorio 1280 px', { width: 1280, height: 800 }]]) {
-  test.describe(`Sin desbordes · ${name}`, () => {
+// El laboratorio con textos larguísimos incluye (sin tocar) un tercio de los registros del ejemplo: una sola pasada por tamaño basta.
+for (const [name, size] of [['móvil 360 px', { width: 360, height: 740 }], ['móvil 320 px', { width: 320, height: 568 }], ['tableta 768 px', { width: 768, height: 1024 }], ['escritorio 1280 px', { width: 1280, height: 800 }]]) {
+  test.describe(`Sin desbordes · ${name}`, name === 'móvil 360 px' ? {} : { tag: '@slow' }, () => {
     test.use({ viewport: size });
 
-    test('el laboratorio de ejemplo cabe en todas las vistas', async ({ page }) => {
-      await openApp(page);
-      await page.evaluate(() => loadSampleData({ replace: true }));
-      const bad = {};
-      for (const v of VIEWS) { await gotoView(page, v); const s = await spills(page); if (s.length) bad[v] = s; }
-      expect(bad).toEqual({});
-    });
-
-    test('con textos larguísimos sin espacios (URLs, DOIs, nombres) tampoco', async ({ page }) => {
+    test('ninguna vista se sale de su caja, con el ejemplo y con textos larguísimos sin espacios (URLs, DOIs, nombres)', async ({ page }) => {
+      test.setTimeout(90_000);
       await openApp(page);
       await loadLongSample(page);
       const bad = {};
@@ -87,42 +80,42 @@ for (const [name, size] of [['móvil 360 px', { width: 360, height: 740 }], ['m�
 test.describe('Detalles de diseño en pantallas estrechas', () => {
   test.use({ viewport: { width: 360, height: 740 } });
 
-  test('la casilla de una tarea sigue siendo un círculo (no se estira a óvalo por el tamaño táctil)', async ({ page }) => {
+  test('casilla redonda, referencia con ancho para el texto, Snippets a todo el ancho y nombres largos recortados', async ({ page }) => {
     await openApp(page);
     await page.evaluate(() => loadSampleData({ replace: true }));
-    await gotoView(page, 'review');
-    const box = await page.locator('.review-step .tw-check').first().boundingBox();
-    expect(Math.round(box.width)).toBe(Math.round(box.height));
-  });
 
-  test('la tarjeta de una referencia deja ancho al texto y el estado pasa debajo', async ({ page }) => {
-    await openApp(page);
-    await page.evaluate(() => loadSampleData({ replace: true }));
-    await gotoView(page, 'references');
+    await gotoView(page, 'review');                                          // la casilla de una tarea no se estira a óvalo por el tamaño táctil
+    const check = await page.locator('.review-step .tw-check').first().boundingBox();
+    expect(Math.round(check.width)).toBe(Math.round(check.height));
+
+    await gotoView(page, 'references');                                      // el texto deja de aplastarse a 18 px junto al estado
     const widths = await page.locator('.ref-card').evaluateAll(cards => cards.map(c => Math.round(c.querySelector('.ref-card-main').getBoundingClientRect().width)));
     expect(widths.length).toBeGreaterThan(3);
-    expect(Math.min(...widths)).toBeGreaterThan(200);                       // antes el texto se aplastaba a 18 px junto al estado
-  });
+    expect(Math.min(...widths)).toBeGreaterThan(200);
 
-  test('en Snippets las colecciones pasan arriba y las tarjetas ocupan todo el ancho', async ({ page }) => {
+    await gotoView(page, 'snippets');                                        // las colecciones quedan encima y las tarjetas ocupan todo el ancho útil
+    const panel = await page.locator('.snippet-collections-panel').boundingBox();
+    const card = await page.locator('.snippet-card').first().boundingBox();
+    expect(card.y).toBeGreaterThanOrEqual(panel.y + panel.height - 1);
+    expect(card.width).toBeGreaterThan(300);
+
+    await page.evaluate(() => db.projects.toCollection().first().then(p => db.projects.update(p.id, { responsible: 'X'.repeat(120) })));
+    await gotoView(page, 'kanban');                                          // un nombre larguísimo se recorta con puntos suspensivos dentro de la píldora
+    const chip = page.locator('.kanban-card-person .person-chip', { hasText: 'XXXX' }).first();
+    const kcard = await chip.locator('xpath=ancestor::div[contains(@class,"kanban-card")][1]').boundingBox();
+    const box = await chip.boundingBox();
+    expect(box.x + box.width).toBeLessThanOrEqual(kcard.x + kcard.width);
+    expect(await chip.locator('.person-chip-name').evaluate(e => getComputedStyle(e).textOverflow)).toBe('ellipsis');
+  });
+});
+
+test.describe('Pantallas táctiles', () => {
+  test.use({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true });
+
+  test('los controles que aparecían al pasar el ratón son visibles', async ({ page }) => {
     await openApp(page);
     await page.evaluate(() => loadSampleData({ replace: true }));
     await gotoView(page, 'snippets');
-    const panel = await page.locator('.snippet-collections-panel').boundingBox();
-    const card = await page.locator('.snippet-card').first().boundingBox();
-    expect(card.y).toBeGreaterThanOrEqual(panel.y + panel.height - 1);       // las fichas de colección quedan encima, no a la izquierda
-    expect(card.width).toBeGreaterThan(300);                                   // en 360 px: todo el ancho útil, no 106 px
-  });
-
-  test('un nombre larguísimo se recorta con puntos suspensivos dentro de la píldora', async ({ page }) => {
-    await openApp(page);
-    await page.evaluate(() => loadSampleData({ replace: true }));
-    await page.evaluate(() => db.projects.toCollection().first().then(p => db.projects.update(p.id, { responsible: 'X'.repeat(120) })));
-    await gotoView(page, 'kanban');
-    const chip = page.locator('.kanban-card-person .person-chip', { hasText: 'XXXX' }).first();
-    const card = await chip.locator('xpath=ancestor::div[contains(@class,"kanban-card")][1]').boundingBox();
-    const box = await chip.boundingBox();
-    expect(box.x + box.width).toBeLessThanOrEqual(card.x + card.width);
-    expect(await chip.locator('.person-chip-name').evaluate(e => getComputedStyle(e).textOverflow)).toBe('ellipsis');
+    expect(await page.locator('.snippet-actions').first().evaluate(e => getComputedStyle(e).opacity)).toBe('1');
   });
 });

@@ -1,6 +1,5 @@
 // Pestaña «Red»: grafo de conexiones estilo Obsidian (datos → nodos/aristas, filtros, grafo local, interacción).
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed } = require('../helpers');
 
 // La entrada de la vista anima 200 ms (translateY): las medidas de posición deben esperar a que termine.
 const settled = page => page.evaluate(() => Promise.all(document.getElementById('mainContent').getAnimations().map(a => a.finished.catch(() => {}))));
@@ -233,7 +232,7 @@ test.describe('Pestaña Red', () => {
 });
 
 test.describe('Pestaña Red — consumo en reposo', () => {
-  test('una vez asentado el grafo, el bucle de animación se duerme y los gestos lo despiertan', async ({ page }) => {
+  test('una vez asentado el grafo, el bucle de animación se duerme y los gestos lo despiertan', { tag: '@slow' }, async ({ page }) => {
     await page.addInitScript(() => { window.__raf = 0; const raf = window.requestAnimationFrame.bind(window); window.requestAnimationFrame = f => { window.__raf++; return raf(f); }; });
     await openApp(page);
     await seed(page);
@@ -304,7 +303,7 @@ const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h 
 const waitSettled = page => expect.poll(() => page.evaluate(() => window.__graph.settled), { timeout: 20000 }).toBe(true);
 
 test.describe('Pestaña Red — muchos elementos', () => {
-  test('las etiquetas no se pisan entre sí ni salen del grafo, aunque haya cientos de nodos', async ({ page }) => {
+  test('con cientos de nodos: las etiquetas no se pisan ni salen del grafo, los proyectos más conectados siempre llevan una, «Más» y «Ninguna» cambian cuántas hay y la elección se recuerda', async ({ page }) => {
     await openApp(page);
     await bigGraph(page);
     await gotoView(page, 'network');
@@ -317,23 +316,11 @@ test.describe('Pestaña Red — muchos elementos', () => {
     const clashes = [];
     for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) if (overlap(boxes[i], boxes[j])) clashes.push([boxes[i].key, boxes[j].key]);
     expect(clashes).toEqual([]);
-  });
-
-  test('los proyectos más conectados siempre llevan etiqueta (ganan a las ideas cuando falta sitio)', async ({ page }) => {
-    await openApp(page);
-    await bigGraph(page);
-    await gotoView(page, 'network');
-    await waitSettled(page);
+    // ganan los proyectos más conectados (a las ideas, cuando falta sitio)
     const top = await page.evaluate(() => NetView.graph.order.find(n => n.type === 'project').key);
-    expect((await labels(page)).map(b => b.key)).toContain(top);
-  });
-
-  test('«Más» etiqueta más nodos, «Ninguna» solo lo señalado, y la elección se recuerda', async ({ page }) => {
-    await openApp(page);
-    await bigGraph(page);
-    await gotoView(page, 'network');
-    await waitSettled(page);
-    const auto = (await labels(page)).length;
+    expect(boxes.map(b => b.key)).toContain(top);
+    // «Más» etiqueta más nodos; «Ninguna» solo lo señalado
+    const auto = boxes.length;
     await page.click('[data-net-labels="more"]');
     await expect.poll(async () => (await labels(page)).length).toBeGreaterThan(auto);
     await expect(page.locator('[data-net-labels="more"]')).toHaveAttribute('aria-checked', 'true');

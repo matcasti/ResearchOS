@@ -1,6 +1,5 @@
 // Carga perezosa: highlight.js, KaTeX y Google Identity solo se descargan cuando hacen falta.
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed } = require('../helpers');
 
 const HEAVY = { code: /highlight(\.min)?\.js|highlight\.js\/.*\.css/, math: /katex/i, google: /accounts\.google\.com/ };
 const track = page => { const seen = []; page.on('request', r => seen.push(r.url())); return (re) => seen.filter(u => re.test(u)); };

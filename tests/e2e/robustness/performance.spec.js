@@ -1,7 +1,6 @@
 // Humo de rendimiento con un volumen realista de una carrera larga (miles de elementos).
 // Los umbrales son holgados: detectan regresiones patológicas, no microoptimizaciones.
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView } = require('../helpers');
+const { test, expect, openApp, gotoView } = require('../helpers');
 
 async function bulkSeed(page) {
   await page.evaluate(async () => {
@@ -22,7 +21,7 @@ async function bulkSeed(page) {
 }
 
 test.describe('Rendimiento con muchos datos', () => {
-  test('las vistas principales y la búsqueda responden con ~7 000 elementos', async ({ page }) => {
+  test('las vistas principales y la búsqueda responden con ~7 000 elementos', { tag: '@slow' }, async ({ page }) => {
     test.setTimeout(240000);
     const { errors } = await openApp(page);
     await bulkSeed(page);
@@ -51,7 +50,7 @@ test.describe('Rendimiento con muchos datos', () => {
 });
 
 test.describe('Bandeja de ideas grande', () => {
-  test('pinta por tandas, conserva el scroll al pedir más y «seleccionar todo» abarca todas', async ({ page }) => {
+  test('pinta por tandas, conserva el scroll al pedir más y «seleccionar todo» abarca todas', { tag: '@slow' }, async ({ page }) => {
     await openApp(page);
     await page.evaluate(async () => {
       const now = new Date().toISOString();

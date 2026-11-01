@@ -2,7 +2,18 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { expect } = require('@playwright/test');
+const base = require('@playwright/test');
+const { expect } = base;
+
+// `test` de Playwright con una limpieza automática: al cerrar, Playwright espera a las rutas que sigan en vuelo (p. ej. una tipografía
+// pedida justo al terminar la prueba) y eso cuesta ~5 s por prueba. Soltarlas sin esperar es inocuo: la página ya no se usa.
+const test = base.test.extend({
+  _soltarRutas: [async ({ context }, use) => {
+    await use();
+    for (const p of context.pages()) await p.unrouteAll({ behavior: 'ignoreErrors' }).catch(() => {});
+    await context.unrouteAll({ behavior: 'ignoreErrors' }).catch(() => {});
+  }, { auto: true }],
+});
 
 // Las libs vienen de cdnjs. Para que los tests sean rápidos y deterministas se
 // descargan una vez y se sirven desde disco. Google (Fonts, GSI) se anula: no
@@ -17,6 +28,8 @@ async function routeExternal(page, mode) {
     if (!url.includes('cdnjs.cloudflare.com')) {
       return route.fulfill({ status: 200, contentType: url.endsWith('.js') || url.includes('/gsi/') ? 'text/javascript' : 'text/css', body: '' });
     }
+    // Las tipografías (p. ej. las de KaTeX) no aportan nada a los tests y descargarlas de la red real retrasa el cierre de cada prueba varios segundos.
+    if (/\.(woff2?|ttf|otf)(\?|$)/.test(url)) return route.fulfill({ status: 200, contentType: 'font/woff2', body: '' });
     const key = path.join(CDN_CACHE, crypto.createHash('sha1').update(url).digest('hex'));
     if (fs.existsSync(key + '.json')) {
       const meta = JSON.parse(fs.readFileSync(key + '.json', 'utf8'));
@@ -71,7 +84,7 @@ async function gotoView(page, view) {
   await page.evaluate(() => Promise.all(document.getElementById('mainContent').getAnimations().map(a => a.finished.catch(() => {}))));
 }
 
-module.exports = { openApp, gotoView };
+module.exports = { openApp, gotoView, test, expect };
 
 /** Inserta un dataset mínimo pero representativo vía Dexie (atajo para tests que no prueban la creación). */
 async function seed(page) {

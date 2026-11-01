@@ -1,5 +1,4 @@
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView } = require('../helpers');
+const { test, expect, openApp, gotoView } = require('../helpers');
 
 // Datos de ejemplo dinámicos: las fechas se calculan desde «hoy» y el ejemplo usa todas las piezas de la app.
 

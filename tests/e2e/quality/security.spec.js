@@ -1,8 +1,7 @@
 // Barrido de XSS: un backup JSON ajeno (o el Drive Sync) puede traer HTML hostil en cualquier campo.
 // - El test "resto de campos" es una guardia de regresión: lo ya escapado debe seguir escapado.
 // - Cada campo se prueba aislado (para localizar el sumidero) y además todos a la vez.
-const { test, expect } = require('@playwright/test');
-const { openApp, gotoView } = require('../helpers');
+const { test, expect, openApp, gotoView } = require('../helpers');
 
 const PAYLOAD = `"'><img src=x onerror=window.__xss.push(1)>`;
 const isoDate = /^\d{4}-\d{2}-\d{2}/;
@@ -99,29 +98,27 @@ test.describe('XSS — datos hostiles', () => {
     await expect.poll(() => page.evaluate(() => window.__xss.length)).toBeGreaterThan(0);
   });
 
+  // Con todos los campos envenenados a la vez basta una pasada (~9 s). Solo si algo se ejecuta se localiza el campo
+  // culpable repitiendo campo por campo (reiniciando la BD entre cada uno): el diff muestra { campo: [lugares] }.
   test('ningún campo de texto ejecuta JS en vistas, inspectores, hubs, modales ni paleta', async ({ page }) => {
-    test.setTimeout(120_000);
-    await openApp(page);
-    await loadPoisoned(page, { except: [] });
-    expect(await exercise(page)).toEqual([]);
-  });
-
-  // Un solo test que recorre campo por campo (reiniciando la BD entre cada uno): si falla, el diff muestra
-  // exactamente { campo: [lugares] } sin pagar una carga de página por campo.
-  test('cada campo de texto, aislado, está escapado en todos los sumideros', async ({ page }) => {
     test.setTimeout(300_000);
     await openApp(page);
-    const fields = ['description', 'content', 'color', 'language', 'doi', 'tags', 'coauthors', 'id', 'deadline',
-                    'title', 'name', 'responsible', 'authors', 'journal', 'text', 'participants', 'agreements', 'targetVenue',
-                    'notes', 'role', 'affiliation', 'email', 'citeKey', 'decision', 'callId', 'agency', 'targetJournal', 'manuscriptUrl', 'kind'];
-    const offenders = {};
-    for (const field of fields) {
-      await page.evaluate(async () => { for (const t of db.tables) await t.clear(); await seedDefaults(); });
-      await loadPoisoned(page, { only: [field] });
-      const where = await exercise(page);
-      if (where.length) offenders[field] = where;
+    await loadPoisoned(page, { except: [] });
+    const where = await exercise(page);
+    if (where.length) {
+      const fields = ['description', 'content', 'color', 'language', 'doi', 'tags', 'coauthors', 'id', 'deadline',
+                      'title', 'name', 'responsible', 'authors', 'journal', 'text', 'participants', 'agreements', 'targetVenue',
+                      'notes', 'role', 'affiliation', 'email', 'citeKey', 'decision', 'callId', 'agency', 'targetJournal', 'manuscriptUrl', 'kind'];
+      const offenders = { '(todos a la vez)': where };
+      for (const field of fields) {
+        await page.evaluate(async () => { for (const t of db.tables) await t.clear(); await seedDefaults(); });
+        await loadPoisoned(page, { only: [field] });
+        const w = await exercise(page);
+        if (w.length) offenders[field] = w;
+      }
+      expect(offenders).toEqual({});
     }
-    expect(offenders).toEqual({});
+    expect(where).toEqual([]);
   });
 
   test('título de columna Kanban (select del formulario de edición)', async ({ page }) => {
