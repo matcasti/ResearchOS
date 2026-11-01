@@ -251,6 +251,30 @@ function describeCapture(c) {
   return bits.join(' · ');
 }
 
+/**
+ * Ayudas bajo la captura, aprendidas de tu historial (insights.js): lo que suele faltar (Tab lo añade), aviso de duplicado y continuación de series.
+ * `ctx` = { ix, titles } (se calcula una vez por captura). Devuelve { html, apply } (apply(input) escribe la sugerencia, o null si no hay).
+ */
+function captureAssist(c, ctx, typed) {
+  if (!ctx?.ix || !c?.title) return { html: '', apply: null };
+  const dup = Learn.duplicate(ctx.ix, c);
+  const sug = Learn.suggest(ctx.ix, c);
+  const seq = !sug && c.kind !== 'project' ? Learn.next(ctx.titles, typed.trim()) : null;
+  let html = dup ? ` <span class="capture-warn" title="Ya tienes una tarea abierta casi igual">⚠ ya existe «${esc(dup.title)}»</span>` : '', apply = null;
+  if (sug) {
+    html += ` <button type="button" class="capture-accept" data-accept title="Se deduce de tus tareas parecidas"><kbd>Tab</kbd> añadir ${sug.parts.map(esc).join(' · ')} <span class="capture-why">(${sug.basis} parecidas)</span></button>`;
+    apply = input => { input.value = `${input.value.trim()} ${sug.add}`; };
+  } else if (seq) {
+    html += ` <button type="button" class="capture-accept" data-accept title="Continúa la serie"><kbd>Tab</kbd> ${esc(seq)}</button>`;
+    apply = input => { input.value = seq + ' '; };
+  }
+  return { html, apply };
+}
+async function captureContext() {
+  const [tasks, meetings, projects, people] = await Promise.all([db.tasks.toArray(), db.meetings.toArray(), db.projects.toArray(), db.collaborators.toArray()]);
+  return { projects, people, ix: Learn.index(tasks, projects, people), titles: [...tasks.map(t => t.title), ...meetings.map(m => m.title)] };
+}
+
 /** Crea el elemento descrito por `c`. Devuelve un mensaje para el aviso. */
 async function runCapture(c) {
   const now = new Date().toISOString();
@@ -389,7 +413,8 @@ async function collectToday() {
   const noNext = ctxLive.filter(p => !withNext.has(p.id) && !isWaiting(p) && !isFinished(p)).sort((a, b) => String(a.title).localeCompare(String(b.title)));
 
   const lastReview = +localStorage.getItem('ros-last-review') || null;
-  return { todayISO, plan, doneToday, now, week, loose, later, theirs, waiting, noNext, ideasUnread, areas, areaMap, people, ctxLive, lastReview,
+  const load = Load.analyze({ tasks: allTasks, projects: allProjects, today: todayISO, capacity: Capacity.get() });      // insights.js: ¿cabe lo que viene?
+  return { todayISO, plan, doneToday, now, week, loose, later, theirs, waiting, noNext, ideasUnread, areas, areaMap, people, ctxLive, lastReview, load,
            empty: !allProjects.length && !allTasks.length && !allIdeas.length };
 }
 
@@ -487,6 +512,20 @@ async function renderToday() {
     </section>`;
   })() : '';
 
+  const riskHTML = d.load.violations.length ? `
+    <section class="today-sec calm risk" data-sec="risk" aria-labelledby="ts-risk">
+      <h2 class="today-sec-title" id="ts-risk">Plazos que no caben <span class="today-count">${d.load.violations.length}</span></h2>
+      <div class="today-wait-note">Comparo lo que vence con tus horas disponibles (${esc(fmtEffort(Capacity.get()))} por día laborable).</div>
+      ${d.load.violations.map(v => `
+        <div class="risk-row">
+          <div><strong>Hasta ${esc(formatDate(v.date))}</strong>: ${esc(fmtEffort(v.demand))} de trabajo para ${esc(fmtEffort(v.available) || '0 min')} <span class="risk-over">(+${esc(fmtEffort(v.over))})</span></div>
+          <div class="risk-top">Lo más pesado: ${v.items.slice(0, 2).map(x => `${esc(x.t.title)} (${esc(fmtEffort(x.minutes))})`).join(' · ')}</div>
+        </div>`).join('')}
+      ${d.load.atRisk.length ? `<div class="risk-top">Proyectos en riesgo: ${d.load.atRisk.slice(0, 3).map(r => `<a href="#" class="risk-proj" data-risk-project="${r.project.id}">${esc(r.project.title)}</a>`).join(', ')}</div>` : ''}
+      <button class="today-more" id="planWeekBtn">Planificar la semana →</button>
+      ${d.load.guessed ? `<div class="today-wait-note">Incluye ${d.load.guessed} tarea(s) sin estimar (cuentan ${esc(fmtEffort(d.load.typical))} cada una).</div>` : ''}
+    </section>` : '';
+
   const waitingHTML = d.waiting.length ? `
     <section class="today-sec calm" aria-labelledby="ts-wait">
       <h2 class="today-sec-title" id="ts-wait">Esperando respuesta <span class="today-count">${d.waiting.length}</span></h2>
@@ -559,7 +598,7 @@ async function renderToday() {
       ${d.empty ? firstRunHTML() : `
       <div class="today-grid">
         <div class="today-main">${sections}</div>
-        <aside class="today-side">${theirsHTML}${noNextHTML}${ideasHTML}${waitingHTML}</aside>
+        <aside class="today-side">${riskHTML}${theirsHTML}${noNextHTML}${ideasHTML}${waitingHTML}</aside>
       </div>`}
 
       <details class="panorama" id="panorama" ${localStorage.getItem('ros-panorama-open') === '1' ? 'open' : ''}>
@@ -666,6 +705,7 @@ function _wireToday(d, overdueTasks) {
   $('dashAddProject').addEventListener('click', () => showAddProjectModal());
   $('todayReview').addEventListener('click', () => navigate('review'));
   $('planDayBtn').addEventListener('click', () => openDayPlanner());
+  $('planWeekBtn')?.addEventListener('click', () => openWeekPlanner());
   root.querySelector('[data-act-triage]')?.addEventListener('click', () => { App.triageIdx = 0; navigate('triage'); });
 
   // --- captura ---
@@ -673,18 +713,25 @@ function _wireToday(d, overdueTasks) {
   const input = $('captureInput'), preview = $('capturePreview');
   const hintHTML = preview.innerHTML;
   let cache = null;
+  let assist = { apply: null }, refreshSeq = 0;
   const parsed = async () => {
-    cache = cache || { projects: await db.projects.toArray(), people: await db.collaborators.toArray() };
+    cache = cache || await captureContext();
     const c = parseCapture(input.value, cache.projects, new Date(), cache.people);
     if (kindOverride !== 'auto') c.kind = kindOverride;
     return c;
   };
   const refresh = async () => {
-    if (!input.value.trim()) { preview.innerHTML = hintHTML; return; }
+    const mine = ++refreshSeq;
+    if (!input.value.trim()) { preview.innerHTML = hintHTML; assist = { apply: null }; return; }
     const c = await parsed();
-    preview.innerHTML = c.title ? `<span class="capture-arrow">→</span> ${describeCapture(c)}` : '';
+    if (mine !== refreshSeq) return;                                       // llegó tarde: ya se escribió otra cosa
+    assist = captureAssist(c, cache, input.value);
+    preview.innerHTML = c.title ? `<span class="capture-arrow">→</span> ${describeCapture(c)}${assist.html}` : '';
   };
   input.addEventListener('input', refresh);
+  const accept = () => { if (!assist.apply) return false; assist.apply(input); input.dispatchEvent(new Event('input')); input.focus(); return true; };
+  preview.addEventListener('click', e => { if (e.target.closest('[data-accept]')) accept(); });
+  input.addEventListener('keydown', e => { if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey && assist.apply) { e.preventDefault(); accept(); } });
   root.querySelectorAll('[data-ckind]').forEach(b => b.addEventListener('click', () => {
     kindOverride = b.dataset.ckind;
     root.querySelectorAll('[data-ckind]').forEach(x => x.classList.toggle('active', x === b));
@@ -716,6 +763,8 @@ function _wireToday(d, overdueTasks) {
     if (expand) { App._todayExpanded[expand.dataset.expand] = !App._todayExpanded[expand.dataset.expand]; return renderToday(); }
     const fold = e.target.closest('details.today-fold > summary')?.parentElement;           // se recuerda si la persona abre o cierra «Sin fecha» / «Más adelante»
     if (fold) { try { localStorage.setItem('ros-today-fold-' + fold.dataset.fold, fold.open ? '0' : '1'); } catch {} return; }
+    const rp = e.target.closest('[data-risk-project]');
+    if (rp) { e.preventDefault(); return inspectProject(+rp.dataset.riskProject); }
     const row = e.target.closest('.tw-row');
     if (!row) return;
     const kind = row.dataset.kind, id = +row.dataset.id;

@@ -12570,6 +12570,7 @@ async function _searchPaletteNow(q, my) {
     { icon: uiIcon('ideas'),    label: 'Nueva idea',               keys: 'crear', action: () => { closePalette(); showAddIdeaModal(); } },
     { icon: uiIcon('meetings'), label: 'Nueva reunión',            keys: 'crear acta', action: () => { closePalette(); showAddMeetingModal(); } },
     { icon: uiIcon('today'),    label: 'Planificar mi día',        keys: 'agenda dia plan', action: () => { closePalette(); openDayPlanner(); } },
+    { icon: uiIcon('today'),    label: 'Planificar la semana',     keys: 'semana plan carga plazos reparto', action: () => { closePalette(); openWeekPlanner(); } },
     { icon: uiIcon('theme'),    label: 'Cambiar tema claro / oscuro', keys: 'modo oscuro claro noche', action: () => { closePalette(); $('themeToggle').click(); } },
     { icon: uiIcon('keyboard'), label: 'Atajos de teclado',        keys: 'ayuda teclas', hint: '?', action: () => { closePalette(); openShortcutsHelp(); } },
     { icon: uiIcon('tutorial'), label: 'Recorrido guiado',         keys: 'tutorial ayuda empezar primeros pasos tour', action: () => { closePalette(); Tour.start({ restart: true }); } },

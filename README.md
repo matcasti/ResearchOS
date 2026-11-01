@@ -56,6 +56,7 @@ La app está pensada para quien coordina varios frentes a la vez (investigación
 -   **Revisión semanal** guiada de ocho pasos (ideas, atrasos, proyectos quietos, sin próxima acción, próximos 14 días, esperas, elementos sin proyecto y backup).
 -   **Copia automática a una carpeta** (Chrome/Edge): tus datos se duplican en la carpeta que elijas (Dropbox, Drive, Syncthing…) tras cada cambio. La app es **instalable (PWA)** y acepta *Compartir → ResearchOS* desde el móvil para capturar ideas.
 -   **Mi día**: `☀ Planificar mi día` (en Hoy) lista lo atrasado, lo de hoy y lo próximo; tú eliges qué harás según el **tiempo disponible** (por defecto 6 h) y el **tiempo estimado** de cada tarea (`~2h`, `~30m`, `~1h30` en la captura). Lo que no termines pasa solo al día siguiente, y el medidor avisa cuándo te pasas.
+-   **Predicciones locales, sin IA** ([insights.js](src/modules/insights.js)): todo se calcula en tu navegador con conteos, medianas y reglas sobre tu propio historial. **La captura aprende**: al escribir «corregir pruebas», si ya tienes tres o más tareas parecidas que coinciden, sugiere `@proyecto`, `>persona` y `~tiempo` (se acepta con `Tab` o un clic y siempre muestra en qué se basa); avisa si ya existe una tarea abierta casi igual y continúa series («Clase» → «Clase 5»). **Carga y plazos**: compara, fecha límite por fecha límite, el trabajo pendiente con tus horas disponibles (solo días laborables) y, solo si algo no cabe, muestra «Plazos que no caben» en Hoy con los proyectos en riesgo; **Planificar la semana** (también en la paleta y en el planificador del día) propone un día para lo atrasado, lo que vence en dos semanas y lo importante sin fecha, sin pasar de tu capacidad, y se puede deshacer.
 -   **Red**: un grafo estilo Obsidian de todo lo que has guardado —proyectos, ideas, snippets, referencias, reuniones, personas, áreas y (opcional) tareas—, con las conexiones estructurales y tus enlaces `[[Título]]` (línea punteada). Filtros por tipo, zoom/arrastre y *grafo local* (vecindad a N saltos) con doble clic o con «Aislar». **Pensada para muchos elementos:** las etiquetas se colocan por importancia (áreas, proyectos y lo más conectado primero) y solo si caben sin pisarse ni tapar otros nodos —al acercar aparecen más— con un control «Auto / Más / Ninguna»; un clic selecciona el nodo (queda resaltada su vecindad y aparece una ficha con «Abrir» y «Aislar»; en el móvil no se abre el inspector por encima del grafo); la búsqueda lista los resultados (↑ ↓ Enter) y la vista «vuela» hasta el elegido; los grafos grandes se separan solos más; y con el grafo enfocado `+` `−` `0`, las flechas y `Esc` lo manejan sin ratón.
 -   **Informe de avance** (Más → Informe de avance): qué lograste esta semana, este mes o el año (tareas, proyectos terminados, envíos, reuniones, lecturas), para tu memoria anual, tu CV o tu jefatura; se copia o descarga como Markdown.
 -   **Seguimiento de personas**: en la ficha de cada colaborador fija una cadencia («cada 2 semanas» con tu tesista). Hoy te avisa cuando toca escribirle, con un correo ya redactado con la agenda de pendientes; una reunión reciente cuenta como contacto.
@@ -114,7 +115,7 @@ El diseño visual y técnico de ResearchOS busca reducir la fatiga cognitiva dur
 
 ## 🗂️ Estructura del repositorio
 
-Sin paso de compilación: lo que ves aquí es lo que ejecuta el navegador. Ninguna carpeta pasa de 5 archivos; la raíz guarda los 7 que por convención deben estar ahí (los de arriba más `LICENSE.md`, `README.md`, `package.json`, `package-lock.json` y `ResearchOS.Rproj`).
+Sin paso de compilación: lo que ves aquí es lo que ejecuta el navegador. Ninguna carpeta pasa de 6 archivos; la raíz guarda los 7 que por convención deben estar ahí (los de arriba más `LICENSE.md`, `README.md`, `package.json`, `package-lock.json` y `ResearchOS.Rproj`).
 
 ```
 index.html            Página única: carga estilos y scripts en este orden
@@ -126,7 +127,8 @@ assets/
 src/
   core/               Base: db.js (datos), icons.js, app.js (núcleo y vistas), shell.js (barra móvil y captura)
   modules/            Funciones por área: today.js (Hoy), network.js (Red), planner.js (Mi día e informe),
-                      academic.js (docencia y manuscritos), tour.js (recorrido guiado y primeros pasos)
+                      academic.js (docencia y manuscritos), tour.js (recorrido guiado y primeros pasos),
+                      insights.js (predicciones locales sin IA: captura que aprende, carga y plazos)
   services/           Datos y sincronización: vault.js (copia cifrada), sync.js (entre dispositivos),
                       assistant.js (asistente de IA), integrations.js (copia automática y .ics), sample.js (datos de ejemplo)
 tools/                researchos.js: CLI, servidor MCP y esquemas de funciones para asistentes de IA (sin dependencias)

@@ -4724,3 +4724,19 @@ code .hljs-comment, code .hljs-quote, .hljs .hljs-comment, .hljs .hljs-quote { c
 .backup-line:hover { background: var(--bg-hover); color: var(--text-2); }
 .backup-line.is-warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
 body.sidebar-collapsed .backup-line { display: none; }
+
+/* Captura que aprende: sugerencia (Tab), aviso de duplicado */
+.capture-accept { background: var(--accent-d); color: var(--accent); border: 1px solid transparent; border-radius: var(--radius-sm); padding: 1px 8px; margin-left: 6px; font: inherit; font-size: .76rem; cursor: pointer; }
+.capture-accept:hover { border-color: var(--accent); }
+.capture-accept kbd { font-family: var(--font-mono); font-size: .66rem; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; margin-right: 3px; opacity: .8; }
+.capture-why { color: var(--text-3); }
+.capture-warn { color: var(--amber); margin-left: 6px; font-size: .78rem; }
+@media (pointer: coarse) { .capture-accept { min-height: 32px; } }
+
+/* Plazos que no caben */
+.today-sec.risk { border-left: 3px solid var(--amber); padding-left: 12px; }
+.risk-row { margin: 6px 0; font-size: .82rem; color: var(--text-1); }
+.risk-over { color: var(--amber); font-weight: 600; }
+.risk-top { margin-top: 2px; font-size: .74rem; color: var(--text-3); }
+.risk-proj { color: var(--accent); text-decoration: none; }
+.risk-proj:hover { text-decoration: underline; }

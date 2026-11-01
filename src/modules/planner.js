@@ -50,6 +50,44 @@ async function dayCandidates() {
     .slice(0, 40);
 }
 
+/** «Planificar la semana»: propone un día para lo atrasado, lo que vence en dos semanas y lo importante sin fecha (insights.js → Load.planWeek). */
+async function openWeekPlanner() {
+  const [tasks, projects] = await Promise.all([db.tasks.toArray(), db.projects.toArray()]);
+  const cap = Capacity.get();
+  const r = Load.planWeek({ tasks, projects, today: localDateISO(), capacity: cap });
+  if (!r.plan.length) { showToast(r.unplaced.length ? `${r.unplaced.length} tarea(s) pendientes no caben esta semana: revisa tu capacidad o sus plazos` : 'Lo urgente ya tiene día ✓', 'info'); return; }
+  const byDay = new Map(r.days.map(d => [d.day, []]));
+  for (const p of r.plan) byDay.get(p.day).push(p);
+  const dayLabel = iso => new Date(iso + 'T12:00:00').toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'short' });
+  showModal('📅 Planificar la semana', `
+    <div class="modal-body">
+      <p class="settings-row-desc">Propongo un día para lo atrasado, lo que vence en dos semanas y lo importante sin fecha, sin pasar de tus ${esc(fmtEffort(cap))} por día laborable. Desmarca lo que no quieras: se guarda como «el día en que lo haré» y aparece en Mi día.</p>
+      ${r.days.map(d => `
+        <div class="wp-day">
+          <div class="today-day">${esc(dayLabel(d.day))} · ${esc(fmtEffort(d.used) || '0 min')} de ${esc(fmtEffort(cap))}</div>
+          ${byDay.get(d.day).map(p => `
+            <label class="dp-row">
+              <input type="checkbox" class="wp-check" data-id="${p.task.id}" data-day="${d.day}" checked aria-label="Hacer ${esc(dayLabel(d.day))}: ${esc(p.task.title)}">
+              <span class="dp-main"><span class="dp-title">${esc(p.task.title)}</span>
+                <span class="dp-meta">${p.project ? esc(p.project.title) + ' · ' : ''}${p.task.due ? esc(dueLabel(p.task.due)) : p.project?.deadline ? 'plazo ' + esc(formatDate(p.project.deadline)) : 'sin fecha'}${p.late ? ' · <span class="dp-over">pasa de su plazo</span>' : ''}${p.estimated ? '' : ' · sin estimar'}</span></span>
+              <span class="dp-unit">${esc(fmtEffort(p.minutes))}</span>
+            </label>`).join('') || '<div class="today-empty">Nada nuevo este día.</div>'}
+        </div>`).join('')}
+      ${r.unplaced.length ? `<div class="dp-note">${r.unplaced.length} tarea(s) no caben esta semana: «${esc(r.unplaced[0].t.title)}»${r.unplaced.length > 1 ? ' y otras' : ''}.</div>` : ''}
+    </div>
+    <div class="modal-footer"><button class="btn btn-ghost" id="wpCancel">Cancelar</button><button class="btn btn-primary" id="wpApply">Aplicar el plan</button></div>`);
+  $('wpCancel').addEventListener('click', closeModal);
+  $('wpApply').addEventListener('click', async () => {
+    const picks = [...modalContent.querySelectorAll('.wp-check:checked')].map(c => ({ id: +c.dataset.id, day: c.dataset.day }));
+    closeModal();
+    if (!picks.length) return;
+    await dbWrite(async () => { for (const p of picks) await Tasks.setPlan(p.id, p.day); });
+    UndoStack.push({ label: 'Plan de la semana', undo: async () => { for (const p of picks) await Tasks.setPlan(p.id, null); } });
+    showToastWithUndo(`${picks.length} tarea(s) con día asignado ✓`, 'success');
+    renderView(App.view);
+  });
+}
+
 async function openDayPlanner() {
   const todayISO = localDateISO();
   const list = await dayCandidates();
@@ -72,7 +110,7 @@ async function openDayPlanner() {
       <div class="dp-meter"><span id="dpBar"></span></div>
       <div class="dp-summary" id="dpSummary" aria-live="polite"></div>
       <div class="dp-list">${rows || '<div class="today-empty">No hay tareas pendientes que planificar. Captura algunas desde Hoy.</div>'}</div>
-      <div class="dp-note">Lo que no tenga tiempo estimado cuenta como ${DEFAULT_MIN} min. Lo planificado y sin terminar pasa solo al día siguiente.</div>
+      <div class="dp-note">Lo que no tenga tiempo estimado cuenta como ${DEFAULT_MIN} min. Lo planificado y sin terminar pasa solo al día siguiente. <button type="button" class="today-more" id="dpWeek">Planificar toda la semana →</button></div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" id="dpCancel">Cancelar</button>
@@ -97,6 +135,7 @@ async function openDayPlanner() {
     recompute();
   });
   $('dpCancel').addEventListener('click', closeModal);
+  $('dpWeek').addEventListener('click', () => { closeModal(); openWeekPlanner(); });
   $('dpSave').addEventListener('click', async () => {
     Capacity.set(capacity());
     let n = 0, total = 0;

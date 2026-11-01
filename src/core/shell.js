@@ -12,7 +12,8 @@
 //  1) CAPTURA RÁPIDA (modal)
 // ==============================================================
 async function openQuickCapture() {
-  const [projects, people] = await Promise.all([db.projects.toArray(), db.collaborators.toArray()]);
+  const ctx = await captureContext();                                          // today.js: proyectos, personas y el historial del que se aprende
+  const { projects, people } = ctx;
   showModal('✎ Captura rápida', `
     <div class="modal-body">
       <input class="form-input capture-input" id="qcInput" maxlength="300" autocomplete="off" enterkeyhint="send" aria-label="Captura rápida"
@@ -22,7 +23,15 @@ async function openQuickCapture() {
     <div class="modal-footer"><button class="btn btn-ghost" id="qcCancel">Cancelar</button><button class="btn btn-primary" id="qcSave">Guardar</button></div>`);
   const input = $('qcInput'), preview = $('qcPreview');
   const parsed = () => parseCapture(input.value, projects, new Date(), people);
-  input.addEventListener('input', () => { const c = parsed(); preview.innerHTML = c.title ? `<span class="capture-arrow">→</span> ${describeCapture(c)}` : ''; });
+  let assist = { apply: null };
+  const accept = () => { if (!assist.apply) return false; assist.apply(input); input.dispatchEvent(new Event('input')); input.focus(); return true; };
+  input.addEventListener('input', () => {
+    const c = parsed();
+    assist = captureAssist(c, ctx, input.value);
+    preview.innerHTML = c.title ? `<span class="capture-arrow">→</span> ${describeCapture(c)}${assist.html}` : '';
+  });
+  preview.addEventListener('click', e => { if (e.target.closest('[data-accept]')) accept(); });
+  input.addEventListener('keydown', e => { if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey && assist.apply) { e.preventDefault(); accept(); } });
   let saving = false;                           // Enter mantenido pulsado o doble clic: se guarda una sola vez
   const save = async () => {
     if (saving) return;

@@ -6,6 +6,14 @@ Todos los cambios relevantes de ResearchOS, de lo más reciente a lo más antigu
 
 ## Sin publicar
 
+### 🔮 Predicciones locales (sin IA)
+
+- **La captura aprende de ti.** Al escribir una tarea parecida a otras que ya tienes («corregir pruebas»), sugiere el proyecto, la persona y el tiempo estimado que casi siempre llevan; se acepta con `Tab` (o un clic, también en la captura rápida del móvil) y dice en cuántas tareas parecidas se basa. Solo sugiere cuando hay tres o más casos que coinciden y nunca pisa lo que escribiste.
+- **Menos duplicados y series.** Avisa si ya hay una tarea abierta casi idéntica y continúa series numeradas («Clase» → «Clase 5»).
+- **Plazos que no caben.** Compara, fecha límite por fecha límite, lo que tienes pendiente con tus horas disponibles (sin fines de semana). Si algo no cabe, Hoy muestra cuánto te pasas, qué es lo más pesado y qué proyectos están en riesgo; si todo cabe, no dice nada.
+- **Planificar la semana.** Un clic reparte lo atrasado, lo que vence en dos semanas y lo importante sin fecha entre los próximos días laborables sin pasar de tu capacidad diaria; eliges qué aceptar, se guarda como «el día en que lo haré» (aparece en Mi día) y se puede deshacer. Está en el panel de plazos, en el planificador del día y en la paleta.
+- Todo ocurre en tu navegador, sobre tu propio historial: no se envía ni se entrena nada.
+
 ### 🧭 Mejoras de uso
 
 - **La bienvenida ya no insiste.** Antes reaparecía en cada apertura salvo que marcaras «No mostrar al iniciar», aun teniendo ya tus datos. Ahora, al elegir cualquier camino (recorrido, ejemplo o empezar vacía) no vuelve a salir, y quien ya tiene datos no la ve nunca.
