@@ -244,7 +244,7 @@ const SyncFolder = {
       if (changed || this._dirty || !(await handle.getFileHandle(this.fileName()).then(() => true).catch(() => false))) await this.push(handle);
       localStorage.setItem('ros-sync-last', String(Date.now()));
       if (changed) {
-        await _afterDataReplaced();
+        await _afterDataReplaced({ local: false });             // lo que llegó de la carpeta no se vuelve a subir
         updateBadges();
         if (!modalOverlay.classList.contains('visible')) renderView(App.view);
         if (!quiet) showToast(`Sincronizado con ${res.from.join(', ') || 'otro dispositivo'}: ${res.added} nuevo(s), ${res.updated} actualizado(s), ${res.deleted} borrado(s)`, 'success');

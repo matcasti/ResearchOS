@@ -176,6 +176,10 @@ async function enhanceSettings() {
 
     ${vaultSettingsHTML()}
 
+    ${sampleSettingsHTML()}
+
+    ${diagnosticsSettingsHTML()}
+
     <div class="settings-section" id="calendarSection">
       <div class="settings-section-title">📅 Calendario (.ics)</div>
       <div class="settings-body">
@@ -201,6 +205,8 @@ async function enhanceSettings() {
   wirePlannerSettings();                      // planner.js
   wireAcademicSettings();                     // academic.js
   wireVaultSettings();                        // vault.js
+  wireSampleSettings();                       // tour.js
+  wireDiagnostics();
 
   $('autoBackupOn')?.addEventListener('click', async () => {
     try { await AutoBackup.choose(); showToast('Copia automática activada ✓', 'success'); renderSettings(); }
@@ -286,3 +292,51 @@ window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
   App._installPrompt = e;
 });
+
+
+// ==============================================================
+//  DIAGNÓSTICO (Ajustes): errores inesperados y estado del navegador, solo en este equipo
+// ==============================================================
+function diagnosticsSettingsHTML() {
+  return `
+    <div class="settings-section" id="diagSection">
+      <div class="settings-section-title">🩺 Diagnóstico</div>
+      <div class="settings-body">
+        <div class="settings-row">
+          <div><div class="settings-row-label">Errores inesperados <span id="diagCount" class="form-hint"></span></div>
+            <div class="settings-row-desc">Si algo no funciona, aquí queda el detalle. Se guarda solo en este navegador; no se envía a ninguna parte.</div></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+            <button class="btn btn-ghost btn-sm" id="diagCopy">Copiar informe</button>
+            <button class="btn btn-ghost btn-sm" id="diagClear">Borrar registro</button>
+          </div>
+        </div>
+        <pre class="diag-list" id="diagList" tabindex="0" aria-label="Registro de errores"></pre>
+      </div>
+    </div>`;
+}
+
+async function _diagnosticReport() {
+  const counts = await Promise.all(['projects', 'ideas', 'tasks', 'meetings', 'references', 'snippets', 'collaborators'].map(async t => `${t}: ${await db[t].count()}`));
+  const persisted = await navigator.storage?.persisted?.().catch(() => null);
+  const est = await navigator.storage?.estimate?.().catch(() => null);
+  const errs = ErrorLog.all();
+  return [`ResearchOS · informe de diagnóstico · ${new Date().toISOString()}`, `Navegador: ${navigator.userAgent}`,
+    `Pantalla: ${innerWidth}×${innerHeight} · vista: ${App.view} · idioma: ${navigator.language}`,
+    `Almacenamiento: ${persisted ? 'persistente' : 'no persistente'}${est ? ` · ${(est.usage / 1048576).toFixed(1)} MB usados` : ''}`,
+    `Datos: ${counts.join(' · ')}`, '', errs.length ? 'Errores:' : 'Sin errores registrados.',
+    ...errs.map(e => `- ${e.t} [${e.kind}${e.view ? ' · ' + e.view : ''}] ${e.msg}${e.stack ? '\n    ' + e.stack : ''}`)].join('\n');
+}
+
+function wireDiagnostics() {
+  const paint = () => {
+    const errs = ErrorLog.all();
+    if ($('diagCount')) $('diagCount').textContent = errs.length ? `(${errs.length})` : '(ninguno)';
+    if ($('diagList')) $('diagList').textContent = errs.length ? errs.slice().reverse().map(e => `${new Date(e.t).toLocaleString('es-CL')} · ${e.kind}${e.view ? ' · ' + e.view : ''}\n${e.msg}`).join('\n\n') : 'Todo en orden: no hay errores registrados.';
+  };
+  paint();
+  $('diagCopy')?.addEventListener('click', async () => {
+    const text = await _diagnosticReport();
+    if (!(await copyText(text, 'Informe copiado ✓'))) downloadFile('researchos-diagnostico.txt', text, 'text/plain');
+  });
+  $('diagClear')?.addEventListener('click', () => { ErrorLog.clear(); paint(); showToast('Registro borrado', 'success'); });
+}

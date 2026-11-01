@@ -211,6 +211,65 @@ test.describe('Paleta de comandos', () => {
   });
 });
 
+test.describe('Ventanas: el foco inicial no le roba el texto a quien ya está escribiendo', () => {
+  test('en cada formulario, el campo en el que escribes conserva el foco (no hay foco diferido)', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    const stolen = await page.evaluate(async () => {
+      const out = [];
+      const p = await db.projects.toCollection().first();
+      const opens = {
+        reunión: () => showAddMeetingModal(), idea: () => showAddIdeaModal(), snippet: () => showAddSnippetModal(), referencia: () => showAddReferenceModal(),
+        colaborador: () => showAddCollaboratorModal(), submission: () => showAddSubmissionModal(), proyecto: () => { App._projectTemplate = 'blank'; App._skipTemplateStep = true; return showAddProjectModal(); },
+        'idea desde el proyecto': async () => { await inspectProject(p.id); document.querySelector('[data-qa="idea"]')?.click(); },
+      };
+      for (const [name, open] of Object.entries(opens)) {
+        await open();
+        const fields = [...document.querySelectorAll('#modalContent input.form-input:not([type=hidden]):not([type=date]), #modalContent textarea')].filter(f => f.offsetParent);
+        const target = fields[fields.length - 1];
+        if (!target || fields.length < 2) { closeModal(); continue; }
+        target.focus();                                                                 // la persona ya pasó a otro campo...
+        await new Promise(r => setTimeout(r, 220));                                      // ...y ningún foco diferido puede devolverla al primero
+        if (document.activeElement !== target) out.push(`${name}: el foco volvió a ${document.activeElement.id || document.activeElement.tagName}`);
+        closeModal();
+      }
+      return out;
+    });
+    expect(stolen).toEqual([]);
+  });
+});
+
+test.describe('Paleta: escribir y pulsar Enter enseguida', () => {
+  test('actúa sobre lo escrito, no sobre los resultados anteriores (seis veces seguidas)', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    for (let i = 0; i < 6; i++) {
+      await page.keyboard.press('Control+k');
+      await page.locator('#paletteInput').fill('recorrido');
+      await page.keyboard.press('Enter');                                              // sin esperar a que se pinten los resultados
+      await expect(page.locator('#tourLayer')).toBeVisible();
+      await page.evaluate(() => Tour.end(false));
+      await expect(page.locator('#tourLayer')).toHaveCount(0);
+    }
+  });
+
+  test('una búsqueda lenta anterior no pisa a la última', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await page.keyboard.press('Control+k');
+    await page.evaluate(() => {                                                          // la primera consulta tarda más que la segunda
+      const real = window._buildSearchIndex; let first = true;
+      window._buildSearchIndex = async () => { if (first) { first = false; await new Promise(r => setTimeout(r, 300)); } return real(); };
+      App._searchIdxDirty = true;
+    });
+    await page.locator('#paletteInput').fill('ajustes');
+    await page.locator('#paletteInput').fill('colaboradores');
+    await expect(page.locator('.palette-item-label', { hasText: 'Colaboradores' }).first()).toBeVisible();
+    await page.waitForTimeout(600);
+    await expect(page.locator('.palette-item-label', { hasText: 'Ajustes y backup' })).toHaveCount(0);
+  });
+});
+
 test.describe('Avisos y diálogos', () => {
   test('los avisos se pueden cerrar, no se apilan más de 4 y los errores duran más', async ({ page }) => {
     await openApp(page);

@@ -1,4 +1,4 @@
-// Recorre toda la app con el dataset de ejemplo real (researchos-tutorial.json),
+// Recorre toda la app con el dataset de ejemplo real (sample.js, con fechas relativas a hoy),
 // que es el escenario más cercano a un usuario con datos.
 const { test, expect } = require('@playwright/test');
 const { openApp, gotoView } = require('./helpers');
@@ -25,7 +25,7 @@ test.describe('Dataset de ejemplo', () => {
     const counts = await page.evaluate(async () => Object.fromEntries(await Promise.all(
       ['projects', 'ideas', 'snippets', 'references', 'meetings', 'collaborators', 'kanbanColumns']
         .map(async t => [t, await db[t].count()]))));
-    expect(counts).toEqual({ projects: 8, ideas: 10, snippets: 5, references: 5, meetings: 3, collaborators: 3, kanbanColumns: 6 });
+    expect(counts).toEqual({ projects: 14, ideas: 10, snippets: 8, references: 8, meetings: 11, collaborators: 4, kanbanColumns: 6 });
     expect(errors).toEqual([]);
   });
 

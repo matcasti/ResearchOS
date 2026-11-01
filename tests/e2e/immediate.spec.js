@@ -202,4 +202,70 @@ test.describe('Refresco inmediato', () => {
     await page.waitForTimeout(800);
     expect(await page.evaluate(() => window.__renders)).toBeLessThanOrEqual(2);
   });
+  test('un cambio de datos mientras se pulsa un botón no deshace el clic (el repintado espera a soltar)', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    const id = await page.evaluate(() => db.ideas.where('title').equals('Idea uno').first().then(i => i.id));
+    await page.evaluate(i => inspectIdea(i), id);
+    const btn = page.locator('#ideaToTaskBtn');
+    await expect(btn).toBeVisible();
+    await page.waitForTimeout(400);                  // deja pasar el repintado pendiente de la siembra: el cambio de abajo es el único durante la pulsación
+    const box = await btn.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    // Mientras el botón está pulsado llega un cambio de datos: sin protección, el inspector se repinta y el botón del «mouseup» es otro
+    await page.evaluate(() => db.ideas.where('title').equals('Idea uno').modify({ deadline: '2027-01-15' }));
+    await page.waitForTimeout(400);
+    await page.mouse.up();
+    await expect(page.locator('.toast.success').last()).toContainText('convertida en tarea');
+  });
+
+  test('«→ Tarea» pulsado dos veces seguidas crea una sola tarea', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    const id = await page.evaluate(() => db.ideas.where('title').equals('Idea uno').first().then(i => i.id));
+    await page.evaluate(i => inspectIdea(i), id);
+    await page.evaluate(() => { const b = document.getElementById('ideaToTaskBtn'); b.click(); b.click(); });
+    await expect(page.locator('.toast.success').last()).toContainText('convertida en tarea');
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => db.tasks.toArray().then(a => a.filter(t => t.title === 'Idea uno').length))).toBe(1);
+  });
+  test('un doble Enter en la captura rápida crea un solo elemento y un error devuelve el texto', async ({ page }) => {
+    await openApp(page);
+    await gotoView(page, 'dashboard');
+    await page.locator('#captureInput').fill('t: Comprar café para el laboratorio');
+    await page.evaluate(() => { const f = document.getElementById('captureForm'); f.requestSubmit(); f.requestSubmit(); });
+    await expect(page.locator('.toast.success').last()).toContainText('Tarea creada');
+    await page.waitForTimeout(400);
+    expect(await page.evaluate(() => db.tasks.toArray().then(a => a.filter(t => t.title.startsWith('Comprar café')).length))).toBe(1);
+    await expect(page.locator('#captureInput')).toHaveValue('');
+  });
+  test('guardar la idea rápida dos veces seguidas (Enter mantenido) crea una sola', async ({ page }) => {
+    await openApp(page);
+    await gotoView(page, 'ideas');
+    await page.locator('#ideaTitleInput').fill('Idea única del laboratorio');
+    await page.evaluate(() => { saveQuickIdea(); saveQuickIdea(); });
+    await expect(page.locator('.toast.success').last()).toContainText('Idea guardada');
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => db.ideas.toArray().then(a => a.filter(i => i.title === 'Idea única del laboratorio').length))).toBe(1);
+  });
+  test('un repintado directo lento no pisa la vista a la que se navegó después (ni muestra la pantalla de error)', async ({ page }) => {
+    const { errors } = await openApp(page);
+    await page.evaluate(() => loadSampleData({ replace: true }));
+    await page.evaluate(() => navigate('ideas'));
+    await expect(page.locator('#mainContent')).toHaveAttribute('data-view', 'ideas');
+    await page.evaluate(() => {
+      const read = Tasks.countsByIdea.bind(Tasks);
+      let slow = true;
+      Tasks.countsByIdea = async (...a) => { const r = await read(...a); if (slow) { slow = false; await new Promise(res => setTimeout(res, 500)); } return r; };
+      renderIdeas();                       // como tras guardar una idea: el repintado directo queda esperando a la base de datos…
+      navigate('submissions');             // …y la persona ya está en otra vista
+    });
+    await page.waitForTimeout(1200);
+    await expect(page.locator('#mainContent')).toHaveAttribute('data-view', 'submissions');
+    await expect(page.locator('.view-error')).toHaveCount(0);
+    await expect(page.locator('#addSubmissionBtn')).toHaveCount(1);
+    await expect(page.locator('#ideasList')).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
 });

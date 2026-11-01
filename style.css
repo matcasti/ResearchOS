@@ -669,7 +669,7 @@ body.theme-transitioning * {
 
 .projects-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
   gap: 14px;
 }
 .project-card-header {
@@ -4307,7 +4307,7 @@ body.sidebar-collapsed .nav-group-body { display: flex !important; }
   .view-header .btn { flex: 0 1 auto; }
   .view-header > div:first-child { flex: 1 1 100%; }                 /* el título ocupa su fila; los botones pasan debajo */
   .view-header > div:not(:first-child) { flex: 1 1 100%; justify-content: flex-start; }
-  .btn, .tw-check, .tw-more, .mb-tab { min-height: 36px; }          /* objetivos táctiles razonables */
+  .btn, .tw-more, .mb-tab { min-height: 36px; }                      /* objetivos táctiles razonables (la casilla de tarea amplía su área con ::after) */
   .rp-tiles { grid-template-columns: repeat(2, 1fr); }
 }
 .snippet-header { flex-wrap: wrap; }
@@ -4465,3 +4465,185 @@ code .hljs-comment, code .hljs-quote, .hljs .hljs-comment, .hljs .hljs-quote { c
 .palette-input:focus-visible, .capture-input:focus-visible, .list-filter-input:focus-visible { outline: none; }
 /* En pantallas táctiles no hay teclado físico: el botón de atajos sobra */
 @media (pointer: coarse) { #shortcutsBtn { display: none; } }
+
+/* ══════════════════════════════════════════════════════════════
+   RECORRIDO GUIADO, PRIMEROS PASOS Y DATOS DE EJEMPLO
+══════════════════════════════════════════════════════════════ */
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+#toastContainer { z-index: 7000; }
+
+/* ── Recorrido: cuatro paneles atenuados alrededor del elemento (el hueco deja pasar el clic) ── */
+.tour-layer { position: fixed; inset: 0; z-index: 6000; pointer-events: none; }
+.tour-dim { position: fixed; background: rgba(2, 6, 14, .66); pointer-events: auto; transition: all 180ms var(--ease); }
+.tour-ring { position: fixed; border-radius: 10px; border: 2px solid var(--accent); box-shadow: 0 0 0 4px var(--accent-d), 0 0 22px rgba(56,189,248,.35); pointer-events: none; transition: all 180ms var(--ease); animation: tourPulse 2s ease-in-out infinite; }
+@keyframes tourPulse { 50% { box-shadow: 0 0 0 7px var(--accent-d), 0 0 26px rgba(56,189,248,.5); } }
+.tour-card { position: fixed; pointer-events: auto; width: 380px; max-width: calc(100vw - 24px); background: var(--bg-elevated); border: 1px solid var(--border-str); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg); padding: 16px 18px 14px; transition: left 180ms var(--ease), top 180ms var(--ease), opacity 120ms; outline: none; }
+.tour-card.is-loading { opacity: .55; }
+.tour-progress { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.tour-count { font-family: var(--font-mono); font-size: .68rem; color: var(--text-3); white-space: nowrap; }
+.tour-bar { flex: 1; height: 4px; border-radius: 99px; background: var(--bg-hover); overflow: hidden; }
+.tour-bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width 240ms var(--ease); }
+.tour-title { margin: 0 0 6px; font-size: 1.05rem; color: var(--text-1); }
+.tour-body { font-size: .86rem; line-height: 1.55; color: var(--text-2); }
+.tour-body p { margin: 0 0 8px; }
+.tour-body code, .tour-task code { font-family: var(--font-mono); font-size: .76rem; background: var(--bg-hover); padding: 1px 5px; border-radius: 4px; color: var(--text-1); }
+.tour-body kbd, .tour-task kbd { font-family: var(--font-mono); font-size: .72rem; background: var(--bg-hover); border: 1px solid var(--border-str); border-bottom-width: 2px; border-radius: 5px; padding: 0 6px; color: var(--text-1); }
+.tour-note { color: var(--text-3); font-size: .78rem; }
+.tour-task { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 2px; padding: 9px 11px; border: 1px dashed var(--accent); border-radius: var(--radius-md); background: var(--accent-d); font-size: .84rem; color: var(--text-1); }
+.tour-task-text { flex: 1; min-width: 160px; }
+.tour-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex-shrink: 0; animation: tourBlink 1.2s ease-in-out infinite; display: inline-grid; place-items: center; font-size: .62rem; color: #04121c; }
+@keyframes tourBlink { 50% { opacity: .35; } }
+.tour-task.is-done { border-style: solid; border-color: var(--green); background: rgba(52,211,153,.12); }
+.tour-task.is-done .tour-dot { width: 18px; height: 18px; background: var(--green); animation: none; }
+.tour-choices { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.tour-choices .btn { justify-content: center; text-align: center; white-space: normal; }
+.tour-actions { display: flex; align-items: center; gap: 6px; margin-top: 12px; }
+.tour-spacer { flex: 1; }
+@media (max-width: 600px) { .tour-card { padding: 14px 14px 12px; } .tour-body { font-size: .82rem; } }
+@media (prefers-reduced-motion: reduce) { .tour-ring, .tour-dot { animation: none; } }
+
+/* ── Primeros pasos y aviso de ejemplo en Hoy ── */
+.onboard { margin: 10px 0 14px; padding: 14px 16px; border: 1px solid var(--border-str); border-radius: var(--radius-lg); background: linear-gradient(180deg, var(--accent-d), transparent 70%), var(--bg-card); }
+.onb-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.onb-title { margin: 0; font-size: .98rem; color: var(--text-1); }
+.onb-count { font-family: var(--font-mono); font-size: .72rem; color: var(--accent); margin-left: 6px; }
+.onb-bar { flex: 1; min-width: 80px; height: 6px; border-radius: 99px; background: var(--bg-hover); overflow: hidden; }
+.onb-bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width 300ms var(--ease); }
+.onb-head-actions { display: flex; gap: 6px; }
+.onb-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 4px 18px; }
+.onb-item { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: .85rem; color: var(--text-1); min-width: 0; }
+.onb-check { flex: 0 0 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--border-str); display: grid; place-items: center; font-size: .7rem; color: #04121c; }
+.onb-item.done .onb-check { background: var(--green); border-color: var(--green); }
+.onb-item.done .onb-text { color: var(--text-3); text-decoration: line-through; }
+.onb-text { flex: 1; min-width: 0; }
+.sample-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; margin: 10px 0 12px; padding: 10px 14px; border-radius: var(--radius-md); border: 1px dashed var(--accent); background: var(--accent-d); font-size: .84rem; color: var(--text-1); }
+.sample-banner.is-stale { border-color: var(--amber); background: rgba(251,191,36,.1); }
+.sample-banner-text { flex: 1; min-width: 220px; }
+.sample-banner-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* ── Bienvenida, Tutorial y panel vacío ── */
+.welcome-choices { display: grid; gap: 10px; margin: 8px 0 14px; }
+.welcome-choice { display: flex; align-items: center; gap: 14px; text-align: left; padding: 13px 16px; border-radius: var(--radius-lg); border: 1px solid var(--border-str); background: var(--bg-card); color: var(--text-1); cursor: pointer; transition: border-color 140ms var(--ease), background 140ms var(--ease), transform 140ms var(--ease); }
+.welcome-choice:hover { border-color: var(--accent); background: var(--bg-hover); transform: translateY(-1px); }
+.welcome-choice.is-primary { border-color: var(--accent); background: var(--accent-d); }
+.welcome-choice .wc-ico { flex: 0 0 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: var(--bg-hover); font-size: 1.1rem; color: var(--accent); }
+.welcome-choice.is-primary .wc-ico { background: var(--accent); color: #04121c; }
+.welcome-choice .wc-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.welcome-choice strong { font-size: .95rem; }
+.welcome-choice small { font-size: .78rem; color: var(--text-2); }
+.welcome-more { margin-top: 4px; }
+.welcome-more > summary { cursor: pointer; font-size: .82rem; color: var(--text-2); padding: 6px 0; }
+.welcome-more[open] > summary { margin-bottom: 8px; }
+.tut-tour-card { display: flex; align-items: center; justify-content: space-between; gap: 14px 24px; flex-wrap: wrap; margin: 4px 0 20px; padding: 16px 18px; border-radius: var(--radius-lg); border: 1px solid var(--accent); background: linear-gradient(135deg, var(--accent-d), transparent 80%), var(--bg-card); }
+.tut-tour-title { font-size: 1rem; font-weight: 700; color: var(--text-1); margin-bottom: 4px; }
+.tut-tour-desc { font-size: .84rem; color: var(--text-2); max-width: 560px; line-height: 1.5; }
+.tut-tour-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.fr-hero { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin: 6px 0 4px; }
+.fr-or { margin-top: 14px; }
+
+/* El atributo hidden debe ganar a los estilos de display de botones y bloques */
+[hidden] { display: none !important; }
+
+.onb-toggle { background: none; border: none; color: var(--text-2); cursor: pointer; font-size: .9rem; padding: 2px 6px; border-radius: 6px; }
+.onb-toggle:hover { background: var(--bg-hover); color: var(--text-1); }
+.onboard.is-collapsed { padding-top: 10px; padding-bottom: 10px; }
+
+/* Calendario en pantallas estrechas: las columnas no crecen con su contenido y en el móvil es una sola */
+@media (max-width: 900px) { .weekly-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .weekly-grid { grid-template-columns: minmax(0, 1fr); } .weekly-day { min-height: 0; } }
+.weekly-events > * { min-width: 0; overflow-wrap: anywhere; }
+
+.diag-list { margin: 8px 0 0; padding: 10px 12px; max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: .72rem; color: var(--text-2); background: var(--bg-base); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.view-error { padding: 48px 16px; }
+
+.reload-bar { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 8000; display: flex; align-items: center; gap: 14px; max-width: calc(100vw - 24px); padding: 10px 14px; background: var(--bg-elevated); border: 1px solid var(--amber); border-radius: var(--radius-md); box-shadow: var(--shadow-lg); font-size: .85rem; color: var(--text-1); }
+
+
+/* ══════════════════════════════════════════════════════════
+   TEXTOS LARGOS Y PANTALLAS ESTRECHAS — nada se sale de su caja
+   ══════════════════════════════════════════════════════════ */
+/* Una URL, un DOI, un nombre de archivo o una etiqueta sin espacios se parte en vez de empujar el diseño (y deja encogerse a las cajas flexibles) */
+.main-content, .inspector-body, .modal, .toast, .palette, .tour-card, .confirm-overlay, .hover-card, .tw-menu { overflow-wrap: break-word; overflow-wrap: anywhere; }   /* la primera línea es el respaldo de Safari < 15.4 */
+/* Las columnas de una tabla no se encogen a una letra: ahí solo se parte lo que no cabe */
+:is(.main-content, .inspector-body, .modal) :is(table, th, td) { overflow-wrap: break-word; }
+
+/* Referencias: el texto no se aplasta contra la columna de estado ni desborda en el móvil */
+.ref-card-main { flex: 1 1 220px; }
+.ref-card-side { flex: 0 1 auto; max-width: 45%; }
+.ref-card-side > * { max-width: 100%; }
+@media (max-width: 600px) {
+  .ref-card-side { flex: 1 1 100%; max-width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 6px 10px; }
+}
+
+/* Revisión semanal: el título de la fila conserva espacio y los botones pasan debajo cuando no caben */
+.review-step .tw-row { flex-wrap: wrap; }
+.review-step .tw-text { flex: 1 1 140px; min-width: 0; }
+.review-actions { flex: 0 1 auto; }
+@media (max-width: 600px) {
+  .review-step .review-actions { flex: 1 1 100%; justify-content: flex-start; margin-left: 28px; }
+}
+
+/* Snippets: en el móvil las colecciones pasan arriba como fichas y las tarjetas usan todo el ancho */
+.snippets-layout { display: flex; gap: 16px; align-items: flex-start; }
+.snippets-layout > :last-child { flex: 1; min-width: 0; }
+@media (max-width: 700px) {
+  .snippets-layout { flex-direction: column; align-items: stretch; gap: 10px; }
+  .snippets-layout > :last-child { width: 100%; }
+  .snippet-collections-panel { width: 100%; flex-direction: row; flex-wrap: wrap; gap: 6px; padding-top: 0; }
+  .snippet-collections-panel .snip-col-panel-title { flex: 1 1 100%; padding-bottom: 2px; }
+  .snippet-collections-panel .snip-col-item { width: auto; max-width: 100%; border: 1px solid var(--border); }
+  .snippet-collections-panel .snip-col-item > span:last-child { margin-left: 4px !important; }
+}
+
+/* Envíos: las etapas del embudo pasan a varias filas en el móvil en vez de cortarse a la derecha */
+.sub-pipeline-label { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .sub-pipeline { flex-wrap: wrap; row-gap: 12px; overflow-x: visible; }
+  .sub-pipeline-stage { flex: 1 1 30%; min-width: 0; border-right: none; }
+}
+
+/* Primeros pasos: la cabecera cabe en una línea y la lista no pasa del ancho de pantallas de 320 px */
+.onb-head { flex-wrap: nowrap; }
+.onb-title { flex: 0 1 auto; min-width: 0; }
+.onb-bar { min-width: 36px; }
+.onb-head-actions { flex: 0 0 auto; }
+.onb-list { grid-template-columns: repeat(auto-fill, minmax(min(290px, 100%), 1fr)); }
+
+/* El recorrido en pantallas bajas (móvil apaisado, 320 × 480): la tarjeta nunca pasa del alto visible, se desplaza por dentro */
+.tour-card { max-height: calc(100vh - 24px); overflow-y: auto; overscroll-behavior: contain; }
+@media (max-width: 600px) { .tour-card { max-height: calc(100vh - 100px); } }
+
+/* Línea de tiempo: la etiqueta «hoy» va una sola vez (arriba); repetida en cada fila chocaba con las fechas de la fila anterior */
+.timeline-row ~ .timeline-row .timeline-today-label { display: none; }
+
+/* Chips de persona y etiquetas: un nombre larguísimo se recorta con «…» dentro de su píldora en vez de ensanchar la tarjeta */
+.person-chip { max-width: 100%; min-width: 0; }
+.person-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.kanban-card-footer > *, .kanban-card-meta > * { max-width: 100%; min-width: 0; }
+
+/* Inspector: los valores largos (nombres, URLs, listas de participantes) se encogen dentro de su fila en vez de ensanchar el panel */
+.inspector-meta-row > *, .inspector-meta-val { min-width: 0; }
+.inspector-meta-key { flex-shrink: 0; }
+.subtask-add-row > * { min-width: 0; }
+.subtask-add-input { width: 100%; }
+
+/* Gestores de columnas, presets y etapas: en pantallas estrechas los controles pasan a otra línea y el campo de texto conserva ancho útil */
+.col-manage-row { flex-wrap: wrap; }
+.col-manage-row .col-manage-title { flex: 1 1 140px !important; min-width: 0; }
+.col-manage-row .stage-manage-label { flex: 2 1 130px !important; min-width: 0; }
+.col-manage-row .stage-manage-short { flex: 1 1 90px !important; min-width: 0; }
+.preset-row { flex-wrap: wrap; }
+.preset-row .preset-name { flex: 1 1 110px; width: auto !important; min-width: 0; }
+
+/* Paleta de búsqueda en pantallas bajas (móvil apaisado): nunca pasa del alto visible; la lista se desplaza por dentro */
+.palette { display: flex; flex-direction: column; max-height: calc(100vh - 14vh - 12px); }
+.palette-results { flex: 1 1 auto; min-height: 0; }
+@media (max-height: 520px) { .palette-overlay { padding-top: 12px; } .palette { max-height: calc(100vh - 24px); } }
+
+/* Revisión semanal: el contador del paso se queda junto al título aunque este ocupe dos líneas */
+.review-step h2 { flex-wrap: nowrap; align-items: center; }
+.review-step h2 .review-n { flex: 0 0 22px; }
+
+/* «(reunión «…»)» junto al último contacto: en el inspector se parte en varias líneas en vez de salirse del panel */
+.inspector-meta-val .tw-sub { white-space: normal; max-width: none; overflow: visible; }

@@ -131,15 +131,20 @@ function reportPresets(now = new Date()) {
   const lastSun = new Date(mon); lastSun.setDate(mon.getDate() - 1);
   const m0 = new Date(d0.getFullYear(), d0.getMonth(), 1, 12), pm0 = new Date(d0.getFullYear(), d0.getMonth() - 1, 1, 12), pm1 = new Date(d0.getFullYear(), d0.getMonth(), 0, 12);
   const back = new Date(d0); back.setDate(d0.getDate() - 89);
+  const back30 = new Date(d0); back30.setDate(d0.getDate() - 29);
   return {
     week:      { label: 'Esta semana',    from: iso(mon),      to: iso(d0) },
     lastWeek:  { label: 'Semana pasada',  from: iso(lastMon),  to: iso(lastSun) },
     month:     { label: 'Este mes',       from: iso(m0),       to: iso(d0) },
     lastMonth: { label: 'Mes pasado',     from: iso(pm0),      to: iso(pm1) },
+    last30:    { label: 'Últimos 30 días', from: iso(back30),  to: iso(d0) },
     quarter:   { label: 'Últimos 90 días', from: iso(back),    to: iso(d0) },
     year:      { label: 'Este año',       from: `${d0.getFullYear()}-01-01`, to: iso(d0) },
   };
 }
+
+/** Periodo con el que abre el informe: el mes en curso, salvo la primera semana del mes (el día 1 «este mes» es un solo día y el informe saldría vacío). */
+const reportDefaultKey = (now = new Date()) => now.getDate() <= 7 ? 'last30' : 'month';
 
 /** Reúne lo logrado entre dos fechas (ambas incluidas). No toca la interfaz. */
 async function buildReport(from, to) {
@@ -198,7 +203,8 @@ function reportMarkdown(r) {
 
 async function renderReport() {
   const presets = reportPresets();
-  App._report = App._report || { key: 'month', from: presets.month.from, to: presets.month.to };
+  const defKey = reportDefaultKey();
+  App._report = App._report || { key: defKey, from: presets[defKey].from, to: presets[defKey].to };
   const st = App._report;
   const r = await buildReport(st.from, st.to);
   const tile = (n, label) => `<div class="rp-tile"><div class="rp-n">${n}</div><div class="rp-l">${label}</div></div>`;
@@ -239,7 +245,7 @@ async function renderReport() {
   mainContent.querySelectorAll('[data-rp]').forEach(b => b.addEventListener('click', () => setRange(b.dataset.rp, presets[b.dataset.rp].from, presets[b.dataset.rp].to)));
   const custom = () => { const a = $('rpFrom').value, b = $('rpTo').value; if (a && b && a <= b) setRange('custom', a, b); };
   $('rpFrom').addEventListener('change', custom); $('rpTo').addEventListener('change', custom);
-  $('rpCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(md); showToast('Informe copiado ✓', 'success'); } catch { showToast('No se pudo copiar: usa «Descargar .md»', 'error'); } });
+  $('rpCopy').addEventListener('click', () => copyText(md, 'Informe copiado ✓'));
   $('rpDownload').addEventListener('click', () => { downloadFile(`informe-avance-${st.from}_${st.to}.md`, md, 'text/markdown'); showToast('Informe descargado', 'success'); });
   mainContent.dataset.view = 'report';
 }

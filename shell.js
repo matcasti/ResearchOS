@@ -23,13 +23,16 @@ async function openQuickCapture() {
   const input = $('qcInput'), preview = $('qcPreview');
   const parsed = () => parseCapture(input.value, projects, new Date(), people);
   input.addEventListener('input', () => { const c = parsed(); preview.innerHTML = c.title ? `<span class="capture-arrow">→</span> ${describeCapture(c)}` : ''; });
+  let saving = false;                           // Enter mantenido pulsado o doble clic: se guarda una sola vez
   const save = async () => {
+    if (saving) return;
+    saving = true;
     const c = parsed();
     try {
       const msg = await runCapture(c);
       closeModal(); showToast(msg + ' ✓', 'success'); updateBadges();
       if (App.view === 'dashboard') renderToday();
-    } catch (err) { showToast(err.message, 'error'); }
+    } catch (err) { saving = false; showToast(err.message, 'error'); }
   };
   input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
   $('qcSave').addEventListener('click', save);
@@ -82,7 +85,12 @@ function firstRunHTML() {
     <div class="empty-state today-welcome first-run">
       <span class="empty-state-icon">⬡</span>
       <h3>Empieza escribiendo algo arriba… o trae lo que ya tienes</h3>
-      <p>Todo lo que captures aparece aquí cuando toque. Para no partir de cero:</p>
+      <p>Todo lo que captures aparece aquí cuando toque. Si es tu primera vez, lo más fácil:</p>
+      <div class="fr-hero">
+        <button class="btn btn-primary" id="frTour">▶ Recorrido guiado (3 min)</button>
+        <button class="btn btn-ghost" id="frDemo">🧪 Explorar con datos de ejemplo</button>
+      </div>
+      <p class="fr-or">…o para no partir de cero:</p>
       <ol class="fr-steps">
         <li><div><strong>Tus áreas</strong><span>Investigación, Docencia, Gestión y Personal: te dejan ver una cosa a la vez.</span></div>
           <button class="btn btn-ghost btn-sm" id="frAreas">Crear áreas sugeridas</button></li>
@@ -92,8 +100,6 @@ function firstRunHTML() {
           <button class="btn btn-ghost btn-sm" id="frCsvBtn">Importar CSV</button></li>
         <li><div><strong>Un backup anterior</strong><span>Un archivo de ResearchOS (también los cifrados).</span></div>
           <button class="btn btn-ghost btn-sm" id="frBackupBtn">Abrir backup</button></li>
-        <li><div><strong>Solo mirar</strong><span>Un laboratorio de ecología de ejemplo, para explorar sin riesgo.</span></div>
-          <button class="btn btn-ghost btn-sm" id="frDemo">Cargar ejemplo</button></li>
       </ol>
       <input type="file" id="frBib" accept=".bib,.ris,.txt,text/plain" multiple hidden>
       <input type="file" id="frCsv" accept=".csv,.tsv,text/csv,text/plain" hidden>
@@ -109,15 +115,10 @@ function wireFirstRun() {
   $('frBib')?.addEventListener('change', e => { const f = [...e.target.files]; e.target.value = ''; if (f.length) startReferenceImport(f); });
   $('frCsv')?.addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) startTaskCsvImport(f); });
   $('frBackup')?.addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) startBackupImport(f); });
+  $('frTour')?.addEventListener('click', () => Tour.start({ restart: true }));
   $('frDemo')?.addEventListener('click', async () => {
     const btn = $('frDemo'); btn.disabled = true; btn.textContent = '⏳ Cargando…';
-    try {
-      const res = await fetch('researchos-tutorial.json');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await mergeAllData(await res.text());
-      await _afterDataReplaced();
-      showToast('Datos de ejemplo cargados ✓', 'success');
-      navigate('dashboard');
-    } catch (err) { btn.disabled = false; btn.textContent = 'Cargar ejemplo'; showToast('No se pudo cargar el ejemplo: ' + err.message, 'error'); }
+    try { await loadSampleAndShow(); }
+    catch (err) { btn.disabled = false; btn.textContent = '🧪 Explorar con datos de ejemplo'; showToast('No se pudo cargar el ejemplo: ' + err.message, 'error'); }
   });
 }

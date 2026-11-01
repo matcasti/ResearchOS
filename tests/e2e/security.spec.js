@@ -14,7 +14,7 @@ const TS_KEYS = new Set(['_description', 'exportedAt', 'createdAt', 'updatedAt',
  */
 async function loadPoisoned(page, spec) {
   await page.evaluate(() => { window.__xss = []; });
-  const demo = await page.evaluate(() => fetch('/researchos-tutorial.json').then(r => r.text()));
+  const demo = await page.evaluate(() => JSON.stringify(buildSampleData()));
   const data = await page.evaluate(([txt, spec, payload]) => {
     const TS = ['createdAt', 'updatedAt', 'enteredAt', 'exitedAt', 'ts', 'exportedAt', '_description', 'type', 'priority', 'status', 'submissionStatus'];
     const isColTitle = (path, key) => path.includes('kanbanColumns') && key === 'title';
@@ -112,7 +112,8 @@ test.describe('XSS — datos hostiles', () => {
     test.setTimeout(300_000);
     await openApp(page);
     const fields = ['description', 'content', 'color', 'language', 'doi', 'tags', 'coauthors', 'id', 'deadline',
-                    'title', 'name', 'responsible', 'authors', 'journal', 'text', 'participants', 'agreements', 'targetVenue'];
+                    'title', 'name', 'responsible', 'authors', 'journal', 'text', 'participants', 'agreements', 'targetVenue',
+                    'notes', 'role', 'affiliation', 'email', 'citeKey', 'decision', 'callId', 'agency', 'targetJournal', 'manuscriptUrl', 'kind'];
     const offenders = {};
     for (const field of fields) {
       await page.evaluate(async () => { for (const t of db.tables) await t.clear(); await seedDefaults(); });

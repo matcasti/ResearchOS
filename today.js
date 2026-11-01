@@ -536,6 +536,7 @@ async function renderToday() {
         <span class="capture-hint">Tip: <code>@proyecto</code> asigna · <code>&gt;persona</code> «esperando a» · <code>mañana</code>, <code>viernes</code>, <code>en 3 días</code>, <code>15/03</code> fijan fecha · <code>cada lunes</code> repite · <code>!alta</code> prioridad · <code>[[Título]]</code> enlaza</span>
       </div>
 
+      <div id="onboardHost"></div>
       <div id="todayAlerts"></div>
       <div id="followUpHost"></div>
 
@@ -562,6 +563,7 @@ async function renderToday() {
   }
   _renderAlertPanel($('todayAlerts')).catch(() => {});
   renderFollowUps($('followUpHost')).catch(() => {});        // academic.js
+  renderOnboarding($('onboardHost')).catch(() => {});        // tour.js: datos de ejemplo y primeros pasos
   const pano = $('panorama');
   const loadPano = () => { if (pano.open && !pano.dataset.loaded) { pano.dataset.loaded = '1'; renderPanorama($('panoramaBody')); } };
   pano.addEventListener('toggle', () => { try { localStorage.setItem('ros-panorama-open', pano.open ? '1' : '0'); } catch {} loadPano(); });
@@ -645,16 +647,22 @@ function _wireToday(d, overdueTasks) {
     root.querySelectorAll('[data-ckind]').forEach(x => x.classList.toggle('active', x === b));
     input.focus(); refresh();
   }));
+  let capturing = false;                          // un segundo Enter (o un clic) mientras se guarda no debe crear el elemento dos veces
   $('captureForm').addEventListener('submit', async e => {
     e.preventDefault();
-    const c = await parsed();
+    if (capturing) return;
+    capturing = true;
+    const typed = input.value;
     try {
+      const c = await parsed();
+      if (c.title) { input.value = ''; refresh(); }               // ya capturado: otro Enter mientras la lista se repinta no lo repite
       const msg = await runCapture(c);
       showToast(msg + ' ✓', 'success');
       cache = null;
       renderToday().then(() => $('captureInput')?.focus());
       updateBadges();
-    } catch (err) { showToast(err.message, 'error'); }
+    } catch (err) { input.value = typed; refresh(); showToast(err.message, 'error'); }
+    finally { capturing = false; }
   });
   input.addEventListener('keydown', e => { if (e.key === 'Escape') { input.value = ''; input.blur(); refresh(); e.stopPropagation(); } });
 
@@ -739,7 +747,13 @@ async function agendaTextFor(collab) {
  * Convierte una idea de la bandeja en una tarea o en un proyecto y la saca de la bandeja.
  * Un solo «Deshacer» devuelve la idea y elimina lo creado.
  */
+const _promoting = new Set();
 async function promoteIdea(id, kind) {
+  if (_promoting.has(id)) return;            // un doble clic no debe crear dos tareas ni dos proyectos
+  _promoting.add(id);
+  try { await _promoteIdea(id, kind); } finally { _promoting.delete(id); }
+}
+async function _promoteIdea(id, kind) {
   const idea = await db.ideas.get(id);
   if (!idea) return;
   const now = new Date().toISOString();

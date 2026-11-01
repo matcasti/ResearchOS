@@ -178,7 +178,7 @@ test.describe('Primeros pasos', () => {
     await openApp(page);
     const fr = page.locator('.first-run');
     await expect(fr).toContainText('Empieza escribiendo');
-    await expect(fr.locator('.fr-steps li')).toHaveCount(5);
+    await expect(fr.locator('.fr-steps li')).toHaveCount(4);
     await page.click('#frAreas');
     await expect(page.locator('#frAreas')).toHaveText('✓ Creadas');
     expect((await page.evaluate(() => _getAreas())).map(a => a.name)).toEqual(['Investigación', 'Docencia', 'Gestión', 'Personal']);

@@ -262,6 +262,18 @@ test.describe('Informe de avance', () => {
     expect(p.lastMonth).toMatchObject({ from: '2026-09-01', to: '2026-09-30' });
     expect(p.year).toMatchObject({ from: '2026-01-01', to: '2026-10-31' });
     expect(p.quarter.from).toBe('2026-08-03');
+    expect(p.last30).toMatchObject({ from: '2026-10-02', to: '2026-10-31' });
+  });
+
+  test('el informe abre en «Este mes», pero la primera semana del mes en «Últimos 30 días» (el día 1 «este mes» es un solo día)', async ({ page }) => {
+    await openApp(page);
+    const keys = await page.evaluate(() => ['2026-11-01', '2026-11-07', '2026-11-08', '2026-10-31', '2026-12-15'].map(d => reportDefaultKey(new Date(d + 'T12:00:00'))));
+    expect(keys).toEqual(['last30', 'last30', 'month', 'month', 'month']);
+    await page.evaluate(() => { App._report = null; });
+    await gotoView(page, 'report');
+    const key = await page.evaluate(() => App._report.key);
+    expect(['month', 'last30']).toContain(key);
+    expect(key).toBe(await page.evaluate(() => reportDefaultKey()));
   });
 });
 

@@ -25,6 +25,9 @@ function lastContactOf(c, meetings = [], today = localDateISO()) {
 }
 
 /** Personas a las que toca escribir: con cadencia definida, no pospuestas y con el plazo vencido. */
+/** Día local de un sello de tiempo ISO (el «slice(0, 10)» daría el día UTC, que de noche en América ya es el siguiente). */
+function _localDayOf(stamp, fallback) { const d = new Date(stamp); return stamp && !isNaN(d) ? localDateISO(d) : fallback; }
+
 async function followUps(todayISO = localDateISO()) {
   const [people, meetings] = await Promise.all([db.collaborators.toArray(), db.meetings.toArray()]);
   const out = [];
@@ -33,7 +36,7 @@ async function followUps(todayISO = localDateISO()) {
     if (c.followSnoozeUntil && c.followSnoozeUntil > todayISO) continue;
     const last = lastContactOf(c, meetings, todayISO);
     const since = last ? Math.round((new Date(todayISO + 'T12:00:00') - new Date(last.date + 'T12:00:00')) / 86400000)
-                       : Math.round((new Date(todayISO + 'T12:00:00') - new Date(String(c.createdAt || todayISO).slice(0, 10) + 'T12:00:00')) / 86400000);
+                       : Math.round((new Date(todayISO + 'T12:00:00') - new Date(_localDayOf(c.createdAt, todayISO) + 'T12:00:00')) / 86400000);
     if (since >= c.followUpDays) out.push({ collab: c, last, since, over: since - c.followUpDays });
   }
   return out.sort((a, b) => b.over - a.over);
@@ -263,7 +266,7 @@ function showReviewerResponseModal(projectId) {
     const p = await db.projects.get(projectId);
     const cs = comments();
     if (!cs.length) return showToast('Pega primero los comentarios', 'info');
-    try { await navigator.clipboard.writeText(reviewerResponseMarkdown(cs, p?.title)); showToast('Plantilla copiada ✓', 'success'); } catch { showToast('No se pudo copiar', 'error'); }
+    await copyText(reviewerResponseMarkdown(cs, p?.title), 'Plantilla copiada ✓');
   });
   $('rvSave').addEventListener('click', async () => {
     const cs = comments(), due = isoDateOrNull($('rv-due').value);

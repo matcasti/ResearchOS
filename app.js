@@ -166,7 +166,7 @@ const DeadlineReminder = {
 
     for (const p of projects) {
       const d = new Date(p.deadline + 'T00:00:00');
-      const daysLeft = Math.ceil((d - today) / 86400000);
+      const daysLeft = Math.round((d - today) / 86400000);
       // Notificar si vence hoy o mañana (y no se notificó ya hoy)
       const notifKey = `notif_${p.id}_${localDateISO(today)}`;
       if (daysLeft <= 1 && daysLeft >= 0 && !sessionStorage.getItem(notifKey)) {
@@ -222,9 +222,54 @@ async function dbWrite(fn) {
     return r;
   } catch(e) {
     SaveIndicator.error();
+    if (e?.name === 'QuotaExceededError')
+      showToast('Se llenó el almacenamiento del navegador y no se pudo guardar. Exporta una copia (Ajustes) y libera espacio.', 'error');
     throw e;
   }
 }
+
+/**
+ * Copia al portapapeles. Si el navegador lo niega (permisos, página sin https, Safari sin gesto) prueba el método antiguo y,
+ * si tampoco, avisa en vez de dejar un error en la consola. Devuelve true/false.
+ */
+async function copyText(text, okMsg = 'Copiado ✓') {
+  try { await navigator.clipboard.writeText(text); showToast(okMsg, 'success'); return true; }
+  catch {
+    try {
+      const ta = Object.assign(document.createElement('textarea'), { value: String(text), readOnly: true });
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand('copy'); ta.remove();
+      if (ok) { showToast(okMsg, 'success'); return true; }
+    } catch { /* sin alternativa */ }
+    showToast(`No se pudo copiar solo. Selecciona el texto y usa ${MOD_KEY} C`, 'error');
+    return false;
+  }
+}
+
+// ==============================================================
+//  REGISTRO DE ERRORES INESPERADOS
+//  Lo que antes se perdía en la consola (una promesa rechazada, un fallo al pintar) queda guardado —solo en este navegador— y se
+//  muestra en Ajustes → Diagnóstico, con un aviso discreto como máximo cada 30 s. Sin envíos a ningún servidor.
+// ==============================================================
+const ErrorLog = {
+  KEY: 'ros-errors', _last: 0,
+  all() { try { return JSON.parse(localStorage.getItem(ErrorLog.KEY)) || []; } catch { return []; } },
+  add(kind, err, { quiet = false } = {}) {
+    const msg = String(err?.message ?? err ?? '').slice(0, 300);
+    if (/ResizeObserver|^Script error|Non-Error promise rejection/i.test(msg)) return;      // ruido del navegador, no de la app
+    const entry = { t: new Date().toISOString(), kind, view: typeof App !== 'undefined' ? (App.view || '') : '', msg, stack: String(err?.stack || '').split('\n').slice(0, 4).join(' | ').slice(0, 500) };
+    try { localStorage.setItem(ErrorLog.KEY, JSON.stringify([...ErrorLog.all(), entry].slice(-20))); } catch {}
+    const now = Date.now();
+    if (!quiet && now - ErrorLog._last > 30000 && typeof showToast === 'function') {
+      ErrorLog._last = now;
+      showToast('Algo no salió como esperaba. Tus datos están a salvo; el detalle quedó en Ajustes → Diagnóstico.', 'error');
+    }
+  },
+  clear() { try { localStorage.removeItem(ErrorLog.KEY); } catch {} },
+};
+window.addEventListener('error', e => { if (e.target && e.target !== window) return; ErrorLog.add('error', e.error || e.message); });   // los fallos de carga de recursos no entran
+window.addEventListener('unhandledrejection', e => ErrorLog.add('promesa', e.reason));
 
 // ==============================================================
 //  REFRESCO INMEDIATO
@@ -234,7 +279,7 @@ async function dbWrite(fn) {
 // ==============================================================
 const Live = {
   ready: false,                 // true cuando termina el arranque (antes pinta init)
-  dirtyAt: 0, timer: 0, waiting: false,
+  dirtyAt: 0, timer: 0, waiting: false, pressedAt: 0,
   DELAY: 70,
   SKIP_VIEWS: new Set(['network', 'tutorial', 'settings', 'filesystem']),   // vistas con estado propio que un repintado reiniciaría
 
@@ -244,6 +289,9 @@ const Live = {
     clearTimeout(Live.timer);
     Live.timer = setTimeout(Live.flush, Live.DELAY);
   },
+
+  /** ¿Hay un botón del ratón o un dedo pulsado? Repintar entre «pulsar» y «soltar» cambia el elemento bajo el puntero y el clic se pierde. */
+  pressing() { return Live.pressedAt > 0 && performance.now() - Live.pressedAt < 3000; },    // el límite evita que un «soltar» perdido (fuera de la ventana) la deje esperando
 
   /** ¿Hay algo a medias que un repintado destruiría? */
   editing() {
@@ -257,6 +305,7 @@ const Live = {
     if (!Live.ready || !App.view || Live.SKIP_VIEWS.has(App.view)) { Live.waiting = false; return; }
     if (App._renderStartedAt >= Live.dirtyAt) { Live.waiting = false; return; }      // el manejador ya repintó con el dato nuevo
     if (document.hidden) { Live.waiting = true; return; }                             // se retoma al volver a la pestaña
+    if (Live.pressing()) { Live.waiting = true; clearTimeout(Live.timer); Live.timer = setTimeout(Live.flush, 60); return; }   // se repinta al soltar, no entre pulsar y soltar
     if (Live.editing()) {                                                              // se retoma al soltar el campo (Firefox y Safari no avisan si el campo se quita con el foco puesto: se vuelve a mirar)
       Live.waiting = true; clearTimeout(Live.timer); Live.timer = setTimeout(Live.flush, 400); return;
     }
@@ -275,6 +324,18 @@ const Live = {
 // Las áreas, los presets de columnas, las etapas y los campos por tipo viven en `settings` y también cambian lo que se ve.
 const _LIVE_SETTINGS = /^ros-(areas|col-presets|sub-stages|sub-col-map|type-schemas|auto-sync-paper-col)$/;
 /** Se llama desde init() una vez comprobado que Dexie cargó (sin Dexie, db.js no define ni `db` ni `SyncState`). */
+function _wireDbEvents() {
+  // Otra pestaña abrió una versión más nueva de la base de datos: esta se cierra para no bloquear la actualización y se avisa.
+  db.on('versionchange', () => {
+    const bar = document.createElement('div');
+    bar.className = 'reload-bar'; bar.setAttribute('role', 'alert');
+    bar.innerHTML = '<span>ResearchOS se actualizó en otra pestaña. Recarga esta para seguir trabajando sin perder nada.</span><button class="btn btn-primary btn-sm" id="reloadNow">Recargar</button>';
+    document.body.appendChild(bar);
+    $('reloadNow').addEventListener('click', () => location.reload());
+  });
+  db.on('blocked', () => showToast('Cierra las otras pestañas de ResearchOS para terminar de actualizar', 'info'));
+}
+
 function _wireLive() {
   // Con la app abierta en dos pestañas (o la instalada y una pestaña) comparten la misma base de datos: cada cambio local
   // avisa a las demás, que se ponen al día solas. Lo que llega de fuera no se reenvía (no hay eco) ni toca copias/sincronización.
@@ -291,6 +352,8 @@ function _wireLive() {
   db.settings.hook('deleting', key => { touchSetting(key); });
 }
 document.addEventListener('focusout', () => Live.resume());
+document.addEventListener('pointerdown', () => { Live.pressedAt = performance.now(); }, true);
+for (const type of ['pointerup', 'pointercancel']) document.addEventListener(type, () => setTimeout(() => { Live.pressedAt = 0; Live.resume(); }, 0), true);   // tras el «click», que se dispara justo después de soltar
 document.addEventListener('visibilitychange', () => { if (!document.hidden) Live.resume(); });
 
 // -- Breadcrumbs ----------------------------------------------
@@ -808,6 +871,7 @@ async function _renderViewNow(view) {
   };
 
   // Render first, then inject BC at top so innerHTML overwrites don't destroy it
+  try {
   switch (view) {
     case 'dashboard':  await renderDashboard();  break;
     case 'kanban':     await renderKanban();     break;
@@ -836,6 +900,28 @@ async function _renderViewNow(view) {
     case 'network':      await renderNetwork();         break;
     case 'report':       await renderReport();          break;
     default:             await renderDashboard();
+  }
+  } catch (err) {                                  // una vista que falla no deja la pantalla a medias ni en blanco
+    // Un pintado que ya quedó obsoleto (se navegó a otra vista, o se pidió repintar) falla porque otro lo pisó: lo repite renderView, sin pantalla de error
+    if (view !== App.view || App._renderAgain) { console.debug('Pintado obsoleto de «' + view + '» descartado', err); return; }
+    console.error('Error al pintar «' + view + '»', err);
+    ErrorLog.add('vista ' + view, err, { quiet: true });
+    mainContent.innerHTML = `
+      <div class="view"><div class="empty-state view-error" role="alert">
+        <span class="empty-state-icon">⚠</span>
+        <h3>No se pudo mostrar esta pantalla</h3>
+        <p>Tus datos están a salvo. Prueba de nuevo o vuelve a Hoy; si se repite, descarga una copia y revisa Ajustes → Diagnóstico.</p>
+        <p class="form-hint">${esc(String(err?.message || err).slice(0, 200))}</p>
+        <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:10px">
+          <button class="btn btn-primary btn-sm" id="viewRetry">↻ Reintentar</button>
+          <button class="btn btn-ghost btn-sm" id="viewHome">Ir a Hoy</button>
+          <button class="btn btn-ghost btn-sm" id="viewBackup">Descargar copia de seguridad</button>
+        </div></div></div>`;
+    $('viewRetry')?.addEventListener('click', () => renderView(App.view));
+    $('viewHome')?.addEventListener('click', () => navigate('dashboard'));
+    $('viewBackup')?.addEventListener('click', () => downloadBackup('researchos-diagnostico').catch(e => showToast(e.message, 'error')));
+    mainContent.dataset.view = view;
+    return;
   }
 
   setupListFilter(view);                   // antes de devolver el scroll: la barra del filtro ocupa sitio arriba
@@ -869,6 +955,10 @@ async function _renderViewNow(view) {
     mainContent.classList.add('view-enter');
   }
   autoLabelControls(mainContent);
+  if (_wasNavigating) {                    // se anuncia el cambio de pantalla, no cada repintado por un cambio de datos
+    const name = (mainContent.querySelector('.view-title')?.textContent || '').trim();
+    if ($('srStatus') && name) { $('srStatus').textContent = ''; setTimeout(() => { if ($('srStatus')) $('srStatus').textContent = name; }, 60); }
+  }
   mainContent.dataset.view = view;         // «esta vista ya está pintada» (lo usan los tests y las lectoras de pantalla)
 }
 
@@ -893,7 +983,7 @@ async function renderPanorama(host) {
     .filter(p => p.deadline)
     .map(p => {
       const d = new Date(p.deadline + 'T00:00:00');
-      const daysLeft = Math.ceil((d - today) / 86400000);
+      const daysLeft = Math.round((d - today) / 86400000);
       return { ...p, daysLeft };
     })
     .filter(p => p.daysLeft <= 30)
@@ -1051,7 +1141,7 @@ const HoverCard = {
       const pending  = meetings.flatMap(m => (m.actionItems||[]).filter(a => !a.done)).length;
       const today    = new Date(); today.setHours(0,0,0,0);
       const daysDiff = p.deadline
-        ? Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000) : null;
+        ? Math.round((new Date(p.deadline + 'T00:00:00') - today) / 86400000) : null;
       const deadlineColor = daysDiff === null ? 'var(--text-3)'
         : daysDiff < 0 ? 'var(--red)' : daysDiff <= 7 ? 'var(--amber)' : 'var(--green)';
       const lastEdit = p.updatedAt
@@ -1585,7 +1675,7 @@ async function showManagePresetsModal() {
   const ALL_TYPES = ['Proyecto','Grant','Paper','Análisis','Dataset','Presentación','Curso'];
 
   const renderRows = () => presets.map((pr, i) => `
-    <div style="display:flex;align-items:flex-start;gap:8px;padding:10px 0;
+    <div class="preset-row" style="display:flex;align-items:flex-start;gap:8px;padding:10px 0;
                 border-bottom:1px solid var(--border)">
       <input class="form-input preset-icon" value="${esc(pr.icon || '⭐')}"
              data-pi="${i}"
@@ -2306,7 +2396,7 @@ async function renderProjects() {
         const col     = colMap[p.columnId];
         const today   = new Date(); today.setHours(0,0,0,0);
         const daysLeft = p.deadline
-          ? Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000) : null;
+          ? Math.round((new Date(p.deadline + 'T00:00:00') - today) / 86400000) : null;
         const dlColor  = daysLeft === null ? 'var(--text-3)'
           : daysLeft < 0 ? 'var(--red)' : daysLeft <= 7 ? 'var(--amber)' : 'var(--text-2)';
         return `
@@ -2959,8 +3049,7 @@ async function renderIdeas() {
   });
 
   $('latexCopyBtn')?.addEventListener('click', () => {
-    navigator.clipboard.writeText(latexInput?.value || '');
-    showToast('LaTeX copiado ✓', 'success');
+    copyText(latexInput?.value || '', 'LaTeX copiado ✓');
   });
 
   $('latexSaveBtn')?.addEventListener('click', async () => {
@@ -3066,19 +3155,24 @@ function ideaItemHTML(idea, projMap, stMap = {}) {
     </div>`;
 }
 
+let _savingIdea = false;
 async function saveQuickIdea() {
+  if (_savingIdea) return;                      // Enter mantenido pulsado o doble clic: una sola idea
   const title = $('ideaTitleInput').value.trim();
   if (!title) { showToast('Escribe un título', 'error'); return; }
   const content    = $('ideaContentInput').value.trim();
   const projectIds = _getProjectPickerIds('quickCaptureProjs');
   const projectId  = projectIds[0] || null;
   const deadline   = $('quickCaptureDeadline')?.value || null;
-  await dbWrite(() => db.ideas.add({
-    title, content, status: 'unread', projectId, projectIds,
-    deadline,
-    tags: [], subtasks: [],
-    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
-  }));
+  _savingIdea = true;
+  try {
+    await dbWrite(() => db.ideas.add({
+      title, content, status: 'unread', projectId, projectIds,
+      deadline,
+      tags: [], subtasks: [],
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    }));
+  } finally { _savingIdea = false; }
   showToast('Idea guardada ✓', 'success');
   sessionStorage.removeItem('ros-idea-draft-title');
   sessionStorage.removeItem('ros-idea-draft-content');
@@ -3125,7 +3219,7 @@ async function renderSnippets() {
         </div>
       </div>
 
-      <div style="display:flex;gap:16px">
+      <div class="snippets-layout">
         <!-- Collections sidebar -->
         <div class="snippet-collections-panel">
           <div class="snip-col-panel-title">Colecciones</div>
@@ -3173,8 +3267,7 @@ async function renderSnippets() {
   mainContent.querySelectorAll('.copy-btn-float').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      await navigator.clipboard.writeText(decodeURIComponent(btn.dataset.code));
-      btn.textContent = '✓ Copiado'; setTimeout(() => btn.textContent = 'Copy', 1500);
+      if (await copyText(decodeURIComponent(btn.dataset.code), 'Código copiado ✓')) { btn.textContent = '✓ Copiado'; setTimeout(() => btn.textContent = 'Copy', 1500); }
     });
   });
   mainContent.querySelectorAll('.snippet-delete-btn').forEach(btn => {
@@ -4357,7 +4450,7 @@ async function _renderSubmissionPipeline(container) {
 
   const deadlineChip = p => {
     if (!p.deadline) return '';
-    const d   = Math.ceil((new Date(p.deadline+'T00:00:00') - today) / 86400000);
+    const d   = Math.round((new Date(p.deadline+'T00:00:00') - today) / 86400000);
     const col  = d < 0 ? 'var(--red)' : d <= 7 ? 'var(--amber)' : 'var(--text-3)';
     const lbl  = d < 0  ? `Vencido ${Math.abs(d)}d`
                : d === 0 ? '¡Hoy!'
@@ -4785,7 +4878,7 @@ async function renderSubmissions() {
               const col    = colMap[p.columnId];
               const today  = new Date(); today.setHours(0,0,0,0);
               const daysToDeadline = p.deadline
-                ? Math.ceil((new Date(p.deadline+'T00:00:00') - today) / 86400000) : null;
+                ? Math.round((new Date(p.deadline+'T00:00:00') - today) / 86400000) : null;
               return `
                 <div class="sub-card" data-inspect-project="${p.id}">
                   <div class="sub-card-top">
@@ -4923,7 +5016,7 @@ async function showAddSubmissionModal(prefillDate = null, preProjectId = null) {
         <button class="btn btn-ghost" id="asubCancel">Cancelar</button>
         <button class="btn btn-primary" id="asubSave">Guardar</button>
       </div>`);
-    setTimeout(() => $('asub-status')?.focus(), 60);
+    focusField($('asub-status'));
     $('asubCancel').addEventListener('click', closeModal);
     $('asubSave').addEventListener('click', async () => {
       const newStatus = $('asub-status').value;
@@ -5039,7 +5132,7 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
       <button class="btn btn-ghost" id="amCancel">Cancelar</button>
       <button class="btn btn-primary" id="amSave">Guardar</button>
     </div>`);
-  setTimeout(() => $('am-title')?.focus(), 60);
+  focusField($('am-title'));
 
   setTimeout(() => {
     const partInput = $('am-participants');
@@ -5455,7 +5548,7 @@ async function showAddReferenceModal(preProjectId = null) {
       <button class="btn btn-primary" id="arSave">Guardar</button>
     </div>`);
 
-  setTimeout(() => $('ar-doi-search')?.focus(), 60);
+  focusField($('ar-doi-search'));
 
   // DOI Lookup handler
   const doLookup = async () => {
@@ -5592,8 +5685,7 @@ async function inspectReference(id) {
     });
   }
   $('copyBibtexBtn').addEventListener('click', () => {
-    navigator.clipboard.writeText(bibtexStr);
-    showToast('BibTeX copiado ✓', 'success');
+    copyText(bibtexStr, 'BibTeX copiado ✓');
   });
   $('refEditBtn').addEventListener('click', async () => {
     const projects = await db.projects.toArray();
@@ -5689,7 +5781,7 @@ async function renderCollaboratorHub() {
     now - new Date(p.updatedAt) < 30 * 86400000).length;
   const deadlines = allLinked.filter(p => p.deadline).map(p => {
     const d = new Date(p.deadline + 'T00:00:00');
-    return Math.ceil((d - new Date(new Date().setHours(0,0,0,0))) / 86400000);
+    return Math.round((d - new Date(new Date().setHours(0,0,0,0))) / 86400000);
   }).filter(d => d >= 0 && d <= 30).sort();
 
   const hubSection = (sid, label, count, content) => `
@@ -5744,7 +5836,7 @@ async function renderCollaboratorHub() {
           const col  = colMap[p.columnId];
           const today0 = new Date(); today0.setHours(0,0,0,0);
           const dl   = p.deadline
-            ? Math.ceil((new Date(p.deadline + 'T00:00:00') - today0) / 86400000) : null;
+            ? Math.round((new Date(p.deadline + 'T00:00:00') - today0) / 86400000) : null;
           const dlC  = dl === null ? '' : dl < 0 ? 'color:var(--red)' : dl <= 7 ? 'color:var(--amber)' : '';
           return `
             <div class="hub-list-item" data-inspect-project="${p.id}">
@@ -5939,7 +6031,7 @@ async function showAddCollaboratorModal() {
       <button class="btn btn-ghost" id="acCancel">Cancelar</button>
       <button class="btn btn-primary" id="acSave">Guardar</button>
     </div>`);
-  setTimeout(() => $('ac-name')?.focus(), 60);
+  focusField($('ac-name'));
   $('acCancel').addEventListener('click', closeModal);
   $('acSave').addEventListener('click', async () => {
     const name = $('ac-name').value.trim();
@@ -6018,8 +6110,7 @@ async function inspectCollaborator(id) {
   openInspector();
   enhanceCollaboratorInspector(c).catch(() => {});     // academic.js: último contacto, seguimiento, correo con la agenda
   $('collabAgendaBtn')?.addEventListener('click', async () => {
-    await navigator.clipboard.writeText(await agendaTextFor(c));
-    showToast('Agenda copiada al portapapeles ✓', 'success');
+    await copyText(await agendaTextFor(c), 'Agenda copiada al portapapeles ✓');
   });
   $('collabHubBtn')?.addEventListener('click', () => {
     App.collaboratorHubId = id;
@@ -6161,7 +6252,7 @@ async function _updatePipelineStage(projectId, newStatus) {
 
   // Auto-registrar fecha de envío al marcar como "enviado"
   if (newStatus === 'enviado' && !p.submittedAt)
-    upd.submittedAt = now.split('T')[0];
+    upd.submittedAt = localDateISO();           // la fecha local, no la UTC (de noche en América sería «mañana»)
 
   const statusHistory = Array.isArray(p.submissionStatusHistory)
     ? [...p.submissionStatusHistory] : [];
@@ -6222,7 +6313,7 @@ async function renderProjectHub() {
   // -- Deadline display con color de urgencia --------------
   const today0 = new Date(); today0.setHours(0,0,0,0);
   const dlDiff = p.deadline
-    ? Math.ceil((new Date(p.deadline + 'T00:00:00') - today0) / 86400000) : null;
+    ? Math.round((new Date(p.deadline + 'T00:00:00') - today0) / 86400000) : null;
   const dlColor = dlDiff === null ? 'var(--text-3)'
     : dlDiff < 0  ? 'var(--red)'
     : dlDiff <= 7 ? 'var(--amber)'
@@ -6590,7 +6681,7 @@ async function renderProjectHub() {
         <button class="btn btn-ghost" id="qiCancel">Cancelar</button>
         <button class="btn btn-primary" id="qiSave">Guardar Idea</button>
       </div>`);
-    setTimeout(() => $('qi-title')?.focus(), 60);
+    focusField($('qi-title'));
     $('qiCancel').addEventListener('click', closeModal);
     $('qiSave').addEventListener('click', async () => {
       const title = $('qi-title').value.trim();
@@ -7102,6 +7193,17 @@ async function renderTutorial() {
           </div>
         </div>
 
+        <div class="tut-tour-card">
+          <div>
+            <div class="tut-tour-title">▶ Recorrido guiado interactivo</div>
+            <div class="tut-tour-desc">Tres minutos, con la app abierta: te lleva a cada pantalla, te ilumina lo importante y te pide hacer un par de cosas para que lo aprendas haciéndolo. Puedes salir y retomarlo cuando quieras.</div>
+          </div>
+          <div class="tut-tour-actions">
+            <button class="btn btn-primary" id="tourStartBtn">${Tour.state().step > 0 && !Tour.state().done ? 'Retomar el recorrido' : 'Empezar el recorrido'}</button>
+            <button class="btn btn-ghost" id="tourSampleBtn">Cargar datos de ejemplo</button>
+          </div>
+        </div>
+
         <div class="section-title">Primeros pasos</div>
         <div class="tut-step-grid">
           ${step(1, '◉', 'Crea tu primer proyecto', 'Todo gira en torno a proyectos: papers, grants, análisis, datasets, clases, tesis. Elige un tipo y una plantilla — se pre-rellena la estructura.', 'Nuevo Proyecto', 'data-tut-demo="add-project"')}
@@ -7442,6 +7544,8 @@ async function renderTutorial() {
     btn.addEventListener('click', () => navigate(btn.dataset.tutNav));
   });
 
+  $('tourStartBtn')?.addEventListener('click', () => Tour.start());
+  $('tourSampleBtn')?.addEventListener('click', async e => { e.currentTarget.disabled = true; try { await loadSampleAndShow(); } catch (err) { showToast(err.message, 'error'); } });
   mainContent.querySelectorAll('[data-tut-demo]').forEach(btn => {
     btn.addEventListener('click', () => {
       switch (btn.dataset.tutDemo) {
@@ -7518,8 +7622,7 @@ async function renderStarred() {
   mainContent.querySelectorAll('.copy-btn-float').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      await navigator.clipboard.writeText(decodeURIComponent(btn.dataset.code));
-      btn.textContent = '✓'; setTimeout(() => btn.textContent = 'Copy', 1500);
+      if (await copyText(decodeURIComponent(btn.dataset.code), 'Código copiado ✓')) { btn.textContent = '✓'; setTimeout(() => btn.textContent = 'Copy', 1500); }
     });
   });
 
@@ -8457,7 +8560,7 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
     const cf = $('mpCFContainer');
     if (cf) cf.innerHTML = _customFieldsFormHTML(e.target.value, _addSchemas);
   });
-  setTimeout(() => $('mp-title')?.focus(), 60);
+  focusField($('mp-title'));
 
   setTimeout(() => {
     _attachCollaboratorAutocomplete($('mp-responsible'));
@@ -8536,7 +8639,7 @@ async function showAddCollectionModal() {
       <button class="btn btn-ghost" id="ncCancel">Cancelar</button>
       <button class="btn btn-primary" id="ncSave">Crear</button>
     </div>`);
-  setTimeout(() => $('nc-name')?.focus(), 60);
+  focusField($('nc-name'));
   $('ncCancel').addEventListener('click', closeModal);
   $('ncSave').addEventListener('click', async () => {
     const name  = $('nc-name').value.trim();
@@ -8576,7 +8679,7 @@ async function showAddIdeaModal() {
     </div>`;
 
   showModal('Nueva Idea', body);
-  setTimeout(() => $('mi-title')?.focus(), 60);
+  focusField($('mi-title'));
   setTimeout(() => _attachProjectPicker('miProjectPicker', projects), 80);
 
   $('miCancel').addEventListener('click', closeModal);
@@ -8637,7 +8740,7 @@ async function showEditIdeaModal(idea) {
       <button class="btn btn-ghost"   id="eiCancel">Cancelar</button>
       <button class="btn btn-primary" id="eiSave">Guardar Cambios</button>
     </div>`);
-  setTimeout(() => $('ei-title')?.focus(), 60);
+  focusField($('ei-title'));
 
   const _eiInitIds = (idea.projectIds?.length)
     ? idea.projectIds : (idea.projectId ? [idea.projectId] : []);
@@ -8719,7 +8822,7 @@ async function showAddSnippetModal(preProjectId = null) {
     </div>`;
 
   showModal('Nuevo Snippet', body);
-  setTimeout(() => $('ms-title')?.focus(), 60);
+  focusField($('ms-title'));
   $('msCancel').addEventListener('click', closeModal);
   $('msSave').addEventListener('click', async () => {
     const title = $('ms-title').value.trim();
@@ -9334,7 +9437,7 @@ async function inspectProject(id) {
             })()}">
               ${(() => {
                 const LABELS = {major:'Major Rev.',minor:'Minor Rev.',reject:'Rechazado',accept:'Aceptado',pending:'Pendiente'};
-                return LABELS[lastRound.decision] || lastRound.decision;
+                return LABELS[lastRound.decision] || esc(String(lastRound.decision ?? ''));
               })()}
             </span>
             ${lastRound.decisionDate ? ` · ${formatDate(lastRound.decisionDate)}` : ''}
@@ -9640,7 +9743,7 @@ async function inspectProject(id) {
               <button class="btn btn-ghost" id="qiCancel">Cancelar</button>
               <button class="btn btn-primary" id="qiSave">Guardar Idea</button>
             </div>`);
-          setTimeout(() => $('qi-title')?.focus(), 60);
+          focusField($('qi-title'));
           $('qiCancel').addEventListener('click', closeModal);
           $('qiSave').addEventListener('click', async () => {
             const title = $('qi-title').value.trim();
@@ -9791,8 +9894,7 @@ async function inspectSnippet(s) {
   inspectorBody.querySelectorAll('.copy-btn-float').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      await navigator.clipboard.writeText(decodeURIComponent(btn.dataset.code));
-      btn.textContent = '✓'; setTimeout(() => btn.textContent = 'Copy', 1500);
+      if (await copyText(decodeURIComponent(btn.dataset.code), 'Código copiado ✓')) { btn.textContent = '✓'; setTimeout(() => btn.textContent = 'Copy', 1500); }
     });
   });
   $('snipNavProj')?.addEventListener('click', () => {
@@ -9868,7 +9970,7 @@ async function showEditSnippetModal(s) {
       <button class="btn btn-ghost"   id="esCancel">Cancelar</button>
       <button class="btn btn-primary" id="esSave">Guardar Cambios</button>
     </div>`);
-  setTimeout(() => $('es-title')?.focus(), 60);
+  focusField($('es-title'));
   $('esCancel').addEventListener('click', closeModal);
   $('esSave').addEventListener('click', async () => {
     const title = $('es-title').value.trim();
@@ -10131,7 +10233,7 @@ async function inspectIdea(id) {
           <span class="inspector-meta-key">Deadline</span>
           <span class="inspector-meta-val" style="color:${(() => {
             const t = new Date(); t.setHours(0,0,0,0);
-            const d = Math.ceil((new Date(idea.deadline + 'T00:00:00') - t) / 86400000);
+            const d = Math.round((new Date(idea.deadline + 'T00:00:00') - t) / 86400000);
             return d < 0 ? 'var(--red)' : d <= 7 ? 'var(--amber)' : 'var(--text-2)';
           })()}">⏱ ${formatDate(idea.deadline)}</span>
         </div>` : ''}
@@ -10457,10 +10559,13 @@ async function downloadBackup(prefix = 'researchos-backup') {
 }
 
 /** Tras reemplazar/fusionar datos en bloque: reconstruye lo que vive en memoria. */
-async function _afterDataReplaced() {
+async function _afterDataReplaced({ local = true } = {}) {
   _applySubStages(await _getSubStages());
   UndoStack.clear();
   await _buildSearchIndex().catch(() => {});
+  // Importar o cargar datos es un cambio local: se programa la copia automática y la subida a la carpeta compartida
+  // (los hooks de la BD no lo hacen mientras importan). Lo que llega DESDE la carpeta (`local: false`) no se vuelve a subir.
+  if (local) SyncState.touch();
   Live.settingsDirty = true; Live.touch();          // si quien llama no repinta la vista (ni el selector de área), el refresco central lo hace
 }
 
@@ -10635,7 +10740,8 @@ function _applyAccent(accent) {
 
 function formatDate(iso) {
   if (!iso) return '—';
-  const d = new Date(iso + 'T00:00:00');
+  const d = new Date(String(iso).length > 10 ? iso : iso + 'T00:00:00');             // acepta «YYYY-MM-DD» y también un sello de tiempo ISO
+  if (isNaN(d)) return '—';
   return d.toLocaleDateString('es-CL', { day:'2-digit', month:'short', year:'numeric' });
 }
 
@@ -10964,85 +11070,77 @@ function _showWelcomeModal() {
     { icon:'☀', title:'Mi día',           desc:'Elige qué harás hoy según el tiempo disponible y los tiempos estimados (~2h al capturar). Lo pendiente pasa solo al día siguiente.' },
     { icon:'📈', title:'Informe de avance', desc:'Lo que lograste en una semana, un mes o el año, en Markdown, para tu memoria anual, tu CV o tu jefatura.' },
   ];
-
-  showModal('⬡ Bienvenido a ResearchOS', `
-    <div class="welcome-modal-body">
+  showModal('Bienvenido/a a ResearchOS', `
+    <div class="modal-body welcome-body">
       <p class="welcome-intro">
-        <strong>ResearchOS</strong> es una herramienta de productividad científica
-        <em>local-first</em> — tus datos nunca salen del navegador, no hay backend,
-        no hay telemetría.
+        Una herramienta para quienes llevan investigación, docencia y gestión a la vez. <strong>Local-first</strong>: tus datos
+        viven solo en este navegador, sin cuenta, sin servidor y sin telemetría.
       </p>
-      <p class="welcome-intro" style="margin-bottom:18px">
-        Diseñada para investigadores que manejan proyectos, docencia, postulaciones
-        y colaboraciones en paralelo, con el objetivo de reducir la carga cognitiva
-        y mantener todo conectado.
-      </p>
-
-      <div class="welcome-section-title">Módulos principales</div>
-      <div class="welcome-grid">
-        ${sections.map(s => `
-          <div class="welcome-card">
-            <div class="welcome-card-header">
-              <span class="welcome-card-icon">${s.icon}</span>
-              <span class="welcome-card-title">${s.title}</span>
-            </div>
-            <div class="welcome-card-desc">${s.desc}</div>
-          </div>`).join('')}
+      <div class="welcome-section-title">¿Cómo quieres empezar?</div>
+      <div class="welcome-choices">
+        <button class="welcome-choice is-primary" id="welcomeTour">
+          <span class="wc-ico" aria-hidden="true">▶</span>
+          <span class="wc-text"><strong>Recorrido guiado</strong><small>3 minutos: lo esencial, haciendo cosas tú mismo/a</small></span>
+        </button>
+        <button class="welcome-choice" id="welcomeLoadDemo" title="Un laboratorio de ecología con fechas calculadas a partir de hoy">
+          <span class="wc-ico" aria-hidden="true">🧪</span>
+          <span class="wc-text"><strong>Explorar con datos de ejemplo</strong><small>Un laboratorio con fechas de hoy; se quita con un clic</small></span>
+        </button>
+        <button class="welcome-choice" id="welcomeStart">
+          <span class="wc-ico" aria-hidden="true">✎</span>
+          <span class="wc-text"><strong>Empezar con mi app vacía</strong><small>Te dejo una lista de primeros pasos en Hoy</small></span>
+        </button>
       </div>
 
-      <div class="welcome-section-title" style="margin-top:20px">Atajos de teclado</div>
-      <div class="welcome-shortcuts">
-        <div class="ws-row"><kbd>${MOD_KEY}K</kbd><span>Buscar y ejecutar acciones (paleta de comandos)</span></div>
-        <div class="ws-row"><kbd>?</kbd><span>Ver todos los atajos</span></div>
-        <div class="ws-row"><kbd>C</kbd><span>Capturar al vuelo: tarea, idea, proyecto o reunión</span></div>
-        <div class="ws-row"><kbd>/</kbd><span>Filtrar la lista que estás viendo</span></div>
-        <div class="ws-row"><kbd>${MOD_KEY}Z</kbd><span>Deshacer lo último (borrar, archivar, mover…)</span></div>
-        <div class="ws-row"><kbd>[[</kbd><span>Escribe <code>[[</code> en cualquier nota para enlazar con otro elemento</span></div>
-        <div class="ws-row"><kbd>F5</kbd><span>Presentación Kanban (pantalla completa)</span></div>
-        <div class="ws-row"><kbd>→ / L</kbd><span>Siguiente idea en Revisión rápida</span></div>
-        <div class="ws-row"><kbd>Esc</kbd><span>Cerrar ventana / inspector / paleta</span></div>
-      </div>
+      <details class="welcome-more">
+        <summary>¿Qué incluye ResearchOS?</summary>
+        <div class="welcome-grid">
+          ${sections.map(s => `
+            <div class="welcome-card">
+              <div class="welcome-card-header">
+                <span class="welcome-card-icon">${s.icon}</span>
+                <span class="welcome-card-title">${s.title}</span>
+              </div>
+              <div class="welcome-card-desc">${s.desc}</div>
+            </div>`).join('')}
+        </div>
+        <div class="welcome-section-title" style="margin-top:20px">Atajos de teclado</div>
+        <div class="welcome-shortcuts">
+          <div class="ws-row"><kbd>${MOD_KEY}K</kbd><span>Buscar y ejecutar acciones (paleta de comandos)</span></div>
+          <div class="ws-row"><kbd>?</kbd><span>Ver todos los atajos</span></div>
+          <div class="ws-row"><kbd>C</kbd><span>Capturar al vuelo: tarea, idea, proyecto o reunión</span></div>
+          <div class="ws-row"><kbd>/</kbd><span>Filtrar la lista que estás viendo</span></div>
+          <div class="ws-row"><kbd>${MOD_KEY}Z</kbd><span>Deshacer lo último (borrar, archivar, mover…)</span></div>
+          <div class="ws-row"><kbd>[[</kbd><span>Escribe <code>[[</code> en cualquier nota para enlazar con otro elemento</span></div>
+          <div class="ws-row"><kbd>Esc</kbd><span>Cerrar ventana / inspector / paleta</span></div>
+        </div>
+      </details>
     </div>
     <div class="modal-footer" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
       <label style="display:flex;align-items:center;gap:8px;font-size:.75rem;color:var(--text-2);cursor:pointer">
         <input type="checkbox" id="welcomeDontShow">
         No mostrar al iniciar
       </label>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn btn-ghost btn-sm" id="welcomeLoadDemo" title="Carga un lab de ecología de ejemplo con proyectos, ideas, snippets, reuniones y referencias">
-          ⬡ Cargar datos de ejemplo
-        </button>
-        <button class="btn btn-primary" id="welcomeStart">Comenzar →</button>
-      </div>
+      <span class="form-hint">Todo esto está siempre en <strong>Tutorial</strong> y en la paleta (${MOD_KEY} K).</span>
     </div>`);
 
-  $('welcomeStart').addEventListener('click', () => {
-    if ($('welcomeDontShow')?.checked) {
-      localStorage.setItem('ros-welcomed', '1');
-    }
-    closeModal();
-  });
-
+  const remember = () => { if ($('welcomeDontShow')?.checked) localStorage.setItem('ros-welcomed', '1'); };
+  $('welcomeStart').addEventListener('click', () => { remember(); closeModal(); });
+  $('welcomeTour').addEventListener('click', () => { remember(); closeModal(); Tour.start({ restart: true }); });
   $('welcomeLoadDemo').addEventListener('click', async () => {
     const btn = $('welcomeLoadDemo');
     btn.disabled = true;
-    btn.textContent = '⏳ Cargando…';
+    btn.querySelector('strong').textContent = '⏳ Cargando…';
     try {
-      const res  = await fetch('researchos-tutorial.json');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      await mergeAllData(text);
-      await _afterDataReplaced();
-      if ($('welcomeDontShow')?.checked) {
-        localStorage.setItem('ros-welcomed', '1');
-      }
+      remember();
+      await loadSampleData();
       closeModal();
-      showToast('Datos de ejemplo cargados ✓ — mira la vista Hoy', 'success');
+      showToast('Datos de ejemplo cargados ✓ — con fechas de hoy', 'success');
       navigate('dashboard');
     } catch (err) {
       btn.disabled = false;
-      btn.textContent = '⬡ Cargar datos de ejemplo';
-      showToast('No se pudo cargar el archivo de ejemplo: ' + err.message, 'error');
+      btn.querySelector('strong').textContent = 'Explorar con datos de ejemplo';
+      showToast('No se pudieron cargar los datos de ejemplo: ' + err.message, 'error');
     }
   });
 }
@@ -11440,14 +11538,14 @@ function _personChipHTML(name, collabId = null, { small = false } = {}) {
   const color   = linked ? 'var(--accent)' : 'var(--text-2)';
   const dot     = linked ? 'var(--accent)' : 'var(--text-3)';
   return `<span class="person-chip"
-    ${linked ? `data-collab-hub="${collabId}" title="Ver hub de ${esc(name)}"` : ''}
+    ${linked ? `data-collab-hub="${collabId}" title="Ver hub de ${esc(name)}"` : `title="${esc(name)}"`}
     style="display:inline-flex;align-items:center;gap:4px;
            font-family:var(--font-mono);font-size:${sz};
            background:${bg};border:1px solid ${border};color:${color};
            padding:1px 8px;border-radius:99px;white-space:nowrap;
            ${linked ? 'cursor:pointer;' : ''}">
     <span style="width:5px;height:5px;border-radius:50%;flex-shrink:0;background:${dot}"></span>
-    ${esc(name)}
+    <span class="person-chip-name">${esc(name)}</span>
   </span>`;
 }
 
@@ -11599,7 +11697,7 @@ async function _checkSessionResume() {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const urgentProj = projects
     .filter(p => p.deadline && !p.archived)
-    .map(p => ({ ...p, daysLeft: Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000) }))
+    .map(p => ({ ...p, daysLeft: Math.round((new Date(p.deadline + 'T00:00:00') - today) / 86400000) }))
     .filter(p => p.daysLeft >= 0)
     .sort((a, b) => a.daysLeft - b.daysLeft)[0] || null;
 
@@ -11700,6 +11798,7 @@ function _showBootError() {
 
 async function init() {
   if (typeof Dexie === 'undefined') { _showBootError(); return; }
+  _wireDbEvents();                                      // aviso si otra pestaña actualiza la base de datos
   _wireLive();                                          // refresco inmediato de la vista ante cualquier cambio de datos
 
   // Librerías opcionales: la app funciona sin ellas, con menos funciones.
@@ -11860,11 +11959,13 @@ async function init() {
         else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
       }
     }
-    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+    // Durante el recorrido guiado lo que se abre quedaría bajo la capa atenuada, sin poder usarse: solo vale la paleta en el paso del buscador
+    const _tour = typeof Tour !== 'undefined' && Tour.active;
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k' && (!_tour || Tour.steps[Tour.i]?.id === 'buscar')) {
       e.preventDefault();
       $('paletteOverlay').classList.contains('open') ? closePalette() : openPalette();
     }
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'K') {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'K' && !_tour) {
       e.preventDefault(); navigate('kanban');
     }
     // Atajos contextuales sin modificador — solo si no hay foco en input/modal/paleta
@@ -11872,7 +11973,7 @@ async function init() {
     const _noModal   = !modalOverlay.classList.contains('visible');
     const _noPalette = !$('paletteOverlay').classList.contains('open');
     const _plain = !e.metaKey && !e.ctrlKey && !e.altKey;       // Ctrl/⌘+C (copiar), ⌘+S (guardar), etc. son del navegador, no atajos de la app
-    if (_noFocus && _noModal && _noPalette && _plain) {
+    if (_noFocus && _noModal && _noPalette && _plain && !_tour) {
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); _contextualNew(); }
       if (e.key === 'c' || e.key === 'C') { e.preventDefault(); focusCapture(); }
       if (e.key === 'e' || e.key === 'E') { e.preventDefault(); _inspectorEdit(); }
@@ -11880,13 +11981,13 @@ async function init() {
       if (e.key === '?') { e.preventDefault(); openShortcutsHelp(); }
     }
     // Deshacer lo último (borrados, archivados, movimientos…) aunque el aviso ya haya desaparecido
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'z' || e.key === 'Z') && _noFocus && _noModal && _noPalette) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'z' || e.key === 'Z') && _noFocus && _noModal && _noPalette && !_tour) {
       e.preventDefault(); undoLast();
     }
     // «/» lleva el cursor al filtro de la lista
-    if (e.key === '/' && _plain && _noFocus && _noModal && _noPalette && $('listFilterInput')) { e.preventDefault(); $('listFilterInput').focus(); }
+    if (e.key === '/' && _plain && _noFocus && _noModal && _noPalette && !_tour && $('listFilterInput')) { e.preventDefault(); $('listFilterInput').focus(); }
     // Historial de vistas, como anuncian los botones ← →
-    if (e.altKey && !e.metaKey && !e.ctrlKey && _noFocus && _noModal && _noPalette) {
+    if (e.altKey && !e.metaKey && !e.ctrlKey && _noFocus && _noModal && _noPalette && !_tour) {
       if (e.key === 'ArrowLeft')  { e.preventDefault(); navBack(); }
       if (e.key === 'ArrowRight') { e.preventDefault(); navForward(); }
     }
@@ -11934,7 +12035,15 @@ async function init() {
                       'renderCollaborators', 'renderProjectHub', 'renderOrphans', 'renderIdeaTriage', 'renderAreas', 'renderCollaboratorHub',
                       'renderWeeklyReview', 'renderReport']) {
     const fn = window[name];
-    if (typeof fn === 'function') window[name] = function (...args) { App._renderStartedAt = performance.now(); return fn.apply(this, args); };
+    if (typeof fn !== 'function') continue;
+    window[name] = function (...args) {
+      App._renderStartedAt = performance.now();
+      const startView = App.view;
+      const result = fn.apply(this, args);
+      // Si la persona cambió de vista mientras este repintado directo esperaba a la base de datos, pudo pisar la vista nueva: se repinta la actual.
+      if (result && typeof result.then === 'function') result.then(() => { if (App.view !== startView) renderView(App.view); }, () => {});
+      return result;
+    };
   }
   Live.ready = true;                // desde aquí, cualquier cambio de datos refresca la vista abierta
   // Resumen de sesión (se muestra si hubo ≥4h de inactividad)
@@ -12144,7 +12253,7 @@ async function _renderResearchStatus() {
   const idle   = all.filter(p => isIdle(p)).length;                    // sin movimiento (no cuenta lo que espera respuesta ni lo terminado)
   const urgent = all.filter(p => {
     if (!p.deadline || isFinished(p)) return false;
-    const d = Math.ceil((new Date(p.deadline + 'T00:00:00') - today) / 86400000);
+    const d = Math.round((new Date(p.deadline + 'T00:00:00') - today) / 86400000);
     return d >= 0 && d <= 7;
   }).length;
   const active = all.filter(p => !isFinished(p)).length;
@@ -12314,6 +12423,7 @@ let _paletteResults   = [];
 
 function openPalette() {
   $('paletteOverlay').classList.add('open');
+  if (typeof Onboard !== 'undefined') Onboard.mark('search');
   const input = $('paletteInput');
   input.value = '';
   input.focus();
@@ -12356,7 +12466,12 @@ function _scoreMatch(lq, fields) {
   return Math.min(100, score);
 }
 
-async function _searchPalette(q) {
+// Cada tecla lanza una búsqueda asíncrona. Solo vale la última: una respuesta lenta de una consulta anterior no puede pisar a la
+// actual, y Enter espera a que termine la búsqueda en curso (si no, ejecutaría una acción de lo que se había escrito antes).
+let _paletteSeq = 0, _paletteLast = Promise.resolve();
+function _searchPalette(q) { const my = ++_paletteSeq; return _paletteLast = _searchPaletteNow(q, my); }
+
+async function _searchPaletteNow(q, my) {
   if (App._searchIdxDirty) await _buildSearchIndex();      // hubo escrituras desde el último índice
   const lq = foldText(q).trim();
   const qScore = lq.split(/\s+/).filter(Boolean);                // para puntuar: cada palabra escrita, por corta que sea
@@ -12422,6 +12537,9 @@ async function _searchPalette(q) {
     { icon: uiIcon('today'),    label: 'Planificar mi día',        keys: 'agenda dia plan', action: () => { closePalette(); openDayPlanner(); } },
     { icon: uiIcon('theme'),    label: 'Cambiar tema claro / oscuro', keys: 'modo oscuro claro noche', action: () => { closePalette(); $('themeToggle').click(); } },
     { icon: uiIcon('keyboard'), label: 'Atajos de teclado',        keys: 'ayuda teclas', hint: '?', action: () => { closePalette(); openShortcutsHelp(); } },
+    { icon: uiIcon('tutorial'), label: 'Recorrido guiado',         keys: 'tutorial ayuda empezar primeros pasos tour', action: () => { closePalette(); Tour.start({ restart: true }); } },
+    { icon: uiIcon('star'),     label: 'Cargar datos de ejemplo',  keys: 'demo ejemplo practicar laboratorio', action: () => { closePalette(); loadSampleAndShow().catch(e => showToast(e.message, 'error')); } },
+    { icon: uiIcon('archived'), label: 'Quitar datos de ejemplo',  keys: 'borrar demo ejemplo limpiar', action: () => { closePalette(); confirmRemoveSample(); } },
   ].map(n => ({ sub: n.hint ? `Acción · ${n.hint}` : 'Acción', ...n })).filter(n => !lq || foldText(n.label + ' ' + n.keys).includes(lq));
   // Sin texto: primero lo que se hace; escribiendo: primero lo que coincide en vistas
   const navGroup = navItems.length ? [{ label: 'Vistas', items: navItems }] : [];
@@ -12562,6 +12680,8 @@ async function _searchPalette(q) {
     }
   }
 
+  if (my !== _paletteSeq) return;                          // mientras tanto se escribió otra cosa: este resultado ya no sirve
+
   // Flatten for keyboard navigation
   _paletteResults = groups.flatMap(g => g.items);
   _paletteActiveIdx = _paletteResults.length > 0 ? 0 : -1;
@@ -12600,7 +12720,8 @@ function _initPalette() {
   const overlay = $('paletteOverlay');
 
   input.addEventListener('input',   e => _searchPalette(e.target.value));
-  input.addEventListener('keydown', e => {
+  input.addEventListener('keydown', async e => {
+    if (e.key === 'Enter') { e.preventDefault(); await _paletteLast.catch(() => {}); }          // resultados al día antes de actuar
     const len = _paletteResults.length;
     if (!len) return;
     if (e.key === 'ArrowDown') {

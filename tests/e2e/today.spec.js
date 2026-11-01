@@ -431,7 +431,7 @@ test.describe('Tareas ligadas a proyectos e ideas', () => {
 
   test('migración de la base: las subtareas de una BD antigua (v4) pasan a la tabla de tareas', async ({ page }) => {
     // Se crea una BD con el esquema anterior desde una página sin la app (mismo origen) y luego se abre la app.
-    await page.goto('/researchos-tutorial.json');
+    await page.goto('/README.md');                                          // una página del mismo origen sin la app
     await page.evaluate(() => new Promise((resolve, reject) => {
       const req = indexedDB.open('ResearchOS_v2', 40);                  // Dexie multiplica la versión por 10
       req.onupgradeneeded = () => {

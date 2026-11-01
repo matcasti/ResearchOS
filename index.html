@@ -151,7 +151,7 @@
   </aside>
 
   <!-- ── MAIN CONTENT ────────────────────────────────────── -->
-  <main class="main-content" id="mainContent" aria-live="polite" tabindex="-1">
+  <main class="main-content" id="mainContent" tabindex="-1">
     <!-- Views are rendered here by app.js -->
     <div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-3);font-family:var(--font-mono);font-size:.8rem;">
       Iniciando ResearchOS…
@@ -189,6 +189,8 @@
 
   <!-- ── TOASTS ──────────────────────────────────────────── -->
   <div class="toast-container" id="toastContainer" role="status" aria-live="polite"></div>
+  <!-- Anuncia la vista a las lectoras de pantalla solo al navegar (un aria-live en <main> las haría releer todo en cada repintado) -->
+  <div class="sr-only" id="srStatus" role="status" aria-live="polite"></div>
 
   <!-- ── SCRIPTS ─────────────────────────────────────────── -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/3.2.4/dexie.min.js" integrity="sha384-vG8R9Zn5YZHCeXt9gLNp8MnsUCqmIy7HPxhdOdLGa/30/c8uZXFrrN0iKGID/ZvC" crossorigin="anonymous"></script>
@@ -201,6 +203,8 @@
   <script src="academic.js"></script>
   <script src="vault.js"></script>
   <script src="shell.js"></script>
+  <script src="sample.js"></script>
+  <script src="tour.js"></script>
   <script src="sync.js"></script>
   <script src="integrations.js"></script>
   <script>

@@ -3,9 +3,9 @@
 //  · Archivos propios: red primero (siempre ves tu última versión); sin red, o si tarda más de 3,5 s, copia en caché.
 //  · Librerías de CDN (versiones fijadas en la URL): caché primero.
 //  · Todo lo demás (Google Drive, CrossRef…) pasa sin tocar.
-const SHELL_CACHE = 'researchos-shell-v7';
+const SHELL_CACHE = 'researchos-shell-v9';
 const CDN_CACHE   = 'researchos-cdn-v1';
-const SHELL = ['./', 'index.html', 'style.css', 'db.js', 'icons.js', 'app.js', 'today.js', 'network.js', 'planner.js', 'academic.js', 'vault.js', 'shell.js', 'sync.js', 'integrations.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'researchos-tutorial.json'];
+const SHELL = ['./', 'index.html', 'style.css', 'db.js', 'icons.js', 'app.js', 'today.js', 'network.js', 'planner.js', 'academic.js', 'vault.js', 'shell.js', 'sample.js', 'tour.js', 'sync.js', 'integrations.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png'];
 const CDN_HOSTS = ['cdnjs.cloudflare.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', event => {

@@ -265,7 +265,11 @@ const Tasks = {
     if (!t) return null;
     await db.tasks.update(id, { done: !!done, doneAt: done ? now : null, updatedAt: now });
     if (done && !t.done && t.recurrence) {
-      const next = Tasks.nextDue(t.due, t.recurrence);
+      let next = Tasks.nextDue(t.due, t.recurrence);
+      // Una repetición atrasada varias veces no deja una cola de fechas pasadas por completar una a una:
+      // se descartan las que ya pasaron y la siguiente es la primera que no ha vencido (conserva el día de la semana / del mes).
+      const today = localDateISO();
+      for (let n = 0; next && next < today && n < 2000; n++) next = Tasks.nextDue(next, t.recurrence);
       if (next) { const { id: _drop, ...rest } = t; return db.tasks.add({ ...rest, done: false, doneAt: null, due: next, planDate: null, createdAt: now, updatedAt: now }); }
     }
     return null;
@@ -370,6 +374,7 @@ async function recordColumnChange(projectId, newColId) {
     columnHistory: history,
     updatedAt:     now
   });
+  if (typeof Onboard !== 'undefined') Onboard.mark('moved');       // tour.js: «mueve un proyecto» de los primeros pasos
 }
 
 /** Returns array of { colTitle, colColor, daysSpent } sorted by enteredAt */
@@ -536,7 +541,8 @@ function sanitizeBackup(raw) {
     archived: !!r.archived, starred: !!r.starred,
     ...(r.submittedAt !== undefined ? { submittedAt: isoDateOrNull(r.submittedAt) } : {}),
     ...(Array.isArray(r.submissionRounds) ? { submissionRounds: r.submissionRounds.filter(isObj).map(x => ({
-        ...x, submittedAt: isoDateOrNull(x.submittedAt), decisionDate: isoDateOrNull(x.decisionDate) })) } : {}),
+        ...x, submittedAt: isoDateOrNull(x.submittedAt), decisionDate: isoDateOrNull(x.decisionDate),
+        decision: ['major', 'minor', 'reject', 'accept', 'pending'].includes(x.decision) ? x.decision : 'pending' })) } : {}),
     ...(Array.isArray(r.columnHistory) ? { columnHistory: r.columnHistory.filter(isObj).map(h => ({ ...h, colId: num(h.colId) })) } : {}),
   }));
   out.ideas = rows('ideas').map(r => withId({
@@ -559,7 +565,7 @@ function sanitizeBackup(raw) {
   const mkTask = (t, extra) => ({ title: str(t.title ?? t.text), done: !!t.done, doneAt: t.done ? (str(t.doneAt) || now) : null,
     due: isoDateOrNull(t.due), projectId: null, ideaId: null, areaId: num(t.areaId),
     assigneeId: num(t.assigneeId), recurrence: Tasks.cleanRecurrence(t.recurrence), effort: Tasks.cleanEffort(t.effort), planDate: isoDateOrNull(t.planDate),
-    priority: ['Alta', 'Media', 'Baja'].includes(t.priority) ? t.priority : null, ...stamps(t), ...extra });
+    priority: ['Alta', 'Media', 'Baja'].includes(t.priority) ? t.priority : null, ...(t.uid !== undefined ? { uid: t.uid } : {}), ...stamps(t), ...extra });
   if (Array.isArray(raw.tasks)) {
     out.tasks = rows('tasks').map(r => withId(mkTask(r, { projectId: num(r.projectId), ideaId: num(r.ideaId) })));
   } else {
@@ -744,7 +750,7 @@ async function mergeAllData(jsonString) {
       const multi = r => ({ ...proj(r), projectIds: mapIds(maps.projects, r.projectIds) });
       await mergeTable('ideas',      keyByIdentity, multi);
       await mergeTable('snippets',   keyByIdentity, r => ({ ...multi(r), collectionId: mapId(maps.snippetCollections, r.collectionId) }));
-      await mergeTable('meetings',   keyByIdentity, proj);
+      await mergeTable('meetings',   keyByIdentity, r => ({ ...proj(r), actionItems: (r.actionItems || []).map(a => ({ ...a, assigneeId: mapId(maps.collaborators, a.assigneeId) })) }));   // los pasos asignados siguen apuntando a la persona correcta
       await mergeTable('references', keyByIdentity, proj);
       await mergeTable('submissions', keyByIdentity, proj);
       await mergeTable('resources',  keyByIdentity, r => ({ ...proj(r), ideaId: null }));

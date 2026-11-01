@@ -78,7 +78,7 @@ async function seed(page) {
   await page.evaluate(async () => {
     const now = new Date().toISOString();
     const cols = await db.kanbanColumns.orderBy('order').toArray();
-    const iso = d => { const x = new Date(); x.setDate(x.getDate() + d); return x.toISOString().split('T')[0]; };
+    const iso = d => { const x = new Date(); x.setDate(x.getDate() + d); return localDateISO(x); };      // fecha LOCAL: la UTC se adelanta un día de noche
     const base = { status: 'active', archived: false, starred: false, createdAt: now, updatedAt: now, tags: [], coauthors: [] };
     const p1 = await db.projects.add({ ...base, title: 'Paper Alfa', type: 'Paper', columnId: cols[0].id, priority: 'Alta',  responsible: 'Dra. Vega', deadline: iso(3),  description: 'Estudio **alfa**', tags: ['R', 'ecology'] });
     const p2 = await db.projects.add({ ...base, title: 'Dataset Beta', type: 'Dataset', columnId: cols[1].id, priority: 'Media', responsible: 'Dr. García', deadline: iso(-2), description: '' });
@@ -101,3 +101,4 @@ async function reload(page) {
 
 module.exports.seed = seed;
 module.exports.reload = reload;
+module.exports.routeExternal = routeExternal;

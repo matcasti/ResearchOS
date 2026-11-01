@@ -44,11 +44,12 @@ test.describe('Arranque en frío', () => {
     expect(errors).toEqual([]);
   });
 
-  test('cargar datos de ejemplo por file:// informa el error (fetch bloqueado)', async ({ page }) => {
+  test('los datos de ejemplo se cargan también por file:// (se generan en el navegador, sin fetch)', async ({ page }) => {
     await page.goto('file://' + require('path').resolve(__dirname, '../../index.html'));
     await expect(page.locator('#welcomeLoadDemo')).toBeVisible({ timeout: 15000 });
     await page.locator('#welcomeLoadDemo').click();
-    await expect(page.locator('.toast.error')).toContainText('No se pudo cargar el archivo de ejemplo');
+    await expect(page.locator('.toast.success')).toContainText('Datos de ejemplo cargados', { timeout: 15000 });
+    expect(await page.evaluate(() => db.projects.count())).toBe(14);
   });
 
   test('tiempo hasta primera vista con 500 proyectos < 3 s', async ({ page }) => {

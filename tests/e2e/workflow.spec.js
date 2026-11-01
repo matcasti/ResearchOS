@@ -121,7 +121,8 @@ test.describe('Esperando a personas', () => {
     await expect(page.locator('[data-sec="loose"]')).toContainText('mi propia tarea');
   });
 
-  test('el perfil de la persona lista lo que se espera de ella y copia la agenda', async ({ page, context }) => {
+  test('el perfil de la persona lista lo que se espera de ella y copia la agenda', async ({ page, context, browserName }) => {
+    test.skip(browserName !== 'chromium', 'Los permisos clipboard-read/clipboard-write de prueba solo existen en Chromium');
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await openApp(page);
     const id = await setup(page);
@@ -431,6 +432,7 @@ test.describe('Calendario .ics', () => {
 });
 
 test.describe('Copia automática a carpeta', () => {
+  test.skip(({ browserName }) => browserName !== 'chromium', 'La copia a una carpeta usa la File System Access API, que solo existe en Chromium (Chrome/Edge)');
   async function stubPicker(page) {
     await page.evaluate(() => { window.showDirectoryPicker = async () => navigator.storage.getDirectory(); });   // OPFS hace de «carpeta elegida»
   }
