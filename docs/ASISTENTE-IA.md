@@ -10,7 +10,7 @@ tu navegador (ResearchOS)  ⇄  carpeta  ⇄  un LLM / agente
 
 ## Activarlo (1 minuto)
 
-1. En Chrome o Edge: **Ajustes → 🤖 Asistente de IA → Elegir carpeta…** (mejor una carpeta vacía, p. ej. `ResearchOS-IA`).
+1. En Chrome o Edge: **Ajustes → Sincronización e IA → Asistente de IA → Elegir carpeta…** (mejor una carpeta vacía, p. ej. `ResearchOS-IA`). Si ya elegiste una carpeta para la **sincronización** o la **copia automática**, aparece «Usar la carpeta «…»» para activar el asistente en la misma con un clic: cada función guarda sus archivos con nombres propios (`researchos-sync-*.json`, `researchos-backup-*.json`, `AGENTS.md`, `estado.json`, `cambios/`…) y se activa o desactiva por separado. Cada sección indica con quién comparte carpeta.
 2. Deja ResearchOS abierto en una pestaña (la app es la que lee y aplica los cambios).
 3. Abre tu asistente **en esa carpeta**. Con Claude Code: `cd ResearchOS-IA && claude`, y pídele, por ejemplo: *«Revisa mis pendientes y propón un plan para esta semana»*.
 

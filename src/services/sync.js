@@ -188,8 +188,9 @@ const SyncFolder = {
     return p || 'denied';
   },
 
-  async choose() {
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite', id: 'researchos-sync' });
+  async choose() { return this.use(await window.showDirectoryPicker({ mode: 'readwrite', id: 'researchos-sync' })); },
+  /** Activa la sincronización en una carpeta ya elegida (p. ej. la que usa otra función). */
+  async use(handle) {
     await db.settings.put({ key: this.KEY, value: handle });
     localStorage.setItem('ros-sync', '1');
     this.paused = false;
@@ -292,6 +293,8 @@ async function renderSyncSection() {
   if (!host) return;
   const handle = SyncFolder.supported() && SyncFolder.enabled() ? await SyncFolder.handle().catch(() => null) : null;
   const perm = handle ? await SyncFolder.permission(handle).catch(() => 'denied') : null;
+  const groups = handle || !SyncFolder.supported() ? [] : await Folders.inUse('sync');          // integrations.js
+  const shared = handle ? await Folders.sharedWith('sync', handle) : [];
   const peers = [];
   if (handle && perm === 'granted') {
     for await (const [name, entry] of handle.entries())
@@ -312,12 +315,13 @@ async function renderSyncSection() {
                 : '⚠ En pausa: el navegador necesita que reactives el permiso de la carpeta.')
               : 'Elige en cada dispositivo la <strong>misma carpeta</strong> de Dropbox, Drive, Syncthing u OneDrive. Cada uno escribe su propio archivo y lee los de los demás: los cambios más recientes ganan y los borrados se propagan. Los archivos no van cifrados: usa una carpeta privada.'}
           </div>
+          ${sharedFolderNote(shared)}
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
           ${handle ? `${perm !== 'granted' ? `<button class="btn btn-primary btn-sm" id="syncResume">Reactivar</button>` : ''}
                       <button class="btn btn-ghost btn-sm" id="syncNow">Sincronizar ahora</button>
                       <button class="btn btn-ghost btn-sm" id="syncOff">Desactivar</button>`
-                   : `<button class="btn btn-primary btn-sm" id="syncOn">Elegir carpeta…</button>`}
+                   : folderButtonsHTML('sync', groups)}
         </div>
       </div>
       <div class="settings-row">
@@ -326,11 +330,12 @@ async function renderSyncSection() {
         <input class="form-input" id="syncDeviceName" value="${esc(Sync.deviceName())}" style="max-width:200px">
       </div>`}
     </div>`;
+  wireSameFolder('sync', groups, async h => { await SyncFolder.use(h); await initSync(); }, refreshFolderUI);
   $('syncOn')?.addEventListener('click', async () => {
     try { await SyncFolder.choose(); await initSync(); showToast('Sincronización activada ✓', 'success'); } catch (e) { if (e?.name !== 'AbortError') showToast('No se pudo activar: ' + e.message, 'error'); }
-    renderSyncSection();
+    refreshFolderUI();
   });
-  $('syncOff')?.addEventListener('click', async () => { await SyncFolder.disable(); showToast('Sincronización desactivada', 'info'); renderSyncSection(); });
+  $('syncOff')?.addEventListener('click', async () => { await SyncFolder.disable(); showToast('Sincronización desactivada', 'info'); refreshFolderUI(); });
   const run = async ask => { try { const r = await SyncFolder.syncNow({ ask }); showToast(r ? 'Sincronizado ✓' : 'No se pudo sincronizar', r ? 'success' : 'error'); } catch (e) { showToast('Error: ' + e.message, 'error'); } renderSyncSection(); };
   $('syncNow')?.addEventListener('click', () => run(true));
   $('syncResume')?.addEventListener('click', async () => { await run(true); await initSync(); });

@@ -208,4 +208,49 @@ test.describe('Asistente de IA', () => {
     } finally { hijo.kill(); }
     for (const f of ['openai', 'anthropic']) expect(JSON.parse(execFileSync(process.execPath, [TOOL, 'schema', '--formato', f])).length).toBe(R.TOOLS.length);
   });
+
+  test('la sincronización, la copia automática y el asistente comparten carpeta: «Usar la carpeta…» en un clic, sin repetir el selector, y cada sección lo dice', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await page.evaluate(() => { window.__selectores = 0; window.showDirectoryPicker = async () => { window.__selectores++; return navigator.storage.getDirectory(); }; });
+    await gotoView(page, 'settings');
+    await openSettingsTab(page, 'sync');
+    await expect(page.locator('#assistantOn')).toHaveText('Elegir carpeta…');                 // aún no hay ninguna: solo se puede elegir
+    await page.locator('#syncOn').click();                                                   // la primera se elige una vez
+    await expect(page.locator('#syncOff')).toBeVisible();
+    await expect(page.locator('#assistantSame0')).toContainText('Sincronización');            // ahora la IA ofrece usar esa misma
+    await expect(page.locator('#assistantOn')).toHaveText('Elegir otra carpeta…');
+    await page.locator('#assistantSame0').click();
+    await expect(page.locator('#assistantOff')).toBeVisible();
+    expect(await page.evaluate(() => window.__selectores)).toBe(1);                           // el selector del sistema se abrió una sola vez
+    await expect(page.locator('#assistantSection .folder-shared')).toContainText('Sincronización');      // y cada sección dice con quién la comparte
+    await expect(page.locator('#syncSection .folder-shared')).toContainText('Asistente de IA');
+
+    const nombres = await page.evaluate(async () => { const d = await navigator.storage.getDirectory(); const n = []; for await (const [k] of d.entries()) n.push(k); return n.sort(); });
+    expect(nombres.some(n => /^researchos-sync-.+\.json$/.test(n))).toBe(true);              // los archivos conviven sin pisarse
+    expect(nombres).toEqual(expect.arrayContaining(['AGENTS.md', 'estado.json', 'cambios', 'resultados']));
+    expect(await leer(page, 'AGENTS.md')).toContain('researchos-sync-*.json');                // la IA sabe que esos otros archivos no son suyos
+
+    await openSettingsTab(page, 'data');
+    await page.locator('#autoBackupSame0').click();                                          // la copia automática, igual
+    await expect(page.locator('#autoBackupOff')).toBeVisible();
+    await expect(page.locator('#autoBackupSection .folder-shared')).toContainText('Sincronización');
+    await expect(page.locator('#autoBackupSection .folder-shared')).toContainText('Asistente de IA');
+    expect(await leer(page, 'researchos-backup-latest.json')).toContain('"projects"');
+    expect(await page.evaluate(() => window.__selectores)).toBe(1);
+
+    await openSettingsTab(page, 'sync');                                                     // desactivar una no apaga las demás
+    await page.locator('#assistantOff').click();
+    await expect(page.locator('#assistantOn')).toBeVisible();
+    expect(await page.evaluate(() => [SyncFolder.enabled(), AutoBackup.enabled(), Assistant.enabled()])).toEqual([true, true, false]);
+    await expect(page.locator('#syncSection .folder-shared')).toContainText('Copia automática');
+    await expect(page.locator('#syncSection .folder-shared')).not.toContainText('Asistente');
+    const r = await page.evaluate(() => SyncFolder.syncNow({ quiet: true }));                 // la sincronización sigue sin tocar los archivos de la IA
+    expect(r).toMatchObject({ added: 0, updated: 0, deleted: 0 });
+
+    await page.locator('#assistantOn').click();                                              // elegir «otra» abre el selector y, si resulta ser la misma, también se detecta
+    await expect(page.locator('#assistantOff')).toBeVisible();
+    expect(await page.evaluate(() => window.__selectores)).toBe(2);
+    await expect(page.locator('#assistantSection .folder-shared')).toContainText('Sincronización');
+  });
 });

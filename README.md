@@ -176,7 +176,7 @@ Tras la **primera visita con conexión** (servida por `http://localhost` o `http
 
 ### 🤖 Asistente de IA
 
-Elige una carpeta en **Ajustes → Asistente de IA** y cualquier LLM (Claude Code, Claude Desktop vía MCP, Cursor, ChatGPT/Anthropic con *function calling*, un script propio…) podrá **leer tus pendientes y proponerte cambios**: la app publica `estado.json` y `pendientes.md` con instrucciones (`AGENTS.md`), la IA deja sus propuestas en `cambios/` y tú las revisas antes de aplicarlas (los borrados siempre se revisan). No hay servidores ni cuentas. Guía completa, configuración MCP y formato: [docs/ASISTENTE-IA.md](docs/ASISTENTE-IA.md).
+Elige una carpeta en **Ajustes → Asistente de IA** y cualquier LLM (Claude Code, Claude Desktop vía MCP, Cursor, ChatGPT/Anthropic con *function calling*, un script propio…) podrá **leer tus pendientes y proponerte cambios**: la app publica `estado.json` y `pendientes.md` con instrucciones (`AGENTS.md`), la IA deja sus propuestas en `cambios/` y tú las revisas antes de aplicarlas (los borrados siempre se revisan). No hay servidores ni cuentas. La carpeta puede ser **la misma** que usas para la sincronización o la copia automática (cada función ofrece «Usar la carpeta «…»» y dice con quién la comparte). Guía completa, configuración MCP y formato: [docs/ASISTENTE-IA.md](docs/ASISTENTE-IA.md).
 
 ### 🧪 Pruebas end-to-end
 

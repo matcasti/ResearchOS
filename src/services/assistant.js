@@ -239,8 +239,9 @@ const Assistant = {
     if (p !== 'granted' && ask) p = await h.requestPermission?.(o);
     return p || 'denied';
   },
-  async choose() {
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite', id: 'researchos-assistant' });
+  async choose() { return this.use(await window.showDirectoryPicker({ mode: 'readwrite', id: 'researchos-assistant' })); },
+  /** Activa el asistente en una carpeta ya elegida (p. ej. la que usa otra función). */
+  async use(handle) {
     await db.settings.put({ key: this.KEY, value: handle });
     localStorage.setItem('ros-assistant', '1');
     this.paused = false; this._hash = ''; this._md = '';
@@ -327,6 +328,8 @@ Esta carpeta es la puerta de entrada de un asistente de IA a ResearchOS (una app
 | \`resultados/\` | la app | Con el mismo nombre que tu archivo: qué se aplicó, qué falló y por qué. |
 
 **No edites \`estado.json\` ni \`pendientes.md\`**: se regeneran y tus cambios se perderían. Todo cambio va por \`cambios/\`.
+
+Si la persona usa esta carpeta también para la sincronización o la copia de seguridad, verás archivos \`researchos-sync-*.json\` y \`researchos-backup-*.json\`: son copias técnicas de todos los datos. **Ignóralos** (no los leas ni los modifiques): trabaja solo con \`estado.json\`, \`pendientes.md\` y \`cambios/\`.
 
 ## Cómo proponer cambios
 
@@ -616,6 +619,8 @@ async function renderAssistantSection() {
   if (!host) return;
   const handle = Assistant.supported() && Assistant.enabled() ? await Assistant.handle().catch(() => null) : null;
   const perm = handle ? await Assistant.permission(handle).catch(() => 'denied') : null;
+  const groups = handle || !Assistant.supported() ? [] : await Folders.inUse('assistant');      // integrations.js
+  const shared = handle ? await Folders.sharedWith('assistant', handle) : [];
   host.innerHTML = `
     <div class="settings-section-title">🤖 Asistente de IA</div>
     <div class="settings-body">
@@ -629,12 +634,13 @@ async function renderAssistantSection() {
               : '⚠ En pausa: el navegador necesita que reactives el permiso de la carpeta.')
             : 'Elige una carpeta (mejor una vacía, p. ej. «ResearchOS-IA»). La app dejará en ella tus pendientes en un formato que cualquier IA entiende y leerá los cambios que esta le proponga. Nada sale de tu equipo salvo que esa carpeta se sincronice.'}
           </div>
+          ${sharedFolderNote(shared)}
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
           ${handle ? `${perm !== 'granted' ? `<button class="btn btn-primary btn-sm" id="assistantResume">Reactivar</button>` : ''}
                       <button class="btn btn-ghost btn-sm" id="assistantNow">Actualizar ahora</button>
                       <button class="btn btn-ghost btn-sm" id="assistantOff">Desactivar</button>`
-                   : `<button class="btn btn-primary btn-sm" id="assistantOn">Elegir carpeta…</button>`}
+                   : folderButtonsHTML('assistant', groups)}
         </div>
       </div>
       ${handle ? `<div class="settings-row">
@@ -646,11 +652,12 @@ async function renderAssistantSection() {
         </select>
       </div>` : ''}`}
     </div>`;
+  wireSameFolder('assistant', groups, async h => { await Assistant.use(h); await initAssistant(); }, refreshFolderUI);
   $('assistantOn')?.addEventListener('click', async () => {
     try { await Assistant.choose(); await initAssistant(); showToast('Asistente activado ✓', 'success'); } catch (e) { if (e?.name !== 'AbortError') showToast('No se pudo activar: ' + e.message, 'error'); }
-    renderAssistantSection();
+    refreshFolderUI();
   });
-  $('assistantOff')?.addEventListener('click', async () => { await Assistant.disable(); showToast('Asistente desactivado', 'info'); renderAssistantSection(); });
+  $('assistantOff')?.addEventListener('click', async () => { await Assistant.disable(); showToast('Asistente desactivado', 'info'); refreshFolderUI(); });
   const run = async ask => { try { const r = await Assistant.syncNow({ ask }); showToast(r ? 'Carpeta del asistente al día ✓' : 'No se pudo actualizar', r ? 'success' : 'error'); } catch (e) { showToast('Error: ' + e.message, 'error'); } renderAssistantSection(); };
   $('assistantNow')?.addEventListener('click', () => run(true));
   $('assistantResume')?.addEventListener('click', async () => { await run(true); await initAssistant(); });

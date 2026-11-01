@@ -30,8 +30,9 @@ const AutoBackup = {
     return p || 'denied';
   },
 
-  async choose() {
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite', id: 'researchos-backup' });
+  async choose() { return this.use(await window.showDirectoryPicker({ mode: 'readwrite', id: 'researchos-backup' })); },
+  /** Activa la copia automática en una carpeta ya elegida (p. ej. la que usa otra función). */
+  async use(handle) {
     await db.settings.put({ key: this.HANDLE_KEY, value: handle });
     localStorage.setItem('ros-autobackup', '1');
     this.paused = false;
@@ -137,6 +138,59 @@ function _fmtAgo(ts) {
   return m < 1 ? 'hace un momento' : m < 60 ? `hace ${m} min` : m < 1440 ? `hace ${Math.round(m / 60)} h` : `hace ${Math.round(m / 1440)} d`;
 }
 
+// ==============================================================
+//  UNA SOLA CARPETA PARA VARIAS FUNCIONES
+//  La sincronización, la copia automática y el asistente de IA guardan archivos con nombres propios, así que pueden vivir en la misma
+//  carpeta: si ya elegiste una, las demás ofrecen «Usar la carpeta …» (un clic, sin abrir el selector) y cada sección dice con quién la comparte.
+// ==============================================================
+const FOLDER_FEATURES = [
+  { key: 'sync',      label: 'Sincronización',   api: () => SyncFolder },
+  { key: 'backup',    label: 'Copia automática', api: () => AutoBackup },
+  { key: 'assistant', label: 'Asistente de IA',  api: () => Assistant },
+];
+const Folders = {
+  /** Las carpetas que ya usan otras funciones activas, agrupando las que son la misma: [{ handle, name, labels }]. */
+  async inUse(exceptKey) {
+    const groups = [];
+    for (const f of FOLDER_FEATURES) {
+      const api = f.api();
+      if (f.key === exceptKey || !api.supported() || !api.enabled()) continue;
+      const handle = await api.handle().catch(() => null);
+      if (!handle) continue;
+      let g = null;
+      for (const x of groups) if (await x.handle.isSameEntry?.(handle).catch(() => false)) { g = x; break; }
+      if (!g) groups.push(g = { handle, name: handle.name || 'carpeta', labels: [] });
+      g.labels.push(f.label);
+    }
+    return groups;
+  },
+  /** Con qué otras funciones activas comparte carpeta `handle`. */
+  async sharedWith(selfKey, handle) {
+    const out = [];
+    for (const f of FOLDER_FEATURES) {
+      const api = f.api();
+      if (f.key === selfKey || !api.supported() || !api.enabled()) continue;
+      const h = await api.handle().catch(() => null);
+      if (h && await handle.isSameEntry?.(h).catch(() => false)) out.push(f.label);
+    }
+    return out;
+  },
+};
+/** Al activar o desactivar una de las tres funciones, las otras deben enterarse (para ofrecer «Usar la misma carpeta» o dejar de mencionarla). */
+function refreshFolderUI() { return typeof renderSettings === 'function' ? renderSettings() : undefined; }
+/** Botones para activar una función: «Usar la carpeta «X» (…)» por cada carpeta que ya existe, y «Elegir otra carpeta…» / «Elegir carpeta…». */
+function folderButtonsHTML(prefix, groups) {
+  const same = groups.map((g, i) => `<button class="btn btn-primary btn-sm" id="${prefix}Same${i}" title="Sin abrir el selector ni pedir permiso otra vez">Usar la carpeta «${esc(g.name)}» <span class="form-hint">(${esc(g.labels.join(' y '))})</span></button>`).join('');
+  return `${same}<button class="btn ${same ? 'btn-ghost' : 'btn-primary'} btn-sm" id="${prefix}On">${same ? 'Elegir otra carpeta…' : 'Elegir carpeta…'}</button>`;
+}
+const sharedFolderNote = labels => labels.length ? `<div class="settings-row-desc folder-shared">Misma carpeta que: <strong>${labels.map(esc).join(', ')}</strong>. Cada función guarda sus propios archivos y se activa o desactiva por separado.</div>` : '';
+function wireSameFolder(prefix, groups, activate, done) {
+  groups.forEach((g, i) => $(`${prefix}Same${i}`)?.addEventListener('click', async () => {
+    try { await activate(g.handle); showToast('Activado en la misma carpeta ✓', 'success'); } catch (e) { showToast('No se pudo activar: ' + e.message, 'error'); }
+    done();
+  }));
+}
+
 async function enhanceSettings() {
   const view = mainContent.querySelector('.view');
   const anchor = [...mainContent.querySelectorAll('.settings-section')].find(s => s.textContent.includes('Importar backup'));
@@ -145,6 +199,8 @@ async function enhanceSettings() {
   // -- 1) Copia automática + calendario ---------------------------------
   const handle = AutoBackup.supported() && AutoBackup.enabled() ? await AutoBackup.handle().catch(() => null) : null;
   const perm = handle ? await AutoBackup.permission(handle).catch(() => 'denied') : null;
+  const bkGroups = handle || !AutoBackup.supported() ? [] : await Folders.inUse('backup');
+  const bkShared = handle ? await Folders.sharedWith('backup', handle) : [];
   const sections = document.createElement('div');
   sections.innerHTML = `
     <div class="settings-section" id="profileSection"></div>
@@ -161,11 +217,12 @@ async function enhanceSettings() {
                                                 : '⚠ En pausa: el navegador pide permiso de nuevo para escribir en la carpeta.')
                        : 'Guarda una copia de tus datos en una carpeta que elijas (p. ej. la de Dropbox, Drive o Syncthing) cada vez que cambias algo. Sin servidores.'}
             </div>
+            ${sharedFolderNote(bkShared)}
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             ${handle && perm !== 'granted' ? `<button class="btn btn-primary btn-sm" id="autoBackupResume">Reactivar</button>` : ''}
             ${handle ? `<button class="btn btn-ghost btn-sm" id="autoBackupNow">Copiar ahora</button><button class="btn btn-ghost btn-sm" id="autoBackupOff">Desactivar</button>`
-                     : `<button class="btn btn-primary btn-sm" id="autoBackupOn">Elegir carpeta…</button>`}
+                     : folderButtonsHTML('autoBackup', bkGroups)}
           </div>
         </div>`}
       </div>
@@ -210,12 +267,14 @@ async function enhanceSettings() {
   renderProfileSection();                     // today.js
   await renderSyncSection();                  // sync.js
   await renderAssistantSection();             // assistant.js
+  if (!anchor.isConnected) return;            // mientras se pintaban esas secciones otra llamada repintó Ajustes: esa se ocupa del resto
   wirePlannerSettings();                      // planner.js
   wireAcademicSettings();                     // academic.js
   wireVaultSettings();                        // vault.js
   wireSampleSettings();                       // tour.js
   wireDiagnostics();
 
+  wireSameFolder('autoBackup', bkGroups, h => AutoBackup.use(h), renderSettings);
   $('autoBackupOn')?.addEventListener('click', async () => {
     try { await AutoBackup.choose(); showToast('Copia automática activada ✓', 'success'); renderSettings(); }
     catch (e) { if (e?.name !== 'AbortError') showToast('No se pudo activar: ' + e.message, 'error'); }
@@ -231,11 +290,11 @@ async function enhanceSettings() {
     renderSettings();
   });
 
-  $('icsExportBtn').addEventListener('click', async () => {
+  $('icsExportBtn')?.addEventListener('click', async () => {
     downloadFile(`researchos-${localDateISO()}.ics`, await buildICS(), 'text/calendar;charset=utf-8');
     showToast('Calendario exportado ✓', 'success');
   });
-  $('icsImportInput').addEventListener('change', async e => {
+  $('icsImportInput')?.addEventListener('change', async e => {
     const file = e.target.files[0]; e.target.value = '';
     if (!file) return;
     const events = parseICS(await file.text());
@@ -279,7 +338,9 @@ async function enhanceSettings() {
         : `<div class="settings-row-desc">Aún sin datos: navega un poco y vuelve.</div>`}
       ${rows.length ? `<button class="btn btn-ghost btn-sm" id="usageReset" style="margin-top:8px">Reiniciar contadores</button>` : ''}
     </div>`;
-  document.getElementById('calendarSection').after(usage);
+  const cal = document.getElementById('calendarSection');
+  if (!cal) return;
+  cal.after(usage);
   $('usageReset')?.addEventListener('click', () => { Usage.reset(); renderSettings(); });
 
   // -- 3) Lo avanzado, plegado -------------------------------------------

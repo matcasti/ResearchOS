@@ -6,6 +6,10 @@ Todos los cambios relevantes de ResearchOS, de lo más reciente a lo más antigu
 
 ## Sin publicar
 
+### 📁 Una sola carpeta
+
+- **La sincronización, la copia automática y el asistente de IA pueden compartir carpeta.** Si ya elegiste una para una función, las demás ofrecen «Usar la carpeta «…»» (un clic, sin abrir el selector) y cada sección indica con quién la comparte («Misma carpeta que: …»). Cada función guarda sus archivos con nombres propios y se activa o desactiva por separado; las instrucciones de la IA le indican que ignore los archivos técnicos de sincronización y copia.
+
 ### 🔮 Predicciones locales (sin IA)
 
 - **La captura aprende de ti.** Al escribir una tarea parecida a otras que ya tienes («corregir pruebas»), sugiere el proyecto, la persona y el tiempo estimado que casi siempre llevan; se acepta con `Tab` (o un clic, también en la captura rápida del móvil) y dice en cuántas tareas parecidas se basa. Solo sugiere cuando hay tres o más casos que coinciden y nunca pisa lo que escribiste.
