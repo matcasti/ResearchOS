@@ -82,14 +82,17 @@ test.describe('Pestaña Red', () => {
     await seed(page);
     await gotoView(page, 'network');
     await settled(page);
+    await expect.poll(() => page.evaluate(() => window.__graph.settled), { timeout: 15000 }).toBe(true);      // sin nodos en movimiento: el centrado se mide exacto
     await page.fill('#netSearch', 'gamma');
     const gamma = keyOf(await graph(page), 'project', 'Grant Gamma');
     expect(await page.evaluate(() => [...NetView.matchKeys])).toEqual([gamma]);
     await page.press('#netSearch', 'Enter');
+    await expect.poll(() => page.evaluate(() => window.__graph.animating)).toBe(false);          // la vista «vuela» hasta el resultado
     const pos = await page.evaluate(() => window.__graph.screenPos(NetView.graph.nodes.find(n => n.label === 'Grant Gamma').key));
     const box = await page.locator('#netCanvas').boundingBox();
     expect(Math.abs(pos.x - (box.x + box.width / 2))).toBeLessThan(3);
     expect(Math.abs(pos.y - (box.y + box.height / 2))).toBeLessThan(3);
+    expect(await page.evaluate(() => window.__graph.selected)).toBe(gamma);                      // y queda seleccionado
     await page.press('#netSearch', 'Escape');
     expect(await page.evaluate(() => NetView.matchKeys)).toBeNull();
   });
@@ -259,6 +262,7 @@ test.describe('Pestaña Red — gestos táctiles', () => {
     await seed(page);
     await gotoView(page, 'network');
     await settled(page);
+    await expect.poll(() => page.evaluate(() => window.__graph.settled), { timeout: 15000 }).toBe(true);      // sin simulación en curso: cualquier desplazamiento sería de un arrastre
     const box = await page.locator('#netCanvas').boundingBox();
     const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
     const fire = (type, id, x, y) => page.evaluate(([t, i, x, y]) => document.getElementById('netCanvas').dispatchEvent(new PointerEvent(t, { pointerId: i, pointerType: 'touch', clientX: x, clientY: y, bubbles: true, isPrimary: i === 1 })), [type, id, x, y]);
@@ -273,7 +277,7 @@ test.describe('Pestaña Red — gestos táctiles', () => {
     expect(after.k / before.k).toBeCloseTo(2, 1);
     // ningún nodo se movió ni se abrió el inspector
     const drift = (await graph(page)).nodes.map(n => { const o = nodes0.find(m => m.key === n.key); return Math.hypot(n.x - o.x, n.y - o.y); });
-    expect(Math.max(...drift)).toBeLessThan(3);                              // solo el residuo de la simulación: nadie fue arrastrado
+    expect(Math.max(...drift)).toBeLessThan(1);                              // nadie fue arrastrado
     await expect(page.locator('body')).toHaveClass(/inspector-closed/);
     // un dedo sigue arrastrando el fondo después de pellizcar
     const v1 = await page.evaluate(() => ({ ...window.__graph.view }));
@@ -281,5 +285,224 @@ test.describe('Pestaña Red — gestos táctiles', () => {
     const v2 = await page.evaluate(() => ({ ...window.__graph.view }));
     expect(v2.x - v1.x).toBeCloseTo(25, 0); expect(v2.y - v1.y).toBeCloseTo(-10, 0);
     void cx; void cy;
+  });
+});
+
+
+// ── Muchos elementos: etiquetas legibles, selección, búsqueda con lista y teclado ──────────────────────────────────────────────
+const bigGraph = (page, ideas = 260) => page.evaluate(async n => {
+  const now = new Date().toISOString();
+  const cols = await db.kanbanColumns.orderBy('order').toArray();
+  const ps = [];
+  for (let i = 0; i < 24; i++) ps.push(await db.projects.add({ title: 'Proyecto de investigación número ' + i, type: 'Paper', columnId: cols[0].id, status: 'active', archived: false, starred: false, tags: [], coauthors: [], createdAt: now, updatedAt: now }));
+  const rows = [];
+  for (let i = 0; i < n; i++) rows.push({ title: 'Idea ' + i + ' sobre el gradiente altitudinal de la diversidad', content: '', status: 'unread', projectId: ps[i % 24], projectIds: [ps[i % 24]], tags: [], subtasks: [], createdAt: now, updatedAt: now });
+  await db.ideas.bulkAdd(rows);
+}, ideas);
+const labels = page => page.evaluate(() => window.__graph.labels);
+const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+const waitSettled = page => expect.poll(() => page.evaluate(() => window.__graph.settled), { timeout: 20000 }).toBe(true);
+
+test.describe('Pestaña Red — muchos elementos', () => {
+  test('las etiquetas no se pisan entre sí ni salen del grafo, aunque haya cientos de nodos', async ({ page }) => {
+    await openApp(page);
+    await bigGraph(page);
+    await gotoView(page, 'network');
+    await waitSettled(page);
+    const boxes = await labels(page);
+    const { w, h } = await page.evaluate(() => ({ w: NetView.w, h: NetView.h }));
+    expect(boxes.length).toBeGreaterThan(8);
+    expect(boxes.length).toBeLessThan(260);                                              // no se intenta etiquetar todo: no cabría
+    for (const b of boxes) { expect(b.x).toBeGreaterThanOrEqual(0); expect(b.y).toBeGreaterThanOrEqual(0); expect(b.x + b.w).toBeLessThanOrEqual(w + 0.5); expect(b.y + b.h).toBeLessThanOrEqual(h + 0.5); }
+    const clashes = [];
+    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) if (overlap(boxes[i], boxes[j])) clashes.push([boxes[i].key, boxes[j].key]);
+    expect(clashes).toEqual([]);
+  });
+
+  test('los proyectos más conectados siempre llevan etiqueta (ganan a las ideas cuando falta sitio)', async ({ page }) => {
+    await openApp(page);
+    await bigGraph(page);
+    await gotoView(page, 'network');
+    await waitSettled(page);
+    const top = await page.evaluate(() => NetView.graph.order.find(n => n.type === 'project').key);
+    expect((await labels(page)).map(b => b.key)).toContain(top);
+  });
+
+  test('«Más» etiqueta más nodos, «Ninguna» solo lo señalado, y la elección se recuerda', async ({ page }) => {
+    await openApp(page);
+    await bigGraph(page);
+    await gotoView(page, 'network');
+    await waitSettled(page);
+    const auto = (await labels(page)).length;
+    await page.click('[data-net-labels="more"]');
+    await expect.poll(async () => (await labels(page)).length).toBeGreaterThan(auto);
+    await expect(page.locator('[data-net-labels="more"]')).toHaveAttribute('aria-checked', 'true');
+    await page.click('[data-net-labels="none"]');
+    await expect.poll(async () => (await labels(page)).length).toBe(0);
+    // aun sin etiquetas, el nodo señalado dice cómo se llama
+    const key = await page.evaluate(() => NetView.graph.order[0].key);
+    const p = await page.evaluate(k => window.__graph.screenPos(k), key);
+    await page.mouse.move(p.x, p.y);
+    await expect.poll(async () => (await labels(page)).map(b => b.key)).toContain(key);
+    // sobrevive a recargar
+    await page.reload();
+    await expect(page.locator('#mainContent')).not.toContainText('Iniciando ResearchOS');
+    await gotoView(page, 'network');
+    await expect(page.locator('[data-net-labels="none"]')).toHaveClass(/active/);
+  });
+
+  test('un grafo grande se separa solo más que uno pequeño', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await gotoView(page, 'network');
+    const small = await page.evaluate(() => NetView.sim.spread);
+    await page.evaluate(() => db.projects.clear());
+    await bigGraph(page);
+    await gotoView(page, 'dashboard'); await gotoView(page, 'network');
+    const big = await page.evaluate(() => NetView.sim.spread);
+    expect(small).toBe(1);
+    expect(big).toBeGreaterThan(1.5); expect(big).toBeLessThanOrEqual(2.2);
+  });
+
+  test('la búsqueda lista resultados: ↑ ↓ los recorren, Enter va al marcado y lo selecciona, Esc limpia y luego quita la selección', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await gotoView(page, 'network');
+    await settled(page);
+    await page.fill('#netSearch', 'idea');
+    await expect(page.locator('#netResults .net-res')).toHaveCount(2);
+    await expect(page.locator('#netStats')).toContainText('2 coincidencia');
+    await page.press('#netSearch', 'ArrowDown');
+    await expect(page.locator('#netResults .net-res.active')).toContainText('Idea dos');
+    await page.press('#netSearch', 'Enter');
+    await expect(page.locator('#netSel')).toBeVisible();
+    await expect(page.locator('#netSel')).toContainText('Idea dos');
+    expect(await page.evaluate(() => window.__graph.selected)).toBe(keyOf(await graph(page), 'idea', 'Idea dos'));
+    await expect.poll(() => page.evaluate(() => window.__graph.animating)).toBe(false);
+    await page.press('#netSearch', 'Escape');                                      // primero limpia la búsqueda…
+    await expect(page.locator('#netResults')).toBeHidden();
+    await expect(page.locator('#netSel')).toBeVisible();
+    await page.press('#netSearch', 'Escape');                                      // …y luego la selección
+    await expect(page.locator('#netSel')).toBeHidden();
+    // una búsqueda sin resultados lo dice
+    await page.fill('#netSearch', 'zzzz');
+    await expect(page.locator('#netResults')).toContainText('Sin coincidencias');
+    // un clic en un resultado también lleva hasta él
+    await page.fill('#netSearch', 'gamma');
+    await page.click('#netResults .net-res');
+    await expect(page.locator('#netSel')).toContainText('Grant Gamma');
+  });
+
+  test('un clic selecciona el nodo (ficha con Abrir y Aislar); un clic en el fondo quita la selección', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await gotoView(page, 'network');
+    await settled(page);
+    const g0 = await graph(page);
+    const alfa = keyOf(g0, 'project', 'Paper Alfa');
+    const p = await page.evaluate(k => window.__graph.screenPos(k), alfa);
+    await page.mouse.click(p.x, p.y);
+    expect(await page.evaluate(() => window.__graph.selected)).toBe(alfa);
+    await expect(page.locator('#netSel')).toContainText('Paper Alfa');
+    await expect(page.locator('#inspectorBody')).toContainText('Paper Alfa');            // en escritorio sigue abriendo el inspector
+    // Aislar = grafo local; la ficha pasa a ofrecer «Ver todo»
+    await page.click('#netSelIsolate');
+    await expect(page.locator('#netUnfocus')).toBeVisible();
+    await expect(page.locator('#netSelIsolate')).toHaveText('Ver todo');
+    await page.click('#netSelIsolate');
+    await expect(page.locator('#netUnfocus')).toHaveCount(0);
+    await expect.poll(async () => (await graph(page)).nodes.length).toBe(g0.nodes.length);
+    // fondo: quita la selección
+    const box = await page.locator('#netCanvas').boundingBox();
+    await page.mouse.click(box.x + 8, box.y + box.height - 8);
+    await expect(page.locator('#netSel')).toBeHidden();
+    expect(await page.evaluate(() => window.__graph.selected)).toBeNull();
+  });
+
+  test('pasar el ratón resume de qué está rodeado el nodo', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await gotoView(page, 'network');
+    await settled(page);
+    const alfa = keyOf(await graph(page), 'project', 'Paper Alfa');
+    const p = await page.evaluate(k => window.__graph.screenPos(k), alfa);
+    await page.mouse.move(p.x, p.y);
+    await expect(page.locator('#netTip')).toContainText(/\d+ (idea|snippet|reuni|referencia|persona)/i);
+  });
+
+  test('con el grafo enfocado: + y − acercan, las flechas desplazan, 0 lo centra y Esc quita la selección', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await gotoView(page, 'network');
+    await settled(page);
+    await page.locator('#netStage').focus();
+    const k0 = await page.evaluate(() => window.__graph.view.k);
+    await page.keyboard.press('+');
+    await expect.poll(() => page.evaluate(() => window.__graph.view.k)).toBeGreaterThan(k0 * 1.2);
+    await expect.poll(() => page.evaluate(() => window.__graph.animating)).toBe(false);
+    const v = await page.evaluate(() => ({ ...window.__graph.view }));
+    await page.keyboard.press('ArrowLeft');
+    expect(await page.evaluate(() => window.__graph.view.x)).toBeCloseTo(v.x + 60, 0);
+    await page.keyboard.press('0');
+    await expect.poll(() => page.evaluate(() => window.__graph.view.k)).toBeCloseTo(k0, 1);
+    await page.evaluate(() => _netSelect(NetView.graph.nodes[0].key));
+    await page.locator('#netStage').focus();
+    await page.keyboard.press('Escape');
+    expect(await page.evaluate(() => window.__graph.selected)).toBeNull();
+  });
+
+  test('ir a un resultado es una animación que termina, se cancela al tocar el grafo y deja el bucle dormido', async ({ page }) => {
+    await page.addInitScript(() => { window.__raf = 0; const raf = window.requestAnimationFrame.bind(window); window.requestAnimationFrame = f => { window.__raf++; return raf(f); }; });
+    await openApp(page);
+    await seed(page);
+    await gotoView(page, 'network');
+    await waitSettled(page);
+    await page.fill('#netSearch', 'gamma');
+    await page.press('#netSearch', 'Enter');
+    expect(await page.evaluate(() => window.__graph.animating)).toBe(true);
+    const box = await page.locator('#netCanvas').boundingBox();
+    await page.mouse.move(box.x + 8, box.y + box.height - 8); await page.mouse.down();       // tocar el grafo cancela el vuelo
+    expect(await page.evaluate(() => window.__graph.animating)).toBe(false);
+    await page.mouse.up();
+    await page.click('#netFit');
+    await expect.poll(() => page.evaluate(() => window.__graph.animating)).toBe(false);
+    await page.waitForTimeout(400);
+    const a = await page.evaluate(() => window.__raf);
+    await page.waitForTimeout(1500);
+    expect(await page.evaluate(() => window.__raf) - a).toBeLessThanOrEqual(1);                 // terminó y se durmió
+  });
+});
+
+test.describe('Pestaña Red — móvil', () => {
+  test.use({ viewport: { width: 360, height: 740 } });
+
+  test('tocar un nodo lo selecciona sin tapar el grafo con el inspector; la ficha cabe y abre el elemento', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await page.evaluate(() => navigate('network'));
+    await expect(page.locator('#mainContent')).toHaveAttribute('data-view', 'network');
+    await waitSettled(page);
+    const alfa = keyOf(await graph(page), 'project', 'Paper Alfa');
+    const p = await page.evaluate(k => window.__graph.screenPos(k), alfa);
+    await page.mouse.click(p.x, p.y);
+    await expect(page.locator('#netSel')).toBeVisible();
+    await expect(page.locator('body')).toHaveClass(/inspector-closed/);
+    const sel = await page.locator('#netSel').boundingBox(), stage = await page.locator('#netStage').boundingBox();
+    expect(sel.x).toBeGreaterThanOrEqual(stage.x); expect(sel.x + sel.width).toBeLessThanOrEqual(stage.x + stage.width + 0.5);
+    expect(sel.y + sel.height).toBeLessThanOrEqual(stage.y + stage.height + 0.5);
+    await page.click('#netSelOpen');
+    await expect(page.locator('#inspectorBody')).toContainText('Paper Alfa');
+  });
+
+  test('la lista de resultados cabe en el panel y no desborda la pantalla', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await page.evaluate(() => navigate('network'));
+    await expect(page.locator('#mainContent')).toHaveAttribute('data-view', 'network');
+    await page.fill('#netSearch', 'a');
+    await expect(page.locator('#netResults')).toBeVisible();
+    const r = await page.locator('#netResults').boundingBox();
+    expect(r.x).toBeGreaterThanOrEqual(0); expect(r.x + r.width).toBeLessThanOrEqual(360 + 0.5);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 });

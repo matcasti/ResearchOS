@@ -4647,3 +4647,29 @@ code .hljs-comment, code .hljs-quote, .hljs .hljs-comment, .hljs .hljs-quote { c
 
 /* «(reunión «…»)» junto al último contacto: en el inspector se parte en varias líneas en vez de salirse del panel */
 .inspector-meta-val .tw-sub { white-space: normal; max-width: none; overflow: visible; }
+
+/* ── Red: búsqueda con resultados, selección con ficha, control de etiquetas ── */
+.net-results { display: flex; flex-direction: column; gap: 1px; margin-top: -8px; max-height: 240px; overflow-y: auto; padding: 4px; background: var(--bg-card); border: 1px solid var(--border-str); border-radius: var(--radius-md); }
+.net-res { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-1); font: inherit; font-size: .78rem; text-align: left; cursor: pointer; min-width: 0; }
+.net-res:hover, .net-res.active { background: var(--bg-hover); }
+.net-res.active { box-shadow: inset 2px 0 0 var(--accent); }
+.net-res-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.net-res-type { flex: 0 0 auto; font-family: var(--font-mono); font-size: .6rem; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; }
+.net-res-empty, .net-res-more { padding: 6px 8px; font-size: .72rem; color: var(--text-3); }
+.net-seg { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.net-seg-label { flex: 1 0 100%; font-family: var(--font-mono); font-size: .62rem; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
+.net-seg-btn { flex: 1 1 0; padding: 5px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--text-2); font: inherit; font-size: .74rem; cursor: pointer; }
+.net-seg-btn:hover { color: var(--text-1); border-color: var(--border-str); }
+.net-seg-btn.active { background: var(--accent-d); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.net-hint kbd { font-family: var(--font-mono); font-size: .62rem; padding: 0 4px; border: 1px solid var(--border-str); border-bottom-width: 2px; border-radius: 4px; color: var(--text-2); }
+.net-stage:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.net-sel { position: absolute; left: 14px; bottom: 14px; z-index: 4; display: flex; align-items: center; gap: 10px; max-width: min(520px, calc(100% - 84px)); padding: 8px 8px 8px 12px; background: var(--bg-elevated); border: 1px solid var(--accent); border-radius: var(--radius-lg); box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+.net-sel-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.net-sel-text strong { font-size: .84rem; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.net-sel-text span { font-family: var(--font-mono); font-size: .64rem; color: var(--text-3); }
+.net-sel-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+@media (max-width: 600px) {
+  .net-results { max-height: 150px; }
+  .net-sel { left: 8px; right: 66px; bottom: 8px; max-width: none; flex-wrap: wrap; row-gap: 6px; }
+  .net-sel-actions { flex: 1 0 100%; justify-content: flex-end; }
+}

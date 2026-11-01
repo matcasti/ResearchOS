@@ -4,6 +4,24 @@ Todos los cambios relevantes de ResearchOS, de lo más reciente a lo más antigu
 
 ---
 
+## 1.1.1 - 2026-11-01
+
+### ♻️ Mejorado
+
+- **Red: ahora se entiende aunque tengas cientos de elementos.** Las etiquetas ya no se pisan: se colocan por orden de importancia (áreas, proyectos y lo más conectado primero), solo si caben sin tapar otra etiqueta ni el punto de otro nodo, y evitan los botones y la ficha que flotan sobre el grafo. Al acercar aparecen más, solas. Los proyectos y las áreas se ven en negrita como puntos de referencia.
+- **Control de etiquetas «Auto / Más / Ninguna»** en el panel (se recuerda): «Más» etiqueta más nodos aunque alguna tape un punto; «Ninguna» deja solo la del nodo señalado.
+- **Selección de nodos.** Un clic selecciona el nodo, deja resaltada su vecindad (lo demás se atenúa) y muestra una ficha con «Abrir» y «Aislar» (grafo local); un clic en el fondo o `Esc` quita la selección. En el móvil, tocar un nodo ya no abre el inspector por encima del grafo: se abre desde la ficha. Al pasar el ratón, la ficha emergente resume de qué está rodeado el nodo («3 ideas · 2 reuniones»).
+- **Búsqueda con lista de resultados.** Al escribir aparecen los resultados (los que empiezan por lo escrito primero); `↑` `↓` los recorren, `Enter` o un clic llevan hasta el elegido y `Esc` limpia la búsqueda y luego la selección. El grafo se mueve con una animación suave que se cancela al tocarlo.
+- **Teclado:** con el grafo enfocado, `+` y `−` acercan y alejan, `0` lo centra, las flechas lo desplazan, `Enter` abre lo seleccionado y `Esc` quita la selección.
+- **Grafos grandes más legibles:** los nodos se separan solos más cuanto más grande es el grafo, las aristas se vuelven más tenues cuando hay muchas, «Centrar» ignora un par de nodos sueltos muy lejanos para no encoger todo, y los botones de acercar/alejar/centrar se animan.
+- **Táctil:** la zona que responde al dedo en cada nodo es mayor.
+
+### 🧪 Pruebas
+
+- 11 pruebas nuevas de la vista Red: etiquetas que no se pisan con cientos de nodos, prioridad de proyectos, modos de etiquetas, separación automática, búsqueda con lista, selección, resumen del nodo, teclado, animación que termina y deja el bucle dormido, y móvil.
+
+---
+
 ## 1.1.0 — 2026-11-01
 
 Esta versión agrega un **recorrido guiado** y un **laboratorio de ejemplo con fechas siempre actuales** para quien usa la app por primera vez, y corrige una serie de errores de uso real: clics que se perdían, elementos duplicados, textos que se salían de su caja en el móvil y fechas mal calculadas de noche o con el cambio de horario.
