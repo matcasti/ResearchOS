@@ -3998,7 +3998,7 @@ body.sidebar-collapsed .context-switcher { display: none; }
 .nav-group.open .nav-group-chev { transform: rotate(90deg); }
 .nav-group-body { display: none; flex-direction: column; gap: 2px; }
 .nav-group.open .nav-group-body { display: flex; }
-.nav-group-dot { display: none; width: 6px; height: 6px; border-radius: 50%; background: var(--red); margin-left: 6px; }
+.nav-group-dot { display: none; min-width: 16px; height: 16px; padding: 0 5px; border-radius: 8px; background: var(--red); color: #fff; font-size: .62rem; font-weight: 700; line-height: 16px; text-align: center; margin-left: 6px; }
 .nav-group.has-alert:not(.open) .nav-group-dot { display: inline-block; }
 .nav-settings { margin-top: 10px; }
 body.sidebar-collapsed .nav-group-body { display: flex !important; }
@@ -4673,3 +4673,54 @@ code .hljs-comment, code .hljs-quote, .hljs .hljs-comment, .hljs .hljs-quote { c
   .net-sel { left: 8px; right: 66px; bottom: 8px; max-width: none; flex-wrap: wrap; row-gap: 6px; }
   .net-sel-actions { flex: 1 0 100%; justify-content: flex-end; }
 }
+
+
+/* Calendario: las tareas hechas se ven atenuadas y tachadas */
+.weekly-event.is-done, .monthly-event-pill.is-done { opacity: .55; text-decoration: line-through; }
+
+
+/* ── Hoy: avisos en una franja, secciones plegables y columna lateral legible ── */
+.today-notices { margin: 10px 0 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); }
+.today-notices > summary { display: flex; align-items: center; gap: 10px; padding: 8px 14px; cursor: pointer; font-size: .82rem; color: var(--text-2); list-style: none; }
+.today-notices > summary::-webkit-details-marker { display: none; }
+.today-notices > summary::before { content: '▸'; color: var(--text-3); transition: transform .15s; }
+.today-notices[open] > summary::before { transform: rotate(90deg); }
+.today-notices .tn-label { font-family: var(--font-display); font-weight: 600; color: var(--text-1); }
+.today-notices .tn-bits { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.today-notices.has-alert { border-color: var(--amber); }
+.today-notices.has-alert .tn-bits strong { color: var(--amber); }
+.today-notices-body { padding: 0 12px 10px; }
+.today-notices-body .sample-banner, .today-notices-body .onboard { margin-top: 4px; }
+.today-fold > summary { cursor: pointer; list-style: none; margin-bottom: 6px; }
+.today-fold > summary::-webkit-details-marker { display: none; }
+.today-fold > summary::before { content: '▸'; color: var(--text-3); font-size: .8em; transition: transform .15s; }
+.today-fold[open] > summary::before { transform: rotate(90deg); }
+/* En la columna lateral los títulos pasan a dos líneas en vez de cortarse */
+.today-side .tw-text { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.3; }
+/* En el móvil los tipos de captura aparecen al escribir (la barra inferior ya ofrece «Capturar») */
+@media (max-width: 600px) {
+  .capture-bar:not(:focus-within) .capture-kinds { display: none; }
+}
+
+/* Perfil de uso: lo que el perfil no usa se oculta del menú (sigue en la paleta) */
+.nav-item.profile-hidden, .nav-group.profile-hidden { display: none !important; }
+.fr-profiles { display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; margin: 4px 0 6px; }
+.fr-profile { padding: 5px 14px; border: 1px solid var(--border); }
+.fr-profile.active { border-color: var(--accent); }
+
+/* Ajustes en pestañas con buscador */
+.settings-nav { display: flex; gap: 10px 14px; align-items: center; flex-wrap: wrap; margin: 4px 0 14px; position: sticky; top: 0; z-index: 6; padding: 8px 0; background: var(--bg-base); }
+.settings-tabs { display: flex; gap: 4px; flex-wrap: wrap; background: var(--bg-surface); border-radius: var(--radius-md); padding: 2px; }
+.settings-tab { background: none; border: none; color: var(--text-2); font: inherit; font-size: .8rem; padding: 6px 12px; border-radius: var(--radius-sm); cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.settings-tab:hover { color: var(--text-1); }
+.settings-tab.active { background: var(--accent-d); color: var(--accent); }
+.settings-tab .st-n { font-size: .68rem; color: var(--text-3); }
+.settings-nav.is-searching .settings-tabs { opacity: .55; }
+.settings-search { max-width: 240px; flex: 1 1 160px; }
+@media (pointer: coarse) { .settings-tab { min-height: 36px; } }
+
+/* Copia de seguridad a la vista, en el pie del menú */
+.backup-line { display: block; width: 100%; margin: 4px 0 2px; padding: 5px 8px; background: none; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-3); font: inherit; font-size: .68rem; text-align: left; cursor: pointer; }
+.backup-line:hover { background: var(--bg-hover); color: var(--text-2); }
+.backup-line.is-warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
+body.sidebar-collapsed .backup-line { display: none; }

@@ -52,7 +52,7 @@ async function _onboardItems() {
     { id: 'moved',   done: !!flags.moved,                     text: 'Mueve un proyecto a otra columna del tablero', btn: 'Ir al tablero',
       run: () => { navigate('kanban'); showToast('Arrastra una tarjeta a otra columna', 'info'); } },
     { id: 'search',  done: !!flags.search,                    text: `Prueba el buscador (${MOD_KEY} K)`, btn: 'Abrirlo', run: () => openPalette() },
-    { id: 'backup',  done: BackupMeta.last() !== null,        text: 'Haz tu primera copia de seguridad', btn: 'Ir a Ajustes', run: () => navigate('settings') },
+    { id: 'backup',  done: BackupMeta.last() !== null || !!(AutoBackup.enabled() && AutoBackup.lastRun()), text: 'Protege tus datos: elige una carpeta de copia automática o exporta un backup', btn: 'Ir a Ajustes', run: () => navigate('settings') },
   ];
 }
 

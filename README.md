@@ -52,7 +52,7 @@ La app está pensada para quien coordina varios frentes a la vez (investigación
 -   **Áreas como contexto**: elige un área en el menú lateral y Hoy, el Tablero y Proyectos muestran solo ese frente.
 -   **Enlaces `[[Título]]`** entre proyectos, ideas, snippets, referencias, reuniones y personas, con autocompletado; cada elemento muestra desde dónde lo enlazan.
 -   **Referencias**: importa el `.bib`/`.ris` de Zotero o Mendeley (sin duplicar), marca su estado de lectura y exporta BibTeX válido.
--   **Calendario**: exporta fechas límite, tareas (con su repetición) y reuniones a `.ics`, e importa un `.ics` (p. ej. el horario de clases).
+-   **Calendario**: muestra reuniones, fechas límite **y tus tareas con fecha** (semana y mes; las hechas, atenuadas); exporta fechas límite, tareas (con su repetición) y reuniones a `.ics`, e importa un `.ics` (p. ej. el horario de clases).
 -   **Revisión semanal** guiada de ocho pasos (ideas, atrasos, proyectos quietos, sin próxima acción, próximos 14 días, esperas, elementos sin proyecto y backup).
 -   **Copia automática a una carpeta** (Chrome/Edge): tus datos se duplican en la carpeta que elijas (Dropbox, Drive, Syncthing…) tras cada cambio. La app es **instalable (PWA)** y acepta *Compartir → ResearchOS* desde el móvil para capturar ideas.
 -   **Mi día**: `☀ Planificar mi día` (en Hoy) lista lo atrasado, lo de hoy y lo próximo; tú eliges qué harás según el **tiempo disponible** (por defecto 6 h) y el **tiempo estimado** de cada tarea (`~2h`, `~30m`, `~1h30` en la captura). Lo que no termines pasa solo al día siguiente, y el medidor avisa cuándo te pasas.
@@ -70,7 +70,7 @@ La app está pensada para quien coordina varios frentes a la vez (investigación
 -   **Cuando algo falla, no te deja a medias**: si una pantalla no puede pintarse, aparece una pantalla de recuperación (reintentar, ir a Hoy, descargar copia) en lugar de quedar en blanco; los errores inesperados se guardan solo en tu navegador y se ven en **Ajustes → Diagnóstico** (con «Copiar informe» para contarlos); copiar al portapapeles tiene alternativa cuando el navegador lo niega; si otra pestaña actualiza la base de datos, esta avisa y ofrece recargar; y si el navegador se queda sin espacio, lo dice claramente. Importar un backup o cargar el ejemplo programa la copia automática y la subida a la carpeta compartida, como cualquier otro cambio.
 -   **Móvil**: en pantallas estrechas aparece una barra inferior (Hoy · Proyectos · ＋ · Ideas · Más) y el botón `＋` captura desde cualquier vista sin cambiar de pantalla. Un aviso diario opcional (Ajustes → Planificación) recuerda lo que toca hoy mientras la app esté abierta.
 -   **Ajustes → Qué vistas usas** cuenta (solo en tu navegador) qué pantallas abres, para decidir qué te sobra.
--   El menú lateral muestra solo lo esencial (Hoy, Proyectos, Ideas, Calendario); el resto está en grupos plegables, y lo avanzado (campos personalizados, Google Drive) en Ajustes → Avanzado.
+-   El menú lateral muestra solo lo esencial (Hoy, Proyectos, Ideas, Calendario, Red); el resto está en grupos plegables que indican cuántos pendientes esconden. Un **perfil de uso** (Investigación, Docencia, Gestión o Todo; se elige en el primer uso o en Ajustes → Preferencias) oculta del menú lo que no usas, sin quitarlo de la paleta (Ctrl+K). Ajustes se organiza en cuatro pestañas con buscador, y el pie del menú muestra cuándo fue tu última copia de seguridad.
 
 ## 📊 Funcionalidades Detalladas y Flujo de Trabajo Científico
 

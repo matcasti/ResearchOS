@@ -1,6 +1,6 @@
 // Sincronización entre dispositivos: identidad (uid), «gana el más reciente», lápidas de borrado,
 // referencias entre registros y transporte por carpeta compartida. Cada «dispositivo» es un contexto de navegador aparte.
-const { test, expect, openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed, openSettingsTab } = require('../helpers');
 
 const BASE = 'http://localhost:4173';
 async function device(browser) {
@@ -243,6 +243,7 @@ test.describe('Carpeta compartida', () => {
     const fromA = await snap(A.page);
     await B.page.evaluate(() => { window.showDirectoryPicker = async () => navigator.storage.getDirectory(); });
     await gotoView(B.page, 'settings');
+    await openSettingsTab(B.page, 'sync');
     await peerFile(B.page, 'researchos-sync-dZZZZ.json', fromA);                // «Dropbox» ya trae el archivo del otro dispositivo
     await B.page.locator('#syncOn').click();
     await expect(B.page.locator('.toast', { hasText: 'Sincronizado con' })).toBeVisible();
@@ -259,6 +260,7 @@ test.describe('Carpeta compartida', () => {
     const A = await device(browser), B = await device(browser);
     await A.page.evaluate(() => { window.showDirectoryPicker = async () => navigator.storage.getDirectory(); });
     await gotoView(A.page, 'settings');
+    await openSettingsTab(A.page, 'sync');
     await A.page.locator('#syncOn').click();
     await expect(A.page.locator('.toast.success').last()).toContainText('activada');
     await populate(A.page);
@@ -274,6 +276,7 @@ test.describe('Carpeta compartida', () => {
     await openApp(page);
     await page.evaluate(() => { window.showDirectoryPicker = async () => navigator.storage.getDirectory(); });
     await gotoView(page, 'settings');
+    await openSettingsTab(page, 'sync');
     await page.locator('#syncOn').click();
     await expect(page.locator('#syncOff')).toBeVisible();
     await page.fill('#syncDeviceName', 'Portátil de la oficina');
@@ -288,6 +291,7 @@ test.describe('Carpeta compartida', () => {
     await openApp(page);
     await page.evaluate(() => { window.showDirectoryPicker = async () => navigator.storage.getDirectory(); });
     await gotoView(page, 'settings');
+    await openSettingsTab(page, 'sync');
     await page.locator('#syncOn').click();
     await expect(page.locator('#syncOff')).toBeVisible();
     const keys = await page.evaluate(async () => JSON.parse(await exportAllData()).settings.map(s => s.key));

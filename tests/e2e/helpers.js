@@ -115,3 +115,14 @@ async function reload(page) {
 module.exports.seed = seed;
 module.exports.reload = reload;
 module.exports.routeExternal = routeExternal;
+
+/** Ajustes se organiza en pestañas (data = Datos y copias · sync = Sincronización e IA · prefs = Preferencias · help = Ayuda y avanzado). */
+async function openSettingsTab(page, key) { await page.locator(`[data-settings-tab="${key}"]`).click(); }
+/** Los avisos de Hoy (ejemplo, primeros pasos, alertas, personas) viven en una franja plegable. */
+async function openNotices(page) {
+  const box = page.locator('#todayNotices');
+  await expect(box).toBeVisible();
+  if (!(await box.evaluate(e => e.open))) await box.locator('> summary').click();
+}
+module.exports.openSettingsTab = openSettingsTab;
+module.exports.openNotices = openNotices;

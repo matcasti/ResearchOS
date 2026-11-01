@@ -6,6 +6,17 @@ Todos los cambios relevantes de ResearchOS, de lo más reciente a lo más antigu
 
 ## Sin publicar
 
+### 🧭 Mejoras de uso
+
+- **La bienvenida ya no insiste.** Antes reaparecía en cada apertura salvo que marcaras «No mostrar al iniciar», aun teniendo ya tus datos. Ahora, al elegir cualquier camino (recorrido, ejemplo o empezar vacía) no vuelve a salir, y quien ya tiene datos no la ve nunca.
+- **El Calendario muestra tus tareas.** Las tareas con fecha aparecen en la semana y en el mes junto a reuniones y fechas límite (las hechas, atenuadas y tachadas), respetan el área activa y abren su proyecto al pulsarlas.
+- **Hoy empieza por lo que tienes que hacer.** Los avisos (datos de ejemplo, primeros pasos, alertas y personas por contactar) van en una sola franja plegable que resume lo que contiene; «Pendientes sin fecha» y «Más adelante» se pliegan cuando son muchos (y se recuerda tu elección); en la columna lateral los títulos largos pasan a dos líneas en vez de cortarse; y en el móvil los tipos de captura aparecen al escribir.
+- **Menú más claro.** Los grupos plegados (Biblioteca, Personas, Más) muestran cuántos pendientes esconden en lugar de un punto rojo, y «FS Bridge» pasa a llamarse «Carpetas del proyecto».
+- **Perfil de uso.** Elige Investigación, Docencia, Gestión o Todo (en el primer uso o en *Ajustes → Preferencias*) y el menú oculta lo que no usas; sigue disponible en la paleta (Ctrl+K) y aparece en el menú cuando lo abres.
+- **Ajustes en cuatro pestañas** (Datos y copias, Sincronización e IA, Preferencias, Ayuda y avanzado) con buscador que atraviesa todas, y títulos sin emojis para ser coherentes con el menú. Se recuerda la última pestaña.
+- **Tu copia de seguridad, a la vista.** El pie del menú indica cuándo fue la última (exportada o automática) y avisa en ámbar si falta o tiene más de 14 días; al pulsarlo abre Ajustes. El primer paso de «Primeros pasos» cuenta también la copia automática.
+- **Tarjetas del Tablero más limpias:** la prioridad solo se destaca cuando no es la normal («Media» ya no se repite en cada tarjeta).
+
 ### ✨ Nuevo
 
 - **Asistente de IA.** Elige una carpeta en *Ajustes → Asistente de IA* y un LLM (Claude Code, Claude Desktop, Cursor, ChatGPT u otro) podrá leer tus pendientes y ayudarte a mantenerlos: la app publica `estado.json` (proyectos, tareas, ideas, reuniones y personas con nombres legibles), una agenda `pendientes.md` e instrucciones `AGENTS.md`/`CLAUDE.md` que la IA entiende sola. Sin servidores ni cuentas.

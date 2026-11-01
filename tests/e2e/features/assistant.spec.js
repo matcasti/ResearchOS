@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync, spawn } = require('child_process');
-const { test, expect, openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed, openSettingsTab } = require('../helpers');
 
 const TOOL = path.resolve(__dirname, '../../../tools/researchos.js');
 const R = require(TOOL);
@@ -16,6 +16,7 @@ const TIPO = 'researchos-changes/1';
 async function activar(page) {
   await page.evaluate(() => { window.showDirectoryPicker = async () => navigator.storage.getDirectory(); });
   await gotoView(page, 'settings');
+  await openSettingsTab(page, 'sync');
   await page.locator('#assistantOn').click();
   await expect(page.locator('.toast.success').last()).toContainText('Asistente activado');
 }

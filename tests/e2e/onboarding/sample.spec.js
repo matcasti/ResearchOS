@@ -1,4 +1,4 @@
-const { test, expect, openApp, gotoView } = require('../helpers');
+const { test, expect, openApp, gotoView, openSettingsTab, openNotices } = require('../helpers');
 
 // Datos de ejemplo dinámicos: las fechas se calculan desde «hoy» y el ejemplo usa todas las piezas de la app.
 
@@ -232,6 +232,7 @@ test.describe('Avisos y accesos', () => {
     await openApp(page);
     await load(page);
     await gotoView(page, 'dashboard');
+    await openNotices(page);
     const banner = page.locator('.sample-banner');
     await expect(banner).toContainText('datos de ejemplo');
     await expect(banner.locator('#sbTour, #sbRefresh, #sbRemove')).toHaveCount(3);
@@ -247,6 +248,7 @@ test.describe('Avisos y accesos', () => {
     await load(page);
     await page.evaluate(() => localStorage.setItem('ros-sample-date', localDateISO(new Date(Date.now() - 12 * 86400000))));
     await gotoView(page, 'dashboard');
+    await openNotices(page);
     await expect(page.locator('.sample-banner.is-stale')).toContainText('hace 12 días');
     await expect(page.locator('#sbRefresh')).toHaveClass(/btn-primary/);
     await page.locator('#sbRefresh').click();
@@ -258,12 +260,14 @@ test.describe('Avisos y accesos', () => {
   test('Ajustes ofrece cargar, reiniciar y quitar; la paleta ofrece cargar y quitar', async ({ page }) => {
     await openApp(page);
     await gotoView(page, 'settings');
+    await openSettingsTab(page, 'help');
     await expect(page.locator('#sampleSection')).toBeVisible();
     await expect(page.locator('#setSampleLoad')).toBeVisible();
     await expect(page.locator('#setSampleRemove')).toBeHidden();
     await page.locator('#setSampleLoad').click();
     await expect(page.locator('.toast.success').last()).toContainText('Datos de ejemplo cargados');
     await gotoView(page, 'settings');
+    await openSettingsTab(page, 'help');
     await expect(page.locator('#setSampleLoad')).toBeHidden();
     await expect(page.locator('#setSampleRefresh')).toBeVisible();
     await expect(page.locator('#setSampleRemove')).toBeVisible();

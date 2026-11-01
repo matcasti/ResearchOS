@@ -2,7 +2,7 @@
 // próxima acción, pestañas de Proyectos, referencias (.bib/.ris), calendario .ics, copia automática y PWA.
 // Cada prueba recorre un tema entero sobre una sola carga de la app.
 const fs = require('fs');
-const { test, expect, openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed, openSettingsTab } = require('../helpers');
 
 const iso = n => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + n); const p = x => String(x).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
 const people = [{ id: 1, name: 'Dra. María Vega' }, { id: 2, name: 'Dr. Pablo Fuentes' }];
@@ -420,6 +420,7 @@ test.describe('PWA, ajustes y backups', () => {
     await gotoView(page, 'ideas');
     await gotoView(page, 'snippets');
     await gotoView(page, 'settings');
+    await openSettingsTab(page, 'help');
     expect(await page.locator('#usageSection').innerText()).toContain('Ideas');
     expect(await page.evaluate(() => Usage.read().ideas)).toBeGreaterThanOrEqual(2);
     expect(await page.evaluate(() => JSON.stringify(Object.keys(localStorage)))).toContain('ros-usage');
@@ -429,7 +430,9 @@ test.describe('PWA, ajustes y backups', () => {
     await expect(page.locator('#settingsAdvanced')).not.toHaveAttribute('open', '');                  // Google Drive, campos personalizados y sync de papers
     await expect(page.locator('#googleSyncSection')).toBeHidden();
     await expect(page.locator('#cfSettingsSection')).toBeHidden();
-    await expect(page.locator('#exportJsonBtn')).toBeVisible();                                         // lo esencial sigue a la vista
+    await openSettingsTab(page, 'data');
+    await expect(page.locator('#exportJsonBtn')).toBeVisible();                                         // lo esencial sigue a la vista (primera pestaña)
+    await openSettingsTab(page, 'help');
     await page.locator('#settingsAdvanced > summary').click();
     await expect(page.locator('#cfSettingsSection')).toBeVisible();
   });

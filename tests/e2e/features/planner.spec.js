@@ -1,5 +1,5 @@
 // Planificación del día (tiempo estimado, «Mi día», capacidad), informe de avance y recordatorios.
-const { test, expect, openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed, openSettingsTab } = require('../helpers');
 
 const projects = [{ id: 1, title: 'Paper Alfa' }];
 const parse = (page, raw) => page.evaluate(([r, pr]) => parseCapture(r, pr, new Date('2026-10-31T12:00:00'), []), [raw, projects]);   // sábado
@@ -90,6 +90,7 @@ test.describe('Mi día', () => {
     await expect(page.locator('.tw-row', { hasText: 'Tarea A' })).toHaveCount(1);
     // la capacidad se cambia en Ajustes
     await gotoView(page, 'settings');
+    await openSettingsTab(page, 'prefs');
     await page.fill('#setCapacity', '8'); await page.press('#setCapacity', 'Tab');
     await gotoView(page, 'dashboard');
     await expect(page.locator('#planSub')).toContainText('7 h de 8 h');
@@ -304,6 +305,7 @@ test.describe('Recordatorio diario', () => {
     await stub(page);
     await openApp(page);
     await gotoView(page, 'settings');
+    await openSettingsTab(page, 'prefs');
     await page.fill('#setRemindTime', '07:15');
     await page.locator('#setRemindOn').check();
     await expect(page.locator('.toast.success').last()).toContainText('Recordatorio activado');

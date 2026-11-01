@@ -420,7 +420,11 @@ function _todayRowHTML(r, todayISO) {
     ${check}<span class="tw-text">${esc(r.title)}</span>${rec}${carry}${sub}${chip}${eff}${due}${more}</div>`;
 }
 
-function _todaySection(id, title, rows, todayISO, { limit = 6, empty = '', tone = '', byDay = false } = {}) {
+function _foldOpen(id, n) {                       // «Sin fecha» y «Más adelante»: abiertas si son pocas; si no, la persona decide y se recuerda
+  try { const v = localStorage.getItem('ros-today-fold-' + id); if (v !== null) return v === '1'; } catch {}
+  return n <= 3;
+}
+function _todaySection(id, title, rows, todayISO, { limit = 6, empty = '', tone = '', byDay = false, fold = false } = {}) {
   if (!rows.length && !empty) return '';
   const open = !!App._todayExpanded?.[id];
   const shown = open ? rows : rows.slice(0, limit);
@@ -433,11 +437,18 @@ function _todaySection(id, title, rows, todayISO, { limit = 6, empty = '', tone 
     }
     return head + _todayRowHTML(r, todayISO);
   }).join('');
+  const more = rows.length > limit ? `<button class="today-more" data-expand="${id}">${open ? 'Ver menos' : `Ver ${rows.length - limit} más`}</button>` : '';
+  if (fold && rows.length)
+    return `
+    <details class="today-sec today-fold ${tone}" data-sec="${id}" data-fold="${id}" ${_foldOpen(id, rows.length) ? 'open' : ''}>
+      <summary class="today-sec-title" id="ts-${id}">${title} <span class="today-count">${rows.length}</span></summary>
+      ${body}${more}
+    </details>`;
   return `
     <section class="today-sec ${tone}" data-sec="${id}" aria-labelledby="ts-${id}">
       <h2 class="today-sec-title" id="ts-${id}">${title}${rows.length ? ` <span class="today-count">${rows.length}</span>` : ''}</h2>
       ${rows.length ? body : `<div class="today-empty">${empty}</div>`}
-      ${rows.length > limit ? `<button class="today-more" data-expand="${id}">${open ? 'Ver menos' : `Ver ${rows.length - limit} más`}</button>` : ''}
+      ${more}
     </section>`;
 }
 
@@ -462,8 +473,8 @@ async function renderToday() {
       tone: d.now.some(r => r.due < d.todayISO) ? 'is-late' : '',
       empty: d.week.length || d.loose.length ? 'Nada vence hoy. Buen momento para avanzar lo de esta semana.' : '✓ Todo al día.' }),
     _todaySection('week', 'Próximos 7 días', d.week, d.todayISO, { limit: 6, byDay: true }),
-    _todaySection('loose', 'Pendientes sin fecha', d.loose, d.todayISO, { limit: 4 }),
-    _todaySection('later', 'Más adelante', d.later, d.todayISO, { limit: 3 }),
+    _todaySection('loose', 'Pendientes sin fecha', d.loose, d.todayISO, { limit: 4, fold: true }),
+    _todaySection('later', 'Más adelante', d.later, d.todayISO, { limit: 3, fold: true }),
   ].join('');
 
   // «Esperando a personas», agrupado por persona
@@ -536,9 +547,14 @@ async function renderToday() {
         <span class="capture-hint">Tip: <code>@proyecto</code> asigna · <code>&gt;persona</code> «esperando a» · <code>mañana</code>, <code>viernes</code>, <code>en 3 días</code>, <code>15/03</code> fijan fecha · <code>cada lunes</code> repite · <code>!alta</code> prioridad · <code>[[Título]]</code> enlaza</span>
       </div>
 
-      <div id="onboardHost"></div>
-      <div id="todayAlerts"></div>
-      <div id="followUpHost"></div>
+      <details class="today-notices" id="todayNotices" hidden>
+        <summary id="todayNoticesSummary"></summary>
+        <div class="today-notices-body">
+          <div id="onboardHost"></div>
+          <div id="todayAlerts"></div>
+          <div id="followUpHost"></div>
+        </div>
+      </details>
 
       ${d.empty ? firstRunHTML() : `
       <div class="today-grid">
@@ -561,14 +577,41 @@ async function renderToday() {
     input.dispatchEvent(new Event('input'));          // actualiza la vista previa
     if (prevCapture.focused) input.focus();
   }
-  _renderAlertPanel($('todayAlerts')).catch(() => {});
-  renderFollowUps($('followUpHost')).catch(() => {});        // academic.js
-  renderOnboarding($('onboardHost')).catch(() => {});        // tour.js: datos de ejemplo y primeros pasos
+  Promise.allSettled([
+    _renderAlertPanel($('todayAlerts')),
+    renderFollowUps($('followUpHost')),                      // academic.js
+    renderOnboarding($('onboardHost')),                      // tour.js: datos de ejemplo y primeros pasos
+  ]).then(() => _summarizeNotices(token));
   const pano = $('panorama');
   const loadPano = () => { if (pano.open && !pano.dataset.loaded) { pano.dataset.loaded = '1'; renderPanorama($('panoramaBody')); } };
   pano.addEventListener('toggle', () => { try { localStorage.setItem('ros-panorama-open', pano.open ? '1' : '0'); } catch {} loadPano(); });
   loadPano();
   mainContent.dataset.view = 'dashboard';
+}
+
+/** Los avisos de Hoy (datos de ejemplo, primeros pasos, alertas, personas por contactar) viven en una sola franja plegable:
+    así lo primero que se ve son las tareas. La franja resume qué hay dentro y solo se ve si hay algo. */
+function _summarizeNotices(token) {
+  const box = $('todayNotices');
+  if (!box || token !== App._todayToken) return;
+  const q = sel => box.querySelector(sel);
+  const alerts = q('.alert-panel .alert-item') ? box.querySelectorAll('.alert-panel .alert-item').length : 0;
+  const people = box.querySelectorAll('[data-sec="followup"] .fu-row').length;
+  const bits = [
+    q('.sample-banner') && 'datos de ejemplo',
+    q('.onboard') && `primeros pasos ${q('.onb-count')?.textContent || ''}`.trim(),
+    alerts && `<strong>${alerts} alerta${alerts > 1 ? 's' : ''}</strong>`,
+    people && `${people} persona${people > 1 ? 's' : ''} por contactar`,
+  ].filter(Boolean);
+  box.hidden = !bits.length;
+  box.classList.toggle('has-alert', alerts > 0);
+  $('todayNoticesSummary').innerHTML = `<span class="tn-label">Avisos</span> <span class="tn-bits">${bits.join(' · ')}</span>`;
+  let open = false; try { open = localStorage.getItem('ros-today-notices') === '1'; } catch {}
+  box.open = open;
+  if (!box.dataset.wired) {
+    box.dataset.wired = '1';
+    box.addEventListener('toggle', () => { try { localStorage.setItem('ros-today-notices', box.open ? '1' : '0'); } catch {} });
+  }
 }
 
 // -- operaciones sobre «tareas» (tabla tasks) y «acciones de reunión» (dentro de la reunión) con la misma interfaz --
@@ -671,6 +714,8 @@ function _wireToday(d, overdueTasks) {
   root.addEventListener('click', async e => {
     const expand = e.target.closest('[data-expand]');
     if (expand) { App._todayExpanded[expand.dataset.expand] = !App._todayExpanded[expand.dataset.expand]; return renderToday(); }
+    const fold = e.target.closest('details.today-fold > summary')?.parentElement;           // se recuerda si la persona abre o cierra «Sin fecha» / «Más adelante»
+    if (fold) { try { localStorage.setItem('ros-today-fold-' + fold.dataset.fold, fold.open ? '0' : '1'); } catch {} return; }
     const row = e.target.closest('.tw-row');
     if (!row) return;
     const kind = row.dataset.kind, id = +row.dataset.id;
@@ -1084,9 +1129,42 @@ function initNavGroups() {
     });
   });
 }
+// -- Perfil de uso: el menú muestra lo que la persona suele usar; lo demás sigue en la paleta (Ctrl+K) y aparece al abrirlo --
+const NAV_PROFILES = [
+  { key: 'all',        label: 'Todo',          desc: 'todas las vistas',                                         hide: [] },
+  { key: 'research',   label: 'Investigación', desc: 'papers, referencias, submissions e informes',              hide: ['filesystem'] },
+  { key: 'teaching',   label: 'Docencia',      desc: 'clases, evaluaciones, estudiantes y reuniones',            hide: ['references', 'snippets', 'submissions', 'report', 'filesystem'] },
+  { key: 'management', label: 'Gestión',       desc: 'proyectos, reuniones, personas y seguimiento',             hide: ['references', 'snippets', 'submissions', 'filesystem'] },
+];
+const NavProfile = {
+  get() { try { const k = localStorage.getItem('ros-profile'); return NAV_PROFILES.some(p => p.key === k) ? k : 'all'; } catch { return 'all'; } },
+  set(key) { try { localStorage.setItem('ros-profile', key); } catch {} document.querySelectorAll('.nav-item.profile-peek').forEach(a => a.classList.remove('profile-peek')); this.apply(); },
+  apply() {
+    const hide = new Set(NAV_PROFILES.find(p => p.key === this.get()).hide);
+    document.querySelectorAll('.sidebar .nav-item[data-view]').forEach(a => a.classList.toggle('profile-hidden', hide.has(a.dataset.view) && !a.classList.contains('profile-peek')));
+    document.querySelectorAll('.nav-group').forEach(g => g.classList.toggle('profile-hidden', ![...g.querySelectorAll('.nav-item')].some(a => !a.classList.contains('profile-hidden'))));
+    if (typeof updateNavGroupDots === 'function') updateNavGroupDots();
+  },
+};
+function renderProfileSection() {
+  const host = $('profileSection');
+  if (!host) return;
+  const cur = NavProfile.get();
+  host.innerHTML = `
+    <div class="settings-section-title">🧭 Perfil de uso</div>
+    <div class="settings-body"><div class="settings-row">
+      <div><div class="settings-row-label">¿Qué haces más?</div>
+        <div class="settings-row-desc">El menú lateral muestra solo lo que ese perfil suele usar. Lo demás sigue disponible en la paleta (${MOD_KEY} K) y aparece en el menú cuando lo abres.</div></div>
+      <select class="form-select" id="profileSelect" aria-label="Perfil de uso" style="max-width:300px">
+        ${NAV_PROFILES.map(p => `<option value="${p.key}"${p.key === cur ? ' selected' : ''}>${p.label} — ${p.desc}</option>`).join('')}</select>
+    </div></div>`;
+  $('profileSelect').addEventListener('change', e => { NavProfile.set(e.target.value); showToast('Menú actualizado ✓', 'success'); });
+}
+
 /** Abre el grupo que contiene la vista activa (para que nunca quede escondida). */
 function revealNavItem(view) {
   const item = document.querySelector(`.nav-item[data-view="${view}"]`);
+  if (item?.classList.contains('profile-hidden')) { item.classList.add('profile-peek'); NavProfile.apply(); }     // una vista que el perfil oculta, pero se abrió: no puede quedar invisible
   const g = item?.closest('.nav-group');
   if (g && !g.classList.contains('open')) {
     g.classList.add('open');
@@ -1096,7 +1174,9 @@ function revealNavItem(view) {
 /** Punto de aviso en un grupo cerrado cuando algún elemento interno tiene contador. */
 function updateNavGroupDots() {
   document.querySelectorAll('.nav-group').forEach(g => {
-    const any = [...g.querySelectorAll('.nav-badge')].some(b => b.classList.contains('visible') && b.textContent.trim() !== '0');
-    g.classList.toggle('has-alert', any);
+    const n = [...g.querySelectorAll('.nav-badge')].filter(b => b.classList.contains('visible') && !b.closest('.profile-hidden')).reduce((a, b) => a + (parseInt(b.textContent, 10) || 0), 0);
+    g.classList.toggle('has-alert', n > 0);
+    const dot = g.querySelector('.nav-group-dot');
+    if (dot) { dot.textContent = n > 99 ? '99+' : n ? String(n) : ''; dot.title = n ? `${n} pendiente${n > 1 ? 's' : ''} en este grupo` : ''; }   // el grupo plegado dice cuántos pendientes esconde
   });
 }

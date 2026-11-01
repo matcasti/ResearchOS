@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { test, expect, openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed, openNotices } = require('../helpers');
 
 const mkCollab = (page, o) => page.evaluate(o => db.collaborators.add({ name: 'Ana', role: '', affiliation: '', email: '', notes: '', createdAt: new Date().toISOString(), ...o }), o);
 const tmpFile = (name, content) => { const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ros-')), name); fs.writeFileSync(p, content); return p; };
@@ -37,6 +37,7 @@ test.describe('Seguimiento de personas', () => {
     await mkCollab(page, { name: 'Reciente', followUpDays: 14, lastContact: await page.evaluate(() => addDaysISO(-3)) });
     await mkCollab(page, { name: 'Sin cadencia', lastContact: old });
     await gotoView(page, 'dashboard');
+    await openNotices(page);
     const sec = page.locator('[data-sec="followup"]');
     await expect(sec).toBeVisible();
     await expect(sec.locator('.fu-row')).toHaveCount(1);
@@ -53,6 +54,7 @@ test.describe('Seguimiento de personas', () => {
     // vencida la pospuesta vuelve; «Contactado» registra hoy y la quita
     await page.evaluate(i => db.collaborators.update(i, { followSnoozeUntil: addDaysISO(-1) }), id);
     await gotoView(page, 'dashboard');
+    await openNotices(page);
     await page.locator('[data-sec="followup"] [data-fu-act="done"]').click();
     await expect(page.locator('[data-sec="followup"]')).toHaveCount(0);
     const c = await page.evaluate(i => db.collaborators.get(i), id);

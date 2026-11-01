@@ -847,7 +847,7 @@ async function _renderViewNow(view) {
     projects: [],
     ideas:      [{label:'Hoy', view:'dashboard'}, {label:'Ideas', view:'ideas'}],
     snippets:   [{label:'Hoy', view:'dashboard'}, {label:'Snippets', view:'snippets'}],
-    filesystem: [{label:'Hoy', view:'dashboard'}, {label:'FS Bridge', view:'filesystem'}],
+    filesystem: [{label:'Hoy', view:'dashboard'}, {label:'Carpetas del proyecto', view:'filesystem'}],
     settings:   [{label:'Hoy', view:'dashboard'}, {label:'Ajustes', view:'settings'}],
     timeline: [],
     archived:   [{label:'Hoy', view:'dashboard'}, {label:'Archivados', view:'archived'}],
@@ -1831,7 +1831,7 @@ function kanbanCardHTML(p, unreadCount = 0, activeSub = null, pendingAIs = 0) {
       ${badgesRow ? `<div class="kanban-card-badges" style="display:flex;gap:3px;flex-wrap:wrap;align-items:center;margin-bottom:4px">${badgesRow}</div>` : ''}
       <div class="kanban-card-meta">
         <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
-        <span class="badge ${prioBadgeClass(p.priority)}">${esc(p.priority)}</span>
+        ${p.priority && p.priority !== 'Media' ? `<span class="badge ${prioBadgeClass(p.priority)}" title="Prioridad ${esc(p.priority.toLowerCase())}">${esc(p.priority)}</span>` : ''}
         ${p.starred ? '<span class="kanban-card-star" title="Favorito" role="img" aria-label="Favorito">★</span>' : ''}
       </div>
       ${nextActionHTML(p.id)}
@@ -3407,7 +3407,7 @@ async function renderFilesystem() {
     <div class="view">
       <div class="view-header">
         <div>
-          <div class="view-title">FS Bridge</div>
+          <div class="view-title">Carpetas del proyecto</div>
           <div class="view-subtitle">Genera estructura de proyecto en tu sistema de archivos local</div>
         </div>
       </div>
@@ -4180,11 +4180,18 @@ async function renderWeeklyAgenda() {
   const viewMode = App.agendaViewMode || 'week';
 
   // -- Cargar todos los elementos con fecha ----------------
-  const [projects, meetings, ideas] = await Promise.all([
+  const [projects, meetings, ideas, tasks] = await Promise.all([
     db.projects.filter(p => !p.archived).toArray(),
     db.meetings.toArray(),
     db.ideas.filter(i => !!i.deadline).toArray(),
+    db.tasks.filter(t => !!t.due).toArray(),
   ]);
+  const projById = new Map(projects.map(p => [p.id, p]));
+  const taskShown = t => {                                         // como en Hoy: sin tareas de proyectos archivados y respetando el área activa
+    if (t.projectId && !projById.has(t.projectId)) return false;
+    const area = (t.projectId ? projById.get(t.projectId).areaId : t.areaId) ?? null, c = App.areaContext;
+    return c === 'all' || (c === 'none' ? !area : area === c);
+  };
 
   const isoDay = d =>
     `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -4206,6 +4213,11 @@ async function renderWeeklyAgenda() {
       evs.push({ color:'var(--green)', label:`✓ Enviado: ${p.title}`, kind:'project', id:p.id }));
     meetings.filter(m => m.date === iso).forEach(m =>
       evs.push({ color:'var(--teal)', label:`🗓 ${m.title}`, kind:'meeting', id:m.id }));
+    // Tareas con fecha: las abiertas primero; las hechas se ven atenuadas (para repasar lo avanzado)
+    tasks.filter(t => t.due === iso && taskShown(t))
+      .sort((a, b) => (a.done - b.done) || a.id - b.id)
+      .forEach(t => evs.push({ color: t.done ? 'var(--text-3)' : t.priority === 'Alta' ? 'var(--red)' : 'var(--accent)', label: `${t.done ? '☑' : '☐'} ${t.title}`,
+        kind:'task', id:t.id, projectId:t.projectId, ideaId:t.ideaId, done:t.done }));
     return evs;
   };
 
@@ -4213,6 +4225,7 @@ async function renderWeeklyAgenda() {
     if (ev.kind === 'project')    return `data-inspect-project="${ev.id}"`;
     if (ev.kind === 'idea')       return `data-inspect-idea="${ev.id}"`;
     if (ev.kind === 'meeting')    return `data-inspect-meeting="${ev.id}"`;
+    if (ev.kind === 'task')       return ev.ideaId ? `data-inspect-idea="${ev.ideaId}"` : ev.projectId ? `data-inspect-project="${ev.projectId}"` : `data-open-today="1"`;
     return '';
   };
 
@@ -4241,7 +4254,7 @@ async function renderWeeklyAgenda() {
           <div class="weekly-events">
             ${evs.length
               ? evs.map(ev => `
-                  <div class="weekly-event" ${actionAttr(ev)}>
+                  <div class="weekly-event${ev.done ? ' is-done' : ''}" ${actionAttr(ev)}>
                     <span class="weekly-event-dot" style="background:${cssColor(ev.color)}"></span>
                     <span class="weekly-event-text">${esc(ev.label)}</span>
                   </div>`).join('')
@@ -4289,7 +4302,7 @@ async function renderWeeklyAgenda() {
         <div class="monthly-cell ${!cell.inMonth ? 'monthly-cell-other' : ''} ${isToday ? 'monthly-cell-today' : ''}">
           <div class="monthly-cell-num ${isToday ? 'monthly-cell-num-today' : ''}">${cell.date.getDate()}</div>
           ${shown.map(ev => `
-            <span class="monthly-event-pill" ${actionAttr(ev)}
+            <span class="monthly-event-pill${ev.done ? ' is-done' : ''}" ${actionAttr(ev)}
                   style="border-left-color:${cssColor(ev.color)}"
                   title="${esc(ev.label.replace(/^[\S]+\s/,''))}">${esc(ev.label)}</span>`).join('')}
           ${more > 0 ? `<span class="monthly-more" data-month-day="${iso}">+${more} más</span>` : ''}
@@ -4342,6 +4355,8 @@ async function renderWeeklyAgenda() {
       el.addEventListener('click', () => inspectProject(+el.dataset.inspectSubmission)));
     root.querySelectorAll('[data-inspect-meeting]').forEach(el =>
       el.addEventListener('click', () => inspectMeeting(+el.dataset.inspectMeeting)));
+    root.querySelectorAll('[data-open-today]').forEach(el =>              // tarea suelta: se gestiona en Hoy
+      el.addEventListener('click', () => { closeModal(); navigate('dashboard'); }));
   };
   attachInspectors(mainContent);
 
@@ -7228,7 +7243,7 @@ async function renderTutorial() {
           ${modCard('⊡', 'Áreas', 'Agrupa por línea de investigación', 'areas')}
           ${modCard('📅', 'Agenda', 'Calendario semanal/mensual', 'weekly')}
           ${modCard('⬡', 'Anidados', 'Árbol de subproyectos', 'nested')}
-          ${modCard('⊟', 'FS Bridge', 'Estructura de directorios', 'filesystem')}
+          ${modCard('⊟', 'Carpetas del proyecto', 'Estructura de directorios', 'filesystem')}
           ${modCard('⚙', 'Ajustes', 'Exportar, importar, Drive', 'settings')}
         </div>
 
@@ -7500,7 +7515,7 @@ async function renderTutorial() {
             ['🔗', 'Huérfanos', 'orphans'],
             ['⊡', 'Áreas', 'areas'],
             ['⬡', 'Anidados', 'nested'],
-            ['⊟', 'FS Bridge', 'filesystem'],
+            ['⊟', 'Carpetas del proyecto', 'filesystem'],
           ].map(([icon, label, view]) => `
             <div class="tut-mod-card" data-tut-nav="${view}">
               <div class="tut-mod-icon">${icon}</div>
@@ -10477,10 +10492,29 @@ function downloadFile(filename, content, mime = 'application/json') {
 
 const BackupMeta = {
   BACKUP_DAYS: 14,
-  mark()  { try { localStorage.setItem('ros-last-export', String(Date.now())); } catch {} },
+  mark()  { try { localStorage.setItem('ros-last-export', String(Date.now())); } catch {} window.updateBackupLine?.(); },
   last()  { try { return +localStorage.getItem('ros-last-export') || null; } catch { return null; } },
   daysSince() { const t = this.last(); return t ? Math.floor((Date.now() - t) / 86400000) : null; },
 };
+
+/** La red de seguridad a la vista: en el pie del menú, cuándo fue la última copia (exportada o automática) y un aviso si falta o es vieja. */
+async function updateBackupLine() {
+  const el = $('backupLine');
+  if (!el) return;
+  const hasData = (await db.projects.count()) + (await db.ideas.count()) + (await db.tasks.count()) > 0;
+  const auto = typeof AutoBackup !== 'undefined' && AutoBackup.enabled() ? AutoBackup.lastRun() : null, manual = BackupMeta.last();
+  const last = Math.max(auto || 0, manual || 0) || null;
+  const days = last ? Math.floor((Date.now() - last) / 86400000) : null;
+  el.hidden = !hasData && !last;
+  el.classList.toggle('is-warn', !last || days >= BackupMeta.BACKUP_DAYS);
+  el.textContent = !last ? '⚠ Sin copia de seguridad' : days === 0 ? `✓ Copia de hoy${auto && auto >= (manual || 0) ? ' · automática' : ''}` : `Última copia: hace ${days} d`;
+  el.title = !last ? 'Tus datos viven solo en este navegador. Elige una carpeta de copia automática o exporta un backup.' : 'Abrir copias de seguridad en Ajustes';
+  if (!el.dataset.wired) {
+    el.dataset.wired = '1';
+    el.addEventListener('click', () => { try { localStorage.setItem('ros-settings-tab', 'data'); } catch {} navigate('settings'); });
+  }
+}
+window.updateBackupLine = updateBackupLine;
 
 /** Descarga un backup completo y lo anota como "último backup". */
 /** Lee un backup (JSON o cifrado) y ofrece fusionarlo o reemplazar los datos actuales. */
@@ -10649,6 +10683,7 @@ async function updateBadges() {
     todayBadge.classList.toggle('visible', nTasks + nDue > 0);
   }
   if (typeof updateNavGroupDots === 'function') updateNavGroupDots();
+  updateBackupLine().catch(() => {});
 
   await _renderResearchStatus();
 }
@@ -11117,14 +11152,10 @@ function _showWelcomeModal() {
       </details>
     </div>
     <div class="modal-footer" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
-      <label style="display:flex;align-items:center;gap:8px;font-size:.75rem;color:var(--text-2);cursor:pointer">
-        <input type="checkbox" id="welcomeDontShow">
-        No mostrar al iniciar
-      </label>
-      <span class="form-hint">Todo esto está siempre en <strong>Tutorial</strong> y en la paleta (${MOD_KEY} K).</span>
+      <span class="form-hint">Elijas lo que elijas, esta bienvenida no vuelve a salir. Todo está siempre en <strong>Tutorial</strong> y en la paleta (${MOD_KEY} K).</span>
     </div>`);
 
-  const remember = () => { if ($('welcomeDontShow')?.checked) localStorage.setItem('ros-welcomed', '1'); };
+  const remember = () => { try { localStorage.setItem('ros-welcomed', '1'); } catch {} };   // al elegir un camino no se vuelve a mostrar
   $('welcomeStart').addEventListener('click', () => { remember(); closeModal(); });
   $('welcomeTour').addEventListener('click', () => { remember(); closeModal(); Tour.start({ restart: true }); });
   $('welcomeLoadDemo').addEventListener('click', async () => {
@@ -11890,6 +11921,7 @@ async function init() {
   });
 
   initNavGroups();                  // grupos plegables del menú (today.js)
+  NavProfile.apply();               // perfil de uso: qué vistas muestra el menú (today.js)
   await renderContextSwitcher();    // selector de área activa
 
   // Navigation history buttons
@@ -12018,7 +12050,9 @@ async function init() {
 
   // -- Bienvenida en primer uso ----------------------------
   if (!localStorage.getItem('ros-welcomed')) {
-    _showWelcomeModal();
+    // quien ya trabaja con la app (datos propios o de ejemplo) no necesita la bienvenida en cada apertura
+    const hasData = (await db.projects.count()) + (await db.ideas.count()) + (await db.tasks.count()) > 0;
+    if (hasData) localStorage.setItem('ros-welcomed', '1'); else _showWelcomeModal();
   }
 
   initAutoBackup().catch(() => {});             // integrations.js
@@ -12524,7 +12558,7 @@ async function _searchPaletteNow(q, my) {
     { icon: uiIcon('areas'),         label: 'Áreas',                   keys: 'investigacion docencia gestion contexto', action: go('areas') },
     { icon: uiIcon('archived'),      label: 'Archivados',              keys: 'archivo', action: go('archived') },
     { icon: uiIcon('orphans'),       label: 'Elementos huérfanos',     keys: 'huerfanos sin proyecto', action: go('orphans') },
-    { icon: uiIcon('filesystem'),    label: 'FS Bridge',               keys: 'carpetas disco archivos', action: go('filesystem') },
+    { icon: uiIcon('filesystem'),    label: 'Carpetas del proyecto',   keys: 'fs bridge carpetas disco archivos', action: go('filesystem') },
     { icon: uiIcon('tutorial'),      label: 'Tutorial',                keys: 'ayuda guia', action: go('tutorial') },
     { icon: uiIcon('settings'),      label: 'Ajustes y backup',        keys: 'settings configuracion exportar importar copia seguridad drive cifrado', action: go('settings') },
   ].map(n => ({ sub: 'Vista', ...n })).filter(n => !lq || foldText(n.label + ' ' + n.keys).includes(lq));

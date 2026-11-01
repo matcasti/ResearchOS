@@ -90,6 +90,10 @@ function firstRunHTML() {
         <button class="btn btn-primary" id="frTour">▶ Recorrido guiado (3 min)</button>
         <button class="btn btn-ghost" id="frDemo">🧪 Explorar con datos de ejemplo</button>
       </div>
+      <p class="fr-or">¿Qué haces más? El menú mostrará solo lo que usas (se cambia cuando quieras en Ajustes):</p>
+      <div class="fr-profiles" role="group" aria-label="Perfil de uso">
+        ${NAV_PROFILES.map(p => `<button type="button" class="capture-kind fr-profile ${p.key === NavProfile.get() ? 'active' : ''}" data-profile="${p.key}" title="${esc(p.desc)}">${p.label}</button>`).join('')}
+      </div>
       <p class="fr-or">…o para no partir de cero:</p>
       <ol class="fr-steps">
         <li><div><strong>Tus áreas</strong><span>Investigación, Docencia, Gestión y Personal: te dejan ver una cosa a la vez.</span></div>
@@ -109,6 +113,11 @@ function firstRunHTML() {
 
 function wireFirstRun() {
   $('frAreas')?.addEventListener('click', async () => { await seedSuggestedAreas(); showToast('Áreas creadas ✓ — elige una arriba a la izquierda', 'success'); $('frAreas').disabled = true; $('frAreas').textContent = '✓ Creadas'; });
+  document.querySelectorAll('.fr-profile').forEach(b => b.addEventListener('click', () => {
+    NavProfile.set(b.dataset.profile);
+    document.querySelectorAll('.fr-profile').forEach(x => x.classList.toggle('active', x === b));
+    showToast('Menú actualizado ✓', 'success');
+  }));
   $('frBibBtn')?.addEventListener('click', () => $('frBib').click());
   $('frCsvBtn')?.addEventListener('click', () => $('frCsv').click());
   $('frBackupBtn')?.addEventListener('click', () => $('frBackup').click());

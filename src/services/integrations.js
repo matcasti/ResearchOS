@@ -68,6 +68,7 @@ const AutoBackup = {
     dated.sort();
     for (const old of dated.slice(0, Math.max(0, dated.length - this.KEEP_DAILY))) await handle.removeEntry(old).catch(() => {});
     localStorage.setItem('ros-autobackup-last', String(Date.now()));
+    window.updateBackupLine?.();
     this._dirty = false;
     return true;
   },
@@ -146,6 +147,8 @@ async function enhanceSettings() {
   const perm = handle ? await AutoBackup.permission(handle).catch(() => 'denied') : null;
   const sections = document.createElement('div');
   sections.innerHTML = `
+    <div class="settings-section" id="profileSection"></div>
+
     <div class="settings-section" id="autoBackupSection">
       <div class="settings-section-title">🗄 Copia automática a una carpeta</div>
       <div class="settings-body">
@@ -204,6 +207,7 @@ async function enhanceSettings() {
     </div>`;
   if (!anchor.isConnected || mainContent.querySelector('#autoBackupSection')) return;     // otra llamada ya montó las secciones en esta vista (un repintado a mitad de camino las duplicaba)
   anchor.after(...sections.children);
+  renderProfileSection();                     // today.js
   await renderSyncSection();                  // sync.js
   await renderAssistantSection();             // assistant.js
   wirePlannerSettings();                      // planner.js
@@ -258,7 +262,7 @@ async function enhanceSettings() {
   const u = Usage.read(); const since = u._since; delete u._since;
   const names = { dashboard: 'Hoy', kanban: 'Tablero', projects: 'Lista de proyectos', timeline: 'Línea de tiempo', nested: 'Jerarquía', ideas: 'Ideas', weekly: 'Calendario',
     snippets: 'Snippets', references: 'Referencias', starred: 'Favoritos', meetings: 'Reuniones', collaborators: 'Colaboradores', review: 'Revisión semanal',
-    submissions: 'Submissions', areas: 'Áreas', archived: 'Archivados', filesystem: 'FS Bridge', tutorial: 'Tutorial', settings: 'Ajustes', orphans: 'Huérfanos',
+    submissions: 'Submissions', areas: 'Áreas', archived: 'Archivados', filesystem: 'Carpetas del proyecto', tutorial: 'Tutorial', settings: 'Ajustes', orphans: 'Huérfanos',
     triage: 'Revisión rápida de ideas', network: 'Red', report: 'Informe de avance', 'project-hub': 'Hub de proyecto', 'collaborator-hub': 'Perfil de colaborador', focus: 'Hoy' };
   const rows = Object.entries(u).sort((a, b) => b[1] - a[1]);
   const max = rows[0]?.[1] || 1;
@@ -287,6 +291,56 @@ async function enhanceSettings() {
     mainContent.querySelector('#googleSyncSection')?.closest('.settings-section')].filter(Boolean);
   const danger = mainContent.querySelector('.settings-danger-zone');
   if (advanced.length && danger) { danger.before(adv); advanced.forEach(sec => adv.appendChild(sec)); }
+
+  organizeSettings();
+}
+
+// -- Ajustes en pestañas: ~20 secciones en una sola página eran difíciles de recorrer --------------------------------------------
+const SETTINGS_GROUPS = [
+  { key: 'data', label: 'Datos y copias',      test: /estado de la base|exportar backup|importar backup|copia automatica|copia cifrada|csv|importar tareas|calendario \(\.ics\)|zona de peligro/ },
+  { key: 'sync', label: 'Sincronización e IA', test: /sincronizar entre|asistente de ia/ },
+  { key: 'prefs', label: 'Preferencias',       test: /perfil de uso|planificacion|notificaciones/ },
+  { key: 'help', label: 'Ayuda y avanzado',    test: /recorrido|diagnostico|que vistas usas|acerca|avanzado/ },
+];
+function organizeSettings() {
+  const view = mainContent.querySelector('.view');
+  if (!view || view.querySelector('.settings-nav')) return;
+  const items = [...view.children].filter(el => el.matches('.settings-section, details.settings-advanced'));
+  if (!items.length) return;
+  for (const t of view.querySelectorAll('.settings-section-title'))                 // los títulos usan el mismo estilo de línea que el menú: sin emojis
+    if (!t.children.length) t.textContent = t.textContent.replace(/^[^\p{L}\p{N}]+/u, '');
+  const titleOf = el => foldText(el.matches('details') ? el.querySelector('summary')?.textContent || 'avanzado' : el.querySelector('.settings-section-title')?.textContent || '');
+  const groupOf = el => (SETTINGS_GROUPS.find(g => g.test.test(titleOf(el))) || SETTINGS_GROUPS[3]).key;
+  items.forEach(el => { el.dataset.sgroup = groupOf(el); });
+
+  const nav = document.createElement('div');
+  nav.className = 'settings-nav';
+  nav.innerHTML = `
+    <div class="settings-tabs" role="tablist" aria-label="Secciones de Ajustes">
+      ${SETTINGS_GROUPS.map(g => `<button type="button" role="tab" class="settings-tab" data-settings-tab="${g.key}">${g.label} <span class="st-n">${items.filter(i => i.dataset.sgroup === g.key).length}</span></button>`).join('')}
+    </div>
+    <input type="search" class="form-input settings-search" id="settingsSearch" placeholder="Buscar en ajustes…" aria-label="Buscar en ajustes" autocomplete="off">`;
+  (view.querySelector('.view-header') || view.firstElementChild).after(nav);
+
+  let tab = 'data'; try { tab = localStorage.getItem('ros-settings-tab') || 'data'; } catch {}
+  if (!SETTINGS_GROUPS.some(g => g.key === tab)) tab = 'data';
+  const apply = () => {
+    const q = foldText($('settingsSearch').value);
+    nav.classList.toggle('is-searching', !!q);
+    items.forEach(el => {
+      const show = q ? foldText(el.textContent).includes(q) : el.dataset.sgroup === tab;
+      el.hidden = !show;
+      if (q && show && el.matches('details')) el.open = true;
+    });
+    nav.querySelectorAll('.settings-tab').forEach(b => { const on = b.dataset.settingsTab === tab && !q; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
+  };
+  nav.querySelectorAll('.settings-tab').forEach(b => b.addEventListener('click', () => {
+    tab = b.dataset.settingsTab; $('settingsSearch').value = '';
+    try { localStorage.setItem('ros-settings-tab', tab); } catch {}
+    apply();
+  }));
+  $('settingsSearch').addEventListener('input', apply);
+  apply();
 }
 
 // ==============================================================

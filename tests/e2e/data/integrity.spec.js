@@ -1,4 +1,4 @@
-const { test, expect, openApp, gotoView } = require('../helpers');
+const { test, expect, openApp, gotoView, openSettingsTab } = require('../helpers');
 
 // Integridad de datos con el escenario más completo (el ejemplo): copiar, restaurar y fusionar no pierde ni mezcla nada.
 
@@ -119,6 +119,7 @@ test.describe('Recuperación ante fallos', () => {
     await expect(page.locator('.toast.error', { hasText: 'Algo no salió como esperaba' })).toHaveCount(1);
     await expect.poll(() => page.evaluate(() => ErrorLog.all().map(e => e.msg).sort())).toEqual(['boom asíncrono', 'promesa perdida']);
     await gotoView(page, 'settings');
+    await openSettingsTab(page, 'help');
     await expect(page.locator('#diagCount')).toHaveText('(2)');
     await expect(page.locator('#diagList')).toContainText('promesa perdida');
     await page.locator('#diagClear').click();

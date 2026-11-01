@@ -1,10 +1,11 @@
 // Dependencias externas y arranque en frío.
-const { test, expect, openApp, gotoView } = require('../helpers');
+const { test, expect, openApp, gotoView, openSettingsTab } = require('../helpers');
 
 test.describe('Dependencias externas', () => {
   test('sin Google Identity Services ni Google Fonts la app funciona igual', async ({ page }) => {
     const { errors } = await openApp(page); // en modo cache los hosts de Google se anulan
     await gotoView(page, 'settings');
+    await openSettingsTab(page, 'help');
     await page.locator('#settingsAdvanced > summary').click();          // lo avanzado está plegado
     await expect(page.locator('#googleSyncSection')).toBeVisible();
     await expect(page.locator('#saveIndicatorText')).toHaveText('Solo local');

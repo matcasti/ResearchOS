@@ -1,4 +1,4 @@
-const { test, expect, openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed, openSettingsTab, openNotices } = require('../helpers');
 
 // Recorrido guiado interactivo y lista de primeros pasos.
 
@@ -38,6 +38,7 @@ test.describe('Cómo se llega al recorrido', () => {
     await expect(page.locator('#tourLayer')).toBeVisible();
     await page.evaluate(() => Tour.end(false));
     await gotoView(page, 'settings');
+    await openSettingsTab(page, 'help');
     await page.locator('#setTourBtn').click();
     await expect(page.locator('#tourLayer')).toBeVisible();
   });
@@ -201,6 +202,7 @@ test.describe('Primeros pasos en Hoy', () => {
       await db.projects.add({ title: 'Mi primer proyecto', type: 'Paper', columnId: col.id, priority: 'Media', status: 'active', archived: false, starred: false, tags: [], coauthors: [], createdAt: now, updatedAt: now }); });
     await expect(page.locator('.onboard')).toContainText('Primeros pasos');
     await expect(page.locator('.onb-count')).toHaveText('1/7');
+    await openNotices(page);
     await page.locator('[data-ob="areas"]').click();
     await expect(page.locator('.onb-item.done')).toHaveCount(2);
     await page.evaluate(() => Tasks.add({ title: 'Mi primera tarea', due: localDateISO() }));
@@ -217,6 +219,7 @@ test.describe('Primeros pasos en Hoy', () => {
     await expect(page.locator('#mainContent')).not.toContainText('Iniciando ResearchOS');
     await expect(page.locator('.onboard')).toHaveCount(0);                              // la elección se recuerda
     await gotoView(page, 'settings');
+    await openSettingsTab(page, 'help');
     await page.locator('#setOnbShow').click();
     await gotoView(page, 'dashboard');
     await expect(page.locator('.onboard')).toBeVisible();
@@ -230,6 +233,7 @@ test.describe('Primeros pasos en Hoy', () => {
     await expect(page.locator('#obList')).toBeHidden();
     await expect(page.locator('#obTour')).toHaveCount(0);                                // el recorrido ya está en el aviso del ejemplo
     await expect(page.locator('.onb-count')).toHaveText('1/7');                          // solo las áreas (vienen con el ejemplo); lo demás es de ejemplo
+    await openNotices(page);
     await page.locator('#obToggle').click();
     await expect(page.locator('#obList')).toBeVisible();
     await expect(page.locator('#obToggle')).toHaveAttribute('aria-expanded', 'true');
