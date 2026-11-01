@@ -170,6 +170,8 @@ async function enhanceSettings() {
 
     <div class="settings-section" id="syncSection"></div>
 
+    <div class="settings-section" id="assistantSection"></div>
+
     ${plannerSettingsHTML()}
 
     ${academicSettingsHTML()}
@@ -200,8 +202,10 @@ async function enhanceSettings() {
         </div>
       </div>
     </div>`;
+  if (!anchor.isConnected || mainContent.querySelector('#autoBackupSection')) return;     // otra llamada ya montó las secciones en esta vista (un repintado a mitad de camino las duplicaba)
   anchor.after(...sections.children);
   await renderSyncSection();                  // sync.js
+  await renderAssistantSection();             // assistant.js
   wirePlannerSettings();                      // planner.js
   wireAcademicSettings();                     // academic.js
   wireVaultSettings();                        // vault.js

@@ -6,6 +6,13 @@ Todos los cambios relevantes de ResearchOS, de lo más reciente a lo más antigu
 
 ## Sin publicar
 
+### ✨ Nuevo
+
+- **Asistente de IA.** Elige una carpeta en *Ajustes → Asistente de IA* y un LLM (Claude Code, Claude Desktop, Cursor, ChatGPT u otro) podrá leer tus pendientes y ayudarte a mantenerlos: la app publica `estado.json` (proyectos, tareas, ideas, reuniones y personas con nombres legibles), una agenda `pendientes.md` e instrucciones `AGENTS.md`/`CLAUDE.md` que la IA entiende sola. Sin servidores ni cuentas.
+- **La IA propone, tú decides.** Los cambios que la IA deja en `cambios/` (añadir, modificar, completar y borrar tareas e ideas; añadir y modificar proyectos y reuniones; añadir personas) aparecen como «Tu asistente propone N cambios»: marcas lo que quieras y lo aplicas. En modo automático se aplica lo que no sea un borrado, con «Deshacer»; los borrados siempre se revisan. Cada lote recibe un `resultados/` que explica qué se aplicó y qué falló.
+- **Herramienta para agentes** (`researchos.js`, sin dependencias, se copia sola a la carpeta): línea de comandos, **servidor MCP** y definiciones de funciones para OpenAI y Anthropic, para conectar cualquier asistente. Guía en `docs/ASISTENTE-IA.md`.
+- **Ajustes:** corregido que las secciones de copia automática, sincronización y asistente pudieran aparecer duplicadas si la pantalla se repintaba mientras se montaba.
+
 ### ♻️ Mejorado
 
 - **Repositorio más fácil de recorrer.** El código pasa de 13 archivos sueltos en la raíz a `src/` (`core/`, `modules/` y `services/`), los estilos, el manifiesto y los iconos a `assets/`, el registro de cambios a `docs/` y las pruebas a siete carpetas por tema dentro de `tests/e2e/`. Ninguna carpeta pasa de 5 archivos. La aplicación funciona igual: solo cambian las rutas internas y la caché offline se renueva.

@@ -12023,6 +12023,7 @@ async function init() {
 
   initAutoBackup().catch(() => {});             // integrations.js
   initSync().catch(() => {});                   // sync.js
+  initAssistant().catch(() => {});              // assistant.js
   await handleSharedCapture().catch(() => {});  // «Compartir → ResearchOS» desde el móvil
 
   // Índice de búsqueda inicial

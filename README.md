@@ -128,8 +128,9 @@ src/
   modules/            Funciones por área: today.js (Hoy), network.js (Red), planner.js (Mi día e informe),
                       academic.js (docencia y manuscritos), tour.js (recorrido guiado y primeros pasos)
   services/           Datos y sincronización: vault.js (copia cifrada), sync.js (entre dispositivos),
-                      integrations.js (copia automática y .ics), sample.js (datos de ejemplo)
-docs/                 CHANGELOG.md
+                      assistant.js (asistente de IA), integrations.js (copia automática y .ics), sample.js (datos de ejemplo)
+tools/                researchos.js: CLI, servidor MCP y esquemas de funciones para asistentes de IA (sin dependencias)
+docs/                 CHANGELOG.md, ASISTENTE-IA.md
 tests/
   playwright.config.js
   e2e/                helpers.js y las pruebas por tema: app/ · views/ · data/ · features/ · onboarding/ · quality/ · robustness/
@@ -170,6 +171,10 @@ Inicia tu Investigación: Abre tu navegador favorito y accede a <http://localhos
 ### 📴 Uso sin conexión
 
 Tras la **primera visita con conexión** (servida por `http://localhost` o `https://`), un *service worker* ([sw.js](sw.js)) guarda la app y sus librerías: las siguientes veces arranca sin Internet. Los archivos propios usan «red primero» (siempre ves tu última versión), pero si la red tarda más de 3,5 s se sirve la copia guardada, así una conexión lenta no deja la app colgada. Las librerías pesadas y opcionales (resaltado de código, LaTeX y Google Identity para Drive) **se descargan solo cuando se necesitan**: un arranque típico pide ~115 KB de librerías en vez de ~540 KB y no contacta a Google; igualmente quedan guardadas para el uso sin conexión. Si abres `index.html` directamente (`file://`) la app funciona, pero necesita conexión la primera vez para descargar las librerías y no cachea nada. Si faltan librerías críticas, la app lo explica en pantalla en lugar de quedarse en blanco.
+
+### 🤖 Asistente de IA
+
+Elige una carpeta en **Ajustes → Asistente de IA** y cualquier LLM (Claude Code, Claude Desktop vía MCP, Cursor, ChatGPT/Anthropic con *function calling*, un script propio…) podrá **leer tus pendientes y proponerte cambios**: la app publica `estado.json` y `pendientes.md` con instrucciones (`AGENTS.md`), la IA deja sus propuestas en `cambios/` y tú las revisas antes de aplicarlas (los borrados siempre se revisan). No hay servidores ni cuentas. Guía completa, configuración MCP y formato: [docs/ASISTENTE-IA.md](docs/ASISTENTE-IA.md).
 
 ### 🧪 Pruebas end-to-end
 
