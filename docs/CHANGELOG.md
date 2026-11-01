@@ -6,6 +6,18 @@ Todos los cambios relevantes de ResearchOS, de lo más reciente a lo más antigu
 
 ## Sin publicar
 
+### 🤖 El asistente de IA llega a más partes de la app
+
+- **Personas editables.** Además de añadirlas, la IA puede modificar el rol, la afiliación, el correo, las notas y cada cuántos días hay que escribirle a cada persona (y la fecha del último contacto).
+- **Papers en Submissions.** La IA puede crear un proyecto `Paper` y moverlo por el pipeline (`submissionStatus`), indicar el venue, la fecha de envío, las notas y las rondas de revisión. Se comporta como moverlo a mano: anota el historial y la fecha de envío al pasar a «enviado», mueve la columna del tablero si lo tienes activado y se deshace entero. Los campos de Submissions se rechazan en proyectos que no son `Paper`, con un mensaje que lo explica, y el tipo de proyecto ya no admite valores libres (antes «paper» en minúsculas no aparecía en Submissions).
+- **Coautores** de un proyecto (los que coinciden con una persona de la agenda quedan enlazados a ella).
+- **Referencias y snippets.** Se pueden añadir, modificar y borrar (siempre con revisión). Las referencias admiten autores, año, DOI, enlace, proyecto, etiquetas, estado de lectura y `source` para no duplicar.
+- **`estado.json` más completo:** lista los tipos de proyecto y las etapas de Submissions, y trae los datos de submission de cada paper, las notas de las personas, las referencias y los snippets.
+- **Herramienta para agentes:** nuevas `researchos_add`, `researchos_update` y `researchos_delete`, genéricas para cualquier tipo, y los comandos `añadir <tipo>`, `cambiar <tipo> <registro> campo=valor` y `eliminar <tipo> <registro>` en la línea de comandos; `referencias`, `snippets`, `areas`, `columnas`, `colecciones` y `archivados` para consultarlos.
+- **Control total de los datos (opcional, apagado por defecto).** En *Ajustes → Asistente de IA* puedes dejar que la IA también borre cualquier dato —proyectos, personas, reuniones, colecciones…— y vea todo sin los recortes habituales de `estado.json`. En «Aplicar automáticamente» los borrados se hacen sin pedirte permiso (con «Deshacer»); en «Revisar» se siguen revisando. Al borrar no quedan referencias colgantes y todo se deshace de una vez. Pide confirmación al activarlo.
+- **Ajustes de la app (opcional, apagado por defecto).** Otro permiso abre a la IA las áreas, las columnas del tablero (con orden y límite), las etapas de Submissions, los campos extra por tipo de proyecto (que luego rellena con `customFields`), a qué columna va cada etapa, las horas útiles al día, el perfil del menú y la apariencia. Con el permiso apagado la app rechaza esas operaciones y le explica a la IA cómo pedirlo.
+- **Más alcance:** colecciones de snippets, proyectos archivados visibles en `estado.json`, y campos extra de proyecto (`customFields`).
+
 ### 🔗 Tareas y reuniones más completas
 
 - **Reuniones con hora y duración.** Al crear o editar una reunión puedes fijar la hora y cuánto dura; se muestran ordenadas en Hoy, el Calendario y el panel del proyecto (`10:00–11:30`), y se exportan al `.ics` como eventos con hora. Al importar un `.ics` se conservan la hora y la duración (con la conversión de horas UTC a tu zona).

@@ -64,8 +64,9 @@ function listTasks(s, { query, project, due, includeDone, assignee, limit = 100 
   return rows.slice(0, limit);
 }
 function listOther(s, type, { query, limit = 100 } = {}) {
-  const key = { projects: 'projects', ideas: 'ideas', meetings: 'meetings', people: 'people' }[type];
-  if (!key) throw new Error(`tipo «${type}» desconocido (tasks, projects, ideas, meetings, people)`);
+  const key = { projects: 'projects', ideas: 'ideas', meetings: 'meetings', people: 'people', references: 'references', snippets: 'snippets',
+    areas: 'areas', columns: 'columnsInfo', collections: 'collections', archived: 'archivedProjects' }[type];
+  if (!key) throw new Error(`tipo «${type}» desconocido (tasks, projects, ideas, meetings, people, references, snippets, areas, columns, collections, archived)`);
   let rows = s[key];
   if (query) rows = rows.filter(r => fold(JSON.stringify(r)).includes(fold(query)));
   return rows.slice(0, limit);
@@ -75,11 +76,28 @@ function overview(s) {
   return { today: s.today, weekday: s.weekday, stateAgeMinutes: s._ageMin, summary: s.summary,
     overdue: late.slice(0, 15).map(t => ({ uid: t.uid, title: t.title, due: t.due, project: t.project })),
     dueToday: s.tasks.filter(t => !t.done && t.due === s.today).map(t => ({ uid: t.uid, title: t.title, project: t.project })),
-    columns: s.columns, hint: s._ageMin > 30 ? 'El estado tiene más de 30 minutos: la app de ResearchOS probablemente está cerrada; los cambios se aplicarán cuando se abra.' : undefined };
+    columns: s.columns, permissions: s.permissions, hint: s._ageMin > 30 ? 'El estado tiene más de 30 minutos: la app de ResearchOS probablemente está cerrada; los cambios se aplicarán cuando se abra.' : undefined };
 }
 function search(s, text) {
   const q = fold(text), hit = r => fold(JSON.stringify(r)).includes(q);
-  return { tasks: s.tasks.filter(hit).slice(0, 25), projects: s.projects.filter(hit).slice(0, 15), ideas: s.ideas.filter(hit).slice(0, 15), meetings: s.meetings.filter(hit).slice(0, 15), people: s.people.filter(hit).slice(0, 15) };
+  return { tasks: s.tasks.filter(hit).slice(0, 25), projects: s.projects.filter(hit).slice(0, 15), ideas: s.ideas.filter(hit).slice(0, 15), meetings: s.meetings.filter(hit).slice(0, 15), people: s.people.filter(hit).slice(0, 15),
+    references: (s.references || []).filter(hit).slice(0, 15), snippets: (s.snippets || []).filter(hit).slice(0, 15) };
+}
+
+/** Los tipos de registro que admite la app: dónde viven en estado.json y con qué campo se nombran. */
+const KINDS = { task: ['tasks', 'title', 'tarea'], idea: ['ideas', 'title', 'idea'], project: ['projects', 'title', 'proyecto'], meeting: ['meetings', 'title', 'reunión'],
+  person: ['people', 'name', 'persona'], reference: ['references', 'title', 'referencia'], snippet: ['snippets', 'title', 'snippet'], collection: ['collections', 'name', 'colección'],
+  area: ['areas', 'name', 'área'], column: ['columnsInfo', 'title', 'columna'], setting: [null, 'name', 'ajuste'] };      // area, column y setting necesitan «Ajustes de la app» activado
+const KIND_ALIAS = { tarea: 'task', idea: 'idea', proyecto: 'project', paper: 'project', reunion: 'meeting', 'reunión': 'meeting', persona: 'person', referencia: 'reference', ref: 'reference',
+  coleccion: 'collection', 'colección': 'collection', area: 'area', 'área': 'area', columna: 'column', ajuste: 'setting', ajustes: 'setting', settings: 'setting' };
+const kindOf = t => { const k = KINDS[t] ? t : KIND_ALIAS[fold(t)]; if (!k) throw new Error(`tipo «${t}» desconocido (${Object.keys(KINDS).join(', ')})`); return k; };
+/** Cómo señalar un registro en un lote: por el origen con el que entró, o por uid/título. */
+function refOf(s, type, ref) {
+  const [key, label, what] = KINDS[kindOf(type)];
+  if (!key) return {};                                                    // los ajustes son un único registro: no hace falta indicar cuál
+  const rows = s[key] || [];
+  if (rows.some(r => r.source && r.source === ref)) return { source: ref };
+  return { uid: find(rows, ref, label, what).uid };
 }
 
 // -- cambios: escribir un lote en cambios/ y esperar su resultado ------------------------------------------------------------
@@ -124,12 +142,12 @@ const WAIT = { wait_seconds: { type: 'number', description: 'Segundos que espera
 const TOOLS = [
   { name: 'researchos_overview', description: 'Resumen de ResearchOS: fecha de hoy, contadores, tareas atrasadas y de hoy, columnas del tablero. Empieza por aquí.',
     schema: { type: 'object', properties: {} }, run: (s) => overview(s) },
-  { name: 'researchos_list', description: 'Lista tareas, proyectos, ideas, reuniones o personas con filtros sencillos. Cada elemento trae su uid.',
-    schema: { type: 'object', required: ['type'], properties: { type: { type: 'string', enum: ['tasks', 'projects', 'ideas', 'meetings', 'people'] }, query: str('Texto a buscar'),
+  { name: 'researchos_list', description: 'Lista tareas, proyectos (los papers traen su etapa de submission), ideas, reuniones, personas, referencias o snippets con filtros sencillos. Cada elemento trae su uid.',
+    schema: { type: 'object', required: ['type'], properties: { type: { type: 'string', enum: ['tasks', 'projects', 'ideas', 'meetings', 'people', 'references', 'snippets'] }, query: str('Texto a buscar'),
       project: str('(tasks) filtra por proyecto'), due: str('(tasks) overdue | today | week | nodate | AAAA-MM-DD (vence hasta esa fecha)'), assignee: str('(tasks) persona de la que se espera'),
       include_done: { type: 'boolean', description: '(tasks) incluir completadas recientes' }, limit: { type: 'number' } } },
     run: (s, a) => a.type === 'tasks' ? listTasks(s, { query: a.query, project: a.project, due: a.due, assignee: a.assignee, includeDone: a.include_done, limit: a.limit }) : listOther(s, a.type, a) },
-  { name: 'researchos_search', description: 'Busca un texto en todas las entidades (tareas, proyectos, ideas, reuniones, personas).',
+  { name: 'researchos_search', description: 'Busca un texto en todas las entidades (tareas, proyectos, ideas, reuniones, personas, referencias, snippets).',
     schema: { type: 'object', required: ['text'], properties: { text: str('Texto a buscar') } }, run: (s, a) => search(s, a.text) },
   { name: 'researchos_add_task', description: 'Propone una tarea nueva. Los nombres de proyecto/persona se resuelven en la app.',
     schema: { type: 'object', required: ['title'], properties: { title: str('Título'), due: str('Fecha AAAA-MM-DD'), project: str('Nombre o uid del proyecto'), priority: { type: 'string', enum: ['Alta', 'Media', 'Baja'] },
@@ -151,7 +169,17 @@ const TOOLS = [
       participants: str('Nombres separados por comas'), project: str('Proyecto'), agreements: str('Notas / acuerdos'), source: str('Origen estable, p. ej. gcal:<id del evento>'),
       action_items: { type: 'array', items: { type: 'string' }, description: 'Próximos pasos' }, ...WAIT } },
     write: (s, a) => [{ op: 'add', type: 'meeting', set: clean({ title: a.title, date: a.date, time: a.time, duration: a.duration, participants: a.participants, project: a.project, agreements: a.agreements, source: a.source, addActionItems: a.action_items }) }] },
-  { name: 'researchos_propose_changes', description: 'Envía un lote de operaciones con el formato completo de AGENTS.md (add/update/complete/delete sobre task, idea, project, meeting, person). Úsalo para varios cambios a la vez o para proyectos y reuniones.',
+  { name: 'researchos_add', description: 'Propone añadir un registro de cualquier tipo (task, idea, project, meeting, person, reference, snippet, collection y, con «Ajustes de la app», area y column) con los campos de AGENTS.md. Es la vía para proyectos y papers (type Paper, submissionStatus, targetVenue…), personas, referencias y snippets.',
+    schema: { type: 'object', required: ['type', 'set'], properties: { type: { type: 'string', enum: Object.keys(KINDS) }, set: { type: 'object', description: 'Campos del registro (ver AGENTS.md), p. ej. {"title":"…","type":"Paper","submissionStatus":"enviado"}' }, ...WAIT } },
+    write: (s, a) => [{ op: 'add', type: kindOf(a.type), set: a.set }] },
+  { name: 'researchos_update', description: 'Propone modificar un registro existente de cualquier tipo: editar una persona, pasar un paper a otra etapa de Submissions, completar los datos de una referencia… Se indica por uid, nombre/título o por su origen (source). Pon null en un campo para vaciarlo.',
+    schema: { type: 'object', required: ['type', 'set'], properties: { type: { type: 'string', enum: Object.keys(KINDS) }, ref: str('uid (o sus 8 primeros caracteres), título/nombre exacto o source. No hace falta para type=setting'),
+      set: { type: 'object', description: 'Campos a cambiar, p. ej. {"submissionStatus":"en_revision","targetVenue":"Nature"} o {"role":"Postdoc","followUpDays":14}' }, ...WAIT } },
+    write: (s, a) => [{ op: 'update', type: kindOf(a.type), ...refOf(s, a.type, a.ref), set: a.set }] },
+  { name: 'researchos_delete', description: 'Propone eliminar un registro. Tareas, ideas, referencias y snippets siempre se pueden proponer (la persona los revisa); proyectos, personas, reuniones y colecciones solo si activó «Control total de los datos» (ver permissions en researchos_overview), y áreas y columnas además «Ajustes de la app». Sin el permiso, la app rechaza la operación.',
+    schema: { type: 'object', required: ['type', 'ref'], properties: { type: { type: 'string', enum: Object.keys(KINDS).filter(k => k !== 'setting') }, ref: str('uid, título/nombre exacto o source'), ...WAIT } },
+    write: (s, a) => [{ op: 'delete', type: kindOf(a.type), ...refOf(s, a.type, a.ref) }] },
+  { name: 'researchos_propose_changes', description: 'Envía un lote de operaciones con el formato completo de AGENTS.md (add/update/complete/delete sobre task, idea, project, meeting, person, reference, snippet, collection y, con permiso, area, column y setting). Úsalo para varios cambios a la vez o para proyectos y reuniones.',
     schema: { type: 'object', required: ['ops'], properties: { ops: { type: 'array', items: { type: 'object' }, description: 'Operaciones, ver AGENTS.md' }, note: str('Explicación breve para la persona que revisa'), ...WAIT } },
     write: (s, a) => a.ops },
   { name: 'researchos_get_result', description: 'Lee el resultado de un lote enviado (nombre devuelto al proponerlo, p. ej. 2026-11-01T10-30-00-mcp-ab12.json).',
@@ -215,20 +243,34 @@ function parseArgs(argv) {
   return { pos, opt };
 }
 const ALIAS = { resumen: 'overview', overview: 'overview', tareas: 'tasks', tasks: 'tasks', proyectos: 'projects', projects: 'projects', ideas: 'ideas', reuniones: 'meetings', meetings: 'meetings',
-  personas: 'people', people: 'people', buscar: 'search', search: 'search', 'añadir-tarea': 'add-task', 'anadir-tarea': 'add-task', 'add-task': 'add-task', completar: 'complete', complete: 'complete', done: 'complete',
+  personas: 'people', people: 'people', referencias: 'references', references: 'references', snippets: 'snippets', areas: 'areas', columnas: 'columns', columns: 'columns', colecciones: 'collections', collections: 'collections', archivados: 'archived', archived: 'archived', 'añadir': 'add-record', 'anadir': 'add-record', add: 'add-record', cambiar: 'set-record', set: 'set-record', eliminar: 'delete-record', remove: 'delete-record', buscar: 'search', search: 'search', 'añadir-tarea': 'add-task', 'anadir-tarea': 'add-task', 'add-task': 'add-task', completar: 'complete', complete: 'complete', done: 'complete',
   modificar: 'update', update: 'update', borrar: 'delete', delete: 'delete', 'nueva-idea': 'add-idea', 'add-idea': 'add-idea', 'nueva-reunion': 'add-meeting', 'add-meeting': 'add-meeting', aplicar: 'apply', apply: 'apply', resultado: 'result', result: 'result',
   schema: 'schema', mcp: 'mcp', ayuda: 'help', help: 'help' };
 const HELP = `ResearchOS — herramienta para asistentes de IA
 Uso: node tools/researchos.js [--dir CARPETA] <comando> [opciones]
 
-Lectura   resumen · tareas [--hasta atrasadas|hoy|semana|sin-fecha|AAAA-MM-DD] [--proyecto X] [--buscar T] [--todas] · proyectos · ideas · reuniones · personas · buscar <texto>
+Lectura   resumen · tareas [--hasta atrasadas|hoy|semana|sin-fecha|AAAA-MM-DD] [--proyecto X] [--buscar T] [--todas] · proyectos · ideas · reuniones · personas · referencias · snippets · areas · columnas · colecciones · archivados · buscar <texto>
 Cambios   añadir-tarea "título" [--fecha F] [--proyecto P] [--prioridad Alta|Media|Baja] [--persona N] [--repite weekly] [--minutos 30] [--notas T] [--enlace URL] [--origen gmail:ID]
           nueva-reunion "título" [--fecha F] [--hora HH:MM] [--duracion 60] [--participantes A,B] [--proyecto P] [--origen gcal:ID]
           completar <uid|título> (o --origen gmail:ID) · modificar <uid|título> [--titulo T] [--fecha F|null] [--prioridad P] [--proyecto P] [--persona N] [--hecha true|false]
           borrar <uid|título> · nueva-idea "título" [--texto T] [--etiquetas a,b] [--proyecto P] · aplicar <lote.json>
+          añadir <tipo> "título" campo=valor …   ·   cambiar <tipo> <uid|nombre|origen> campo=valor …
+              eliminar <tipo> <uid|nombre|origen>   (proyectos, personas, reuniones y colecciones: solo con «Control total de los datos»)
+              tipos: tarea idea proyecto reunion persona referencia snippet coleccion (y con «Ajustes de la app»: area columna ajuste); p. ej.  cambiar proyecto "Paper Alfa" submissionStatus=en_revision targetVenue=Nature
+                                                                                    cambiar persona Vega followUpDays=14 role=Postdoc
+                                                                                    cambiar ajuste dailyMinutes=300 profile=research
 Resultado resultado <archivo>   ·   cualquier cambio acepta --esperar [segundos] para esperar la respuesta de la app
 Integración  mcp (servidor MCP por stdio) · schema --formato openai|anthropic|mcp (definiciones de funciones)
 Todos los comandos aceptan --json. La carpeta también puede venir de RESEARCHOS_DIR.`;
+/** Valores de la línea de comandos: null, true/false, números en los campos numéricos y JSON entre [] o {}. */
+const NUMERIC = new Set(['year', 'duration', 'minutes', 'followUpDays', 'wip', 'position', 'dailyMinutes']);
+function fieldValue(k, v) {
+  if (v === 'null') return null;
+  if (v === 'true' || v === 'false') return v === 'true';
+  if (NUMERIC.has(k) && v !== '' && !isNaN(+v)) return +v;
+  if (/^[[{]/.test(v)) { try { return JSON.parse(v); } catch { throw new Error(`el valor de «${k}» no es JSON válido`); } }
+  return v;
+}
 const taskLine = t => `${t.done ? '[x]' : '[ ]'} ${t.title}${t.project ? ` — ${t.project}` : ''}${t.due ? ` · ${t.due}` : ''}${t.priority ? ` · ${t.priority}` : ''}${t.assignee ? ` · esperando a ${t.assignee}` : ''} (${t.uid.slice(0, 8)})`;
 
 async function cli(argv) {
@@ -251,11 +293,18 @@ async function cli(argv) {
     const s = loadState(dir);
     if (cmd === 'overview') { const o = overview(s); out(o, o => `${o.weekday} ${o.today} · ${o.summary.openTasks} abiertas · ${o.summary.overdueTasks} atrasadas · ${o.summary.dueToday} hoy · ${o.summary.dueNext7Days} en 7 días\n${o.overdue.map(t => `  atrasada: ${t.title} (${t.due})`).join('\n')}${o.hint ? '\n' + o.hint : ''}`); return 0; }
     if (cmd === 'tasks') { const r = listTasks(s, { query: opt.buscar, project: opt.proyecto, due: opt.hasta, includeDone: !!opt.todas, assignee: opt.persona }); out(r, r => r.map(taskLine).join('\n') || '(ninguna)'); return 0; }
-    if (['projects', 'ideas', 'meetings', 'people'].includes(cmd)) { const r = listOther(s, cmd, { query: opt.buscar }); out(r, r => r.map(x => `${x.title || x.name}${x.date ? ` · ${x.date}` : ''}${x.column ? ` · ${x.column}` : ''}${x.project ? ` — ${x.project}` : ''} (${x.uid.slice(0, 8)})`).join('\n') || '(ninguno)'); return 0; }
+    if (['projects', 'ideas', 'meetings', 'people', 'references', 'snippets', 'areas', 'columns', 'collections', 'archived'].includes(cmd)) { const r = listOther(s, cmd, { query: opt.buscar }); out(r, r => r.map(x => `${x.title || x.name}${x.date ? ` · ${x.date}` : ''}${x.column ? ` · ${x.column}` : ''}${x.project ? ` — ${x.project}` : ''} (${x.uid.slice(0, 8)})`).join('\n') || '(ninguno)'); return 0; }
     if (cmd === 'search') { const r = search(s, text); out(r, r => Object.entries(r).map(([k, v]) => `${k}: ${v.length}`).join(' · ') + '\n' + r.tasks.map(taskLine).join('\n')); return 0; }
     let ops;
     if (cmd === 'add-task') ops = [{ op: 'add', type: 'task', set: set({ title: text, due: opt.fecha, project: opt.proyecto, priority: opt.prioridad, assignee: opt.persona, repeat: opt.repite, minutes: opt.minutos && +opt.minutos, planDate: opt.planificada, notes: opt.notas, link: opt.enlace, source: opt.origen }) }];
     else if (cmd === 'add-meeting') ops = [{ op: 'add', type: 'meeting', set: set({ title: text, date: opt.fecha || s.today, time: opt.hora, duration: opt.duracion && +opt.duracion, participants: opt.participantes, project: opt.proyecto, agreements: opt.notas, source: opt.origen }) }];
+    else if (cmd === 'add-record' || cmd === 'set-record') {                                  // campo=valor para cualquier tipo: proyectos y papers, personas, referencias, snippets…
+      const kind = kindOf(pos[1]), fields = {}, first = KINDS[kind][0] ? 3 : 2;                  // «ajuste» no lleva registro: cambiar ajuste campo=valor
+      for (const kv of pos.slice(first)) { const i = kv.indexOf('='); if (i < 1) throw new Error(`«${kv}» no es campo=valor`); fields[kv.slice(0, i)] = fieldValue(kv.slice(0, i), kv.slice(i + 1)); }
+      if (cmd === 'add-record') ops = [{ op: 'add', type: kind, set: { [KINDS[kind][1]]: pos[2], ...fields } }];
+      else ops = [{ op: 'update', type: kind, ...refOf(s, kind, pos[2]), set: fields }];
+    }
+    else if (cmd === 'delete-record') { const kind = kindOf(pos[1]); ops = [{ op: 'delete', type: kind, ...refOf(s, kind, pos[2]) }]; }
     else if (cmd === 'add-idea') ops = [{ op: 'add', type: 'idea', set: set({ title: text, content: opt.texto, tags: opt.etiquetas && String(opt.etiquetas).split(','), project: opt.proyecto, source: opt.origen }) }];
     else if (cmd === 'complete') ops = [opt.origen && !text ? { op: 'complete', type: 'task', source: opt.origen } : { op: 'complete', type: 'task', uid: find(s.tasks.filter(t => !t.done), text, 'title', 'tarea abierta').uid }];
     else if (cmd === 'delete') ops = [{ op: 'delete', type: 'task', uid: find(s.tasks, text, 'title', 'tarea').uid }];

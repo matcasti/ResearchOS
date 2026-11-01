@@ -328,4 +328,335 @@ test.describe('Asistente de IA', () => {
     expect(await page.evaluate(() => db.meetings.where('title').equals('Comité').first().then(m => [m.time, m.duration, m.source, m.actionItems.length]))).toEqual(['15:00', 60, 'gcal:evt2', 1]);
     expect((await tarea(page, 'Con origen')).done).toBe(true);
   });
+
+  test('la IA edita personas, mueve papers por Submissions y gestiona referencias y snippets', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await activar(page);
+    const res = async n => JSON.parse(await leer(page, 'resultados/' + n));
+    const proyecto = t => page.evaluate(t => db.projects.where('title').equals(t).first(), t);
+    await page.evaluate(() => Assistant.setMode('auto'));
+
+    await dejar(page, 'q-1.json', { format: TIPO, author: 'ia', ops: [                      // personas: antes solo se podían añadir
+      { op: 'update', type: 'person', match: 'Dra. Vega', set: { role: 'Postdoc', affiliation: 'UChile', followUpDays: 14, lastContact: '2026-10-20', notes: 'Prefiere correo' } },
+      { op: 'add', type: 'person', set: { name: 'Dr. Soto', followUpDays: 30 } },
+      { op: 'update', type: 'person', match: 'Dra. Vega', set: { followUpDays: 10 } },
+    ] });
+    const vega = await page.evaluate(() => db.collaborators.where('name').equals('Dra. Vega').first());
+    expect(vega).toMatchObject({ role: 'Postdoc', affiliation: 'UChile', followUpDays: 14, lastContact: '2026-10-20', notes: 'Prefiere correo', email: 'vega@uni.cl' });
+    const q1 = await res('q-1.json');
+    expect(q1.ops.map(o => o.status)).toEqual(['applied', 'applied', 'error']);
+    expect(q1.ops[2].error).toContain('followUpDays');
+    expect(await page.evaluate(() => db.collaborators.where('name').equals('Dr. Soto').first().then(c => c.followUpDays))).toBe(30);
+
+    await page.evaluate(async () => {                                                      // el tablero sigue al pipeline (opción de la app)
+      const cols = await db.kanbanColumns.orderBy('order').toArray();
+      await db.settings.put({ key: 'ros-auto-sync-paper-col', value: 'true' });
+      await db.settings.put({ key: 'ros-sub-col-map', value: JSON.stringify({ aceptado: cols.at(-1).id }) });
+    });
+    const colAntes = (await proyecto('Paper Alfa')).columnId;
+    await dejar(page, 'q-2.json', { format: TIPO, author: 'ia', ops: [                      // papers en Submissions
+      { op: 'update', type: 'project', match: 'Paper Alfa', set: { submissionStatus: 'En revisión', targetVenue: 'Nature', submissionNotes: 'Revisor 2 es duro', coauthors: 'dra. vega, Externo X',
+        addSubmissionRounds: [{ submittedAt: '2026-10-01', decision: 'major', decisionDate: '2026-10-20', venue: 'Nature', notes: 'R&R' }] } },
+      { op: 'update', type: 'project', match: 'Dataset Beta', set: { submissionStatus: 'enviado' } },
+      { op: 'add', type: 'project', set: { title: 'Artículo nuevo', type: 'paper', submissionStatus: 'enviado', targetVenue: 'PLOS ONE' } },
+      { op: 'update', type: 'project', match: 'Grant Gamma', set: { type: 'Tesis' } },
+      { op: 'update', type: 'project', match: 'Paper Alfa', set: { submissionStatus: 'inventado' } },
+      { op: 'update', type: 'project', match: 'Paper Alfa', set: { submissionRounds: [{ decision: 'quizás' }] } },
+    ] });
+    const q2 = await res('q-2.json');
+    expect(q2.ops.map(o => o.status)).toEqual(['applied', 'error', 'applied', 'error', 'error', 'error']);
+    expect(q2.ops[1].error).toContain('solo aplica a proyectos de tipo Paper');             // un proyecto que no es Paper no aparecería en Submissions
+    expect(q2.ops[3].error).toContain('Proyecto, Grant, Paper');
+    expect(q2.ops[4].error).toContain('preparacion, enviado, en_revision');
+    expect(q2.ops[5].error).toContain('decision');
+    const alfa = await proyecto('Paper Alfa');
+    expect(alfa).toMatchObject({ submissionStatus: 'en_revision', targetVenue: 'Nature', submissionNotes: 'Revisor 2 es duro', coauthors: ['Dra. Vega', 'Externo X'], coauthorIds: [vega.id] });
+    expect(alfa.submissionRounds).toMatchObject([{ submittedAt: '2026-10-01', decision: 'major', decisionDate: '2026-10-20', venue: 'Nature', notes: 'R&R' }]);
+    expect(alfa.submissionStatusHistory).toMatchObject([{ from: null, to: 'en_revision' }]);
+    expect(await proyecto('Dataset Beta')).not.toHaveProperty('submissionStatus');
+    const nuevo = await proyecto('Artículo nuevo');
+    expect(nuevo).toMatchObject({ type: 'Paper', submissionStatus: 'enviado', targetVenue: 'PLOS ONE' });
+    expect(nuevo.submittedAt).toBe(await page.evaluate(() => localDateISO()));              // al pasar a «enviado» se anota la fecha, como en el pipeline
+    await gotoView(page, 'submissions');
+    await expect(page.locator('#mainContent')).toContainText('Artículo nuevo');
+    await expect(page.locator('#mainContent')).toContainText('Paper Alfa');
+
+    await dejar(page, 'q-3.json', { format: TIPO, author: 'ia', ops: [{ op: 'update', type: 'project', match: 'Paper Alfa', set: { submissionStatus: 'aceptado' } }] });
+    const aceptado = await proyecto('Paper Alfa');
+    expect(aceptado.submissionStatus).toBe('aceptado');
+    expect(aceptado.columnId).not.toBe(colAntes);                                          // y la columna del tablero se movió con él
+    await page.locator('.toast-undo-btn').last().click();                                   // deshacer devuelve las dos cosas
+    await expect.poll(async () => (await proyecto('Paper Alfa')).submissionStatus).toBe('en_revision');
+    expect((await proyecto('Paper Alfa')).columnId).toBe(colAntes);
+
+    await dejar(page, 'q-4.json', { format: TIPO, author: 'ia', ops: [                      // bibliografía y código
+      { op: 'add', type: 'reference', set: { title: 'Mixed models in R', authors: 'Bates, D.', year: 2015, journal: 'JSS', doi: '10.18637/jss.v067.i01', url: 'https://www.jstatsoft.org/article/view/v067i01',
+        project: 'Paper Alfa', tags: ['lme4', 'estadística'], readStatus: 'leyendo', source: 'zotero:abc' } },
+      { op: 'add', type: 'reference', set: { title: 'Mala', url: 'javascript:alert(1)' } },
+      { op: 'add', type: 'snippet', set: { title: 'Modelo mixto', language: 'r', code: 'lmer(y ~ x + (1|g), data = d)', project: 'Paper Alfa', tags: 'R, modelos' } },
+      { op: 'add', type: 'snippet', set: { title: 'Sin código' } },
+      { op: 'add', type: 'reference', set: { title: 'Mixed models in R (repetida)', source: 'zotero:abc' } },
+    ] });
+    const q4 = await res('q-4.json');
+    expect(q4.ops.map(o => o.status)).toEqual(['applied', 'error', 'applied', 'error', 'skipped']);
+    expect(q4.ops[1].error).toContain('http');
+    expect(q4.ops[3].error).toContain('code');
+    await dejar(page, 'q-4b.json', { format: TIPO, author: 'ia', ops: [{ op: 'update', type: 'reference', source: 'zotero:abc', set: { readStatus: 'read', notes: 'Capítulo 3 útil' } }] });      // se localiza por su origen
+    expect((await res('q-4b.json')).ops[0].status).toBe('applied');
+    const ref = await page.evaluate(() => db.references.where('title').equals('Mixed models in R').first());
+    expect(ref).toMatchObject({ year: 2015, journal: 'JSS', tags: ['lme4', 'estadística'], readStatus: 'read', notes: 'Capítulo 3 útil', source: 'zotero:abc', projectId: alfa.id });
+    expect(ref.readAt).toBeTruthy();
+    const snip = await page.evaluate(() => db.snippets.where('title').equals('Modelo mixto').first());
+    expect(snip).toMatchObject({ language: 'R', projectId: alfa.id, projectIds: [alfa.id], tags: ['R', 'modelos'] });
+
+    const estado = JSON.parse(await leer(page, 'estado.json'));                              // la IA ve todo esto en el estado y las instrucciones se lo cuentan
+    expect(estado.projectTypes).toContain('Paper');
+    expect(estado.submissionStages.map(e => e.key)).toContain('en_revision');
+    expect(estado.projects.find(p => p.title === 'Paper Alfa')).toMatchObject({ submissionStatus: 'en_revision', targetVenue: 'Nature', submissionRounds: [{ decision: 'major' }] });
+    expect(estado.people.find(p => p.name === 'Dra. Vega')).toMatchObject({ role: 'Postdoc', followUpDays: 14, notes: 'Prefiere correo' });
+    expect(estado.references.find(r => r.title === 'Mixed models in R')).toMatchObject({ project: 'Paper Alfa', readStatus: 'read', source: 'zotero:abc' });
+    expect(estado.snippets.find(r => r.title === 'Modelo mixto')).toMatchObject({ language: 'R', project: 'Paper Alfa', code: 'lmer(y ~ x + (1|g), data = d)' });
+    const agents = await leer(page, 'AGENTS.md');
+    for (const t of ['submissionStatus', 'addSubmissionRounds', 'followUpDays', '`reference`', '`snippet`']) expect(agents).toContain(t);
+
+    await page.evaluate(() => Assistant.setMode('review'));                                  // borrar referencias y snippets siempre se revisa
+    await dejar(page, 'q-5.json', { format: TIPO, author: 'ia', ops: [{ op: 'delete', type: 'reference', match: 'Mixed models in R' }, { op: 'delete', type: 'snippet', match: 'Modelo mixto' }] });
+    expect(await page.evaluate(() => db.references.count())).toBe(2);
+    await page.locator('#assistantReview').click();
+    await expect(page.locator('#modalContent')).toContainText('⚠ borrado');
+    await page.locator('#asstApply').click();
+    await expect.poll(() => page.evaluate(() => Promise.all([db.references.count(), db.snippets.count()]))).toEqual([1, 1]);       // quedan los del ejemplo
+  });
+
+  test('la herramienta para agentes también llega a proyectos, personas, referencias y snippets (biblioteca y CLI)', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await activar(page);
+    await page.evaluate(() => Assistant.setMode('auto'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ros-ia-'));
+    fs.writeFileSync(path.join(dir, 'estado.json'), await leer(page, 'estado.json'));
+    const lote = nombre => JSON.parse(fs.readFileSync(path.join(dir, nombre), 'utf8'));
+    const nuevos = () => fs.readdirSync(path.join(dir, 'cambios')).filter(n => n.endsWith('.json')).map(n => 'cambios/' + n);
+
+    await R.callTool('researchos_update', { type: 'project', ref: 'Paper Alfa', set: { submissionStatus: 'en_revision', targetVenue: 'Nature' } }, { dir });
+    await R.callTool('researchos_update', { type: 'person', ref: 'vega', set: { role: 'Postdoc', followUpDays: 14 } }, { dir });
+    await R.callTool('researchos_add', { type: 'reference', set: { title: 'Un artículo', year: 2020 } }, { dir });
+    await R.callTool('researchos_add', { type: 'snippet', set: { title: 'Gráfico', code: 'plot(x)' } }, { dir });
+    execFileSync(process.execPath, [TOOL, '--dir', dir, 'cambiar', 'proyecto', 'Dataset Beta', 'type=Paper', 'submissionStatus=enviado', 'targetVenue=Zenodo']);
+    execFileSync(process.execPath, [TOOL, '--dir', dir, 'añadir', 'persona', 'Dr. Soto', 'followUpDays=30', 'role=Estadístico']);
+    expect(JSON.parse(execFileSync(process.execPath, [TOOL, '--dir', dir, 'referencias', '--json'])).map(r => r.title)).toEqual(['A unifying framework']);   // lo que aún no se aplicó no está en el estado
+    await expect(R.callTool('researchos_update', { type: 'planeta', ref: 'x', set: {} }, { dir })).rejects.toThrow('tipo «planeta» desconocido');
+    await expect(R.callTool('researchos_update', { type: 'person', ref: 'nadie', set: {} }, { dir })).rejects.toThrow('no hay persona');
+
+    const todos = nuevos().map(lote);
+    expect(todos.flatMap(l => l.ops).map(o => `${o.op}:${o.type}`).sort()).toEqual(['add:person', 'add:reference', 'add:snippet', 'update:person', 'update:project', 'update:project']);
+    expect(todos.flatMap(l => l.ops).find(o => o.type === 'project' && o.set.targetVenue === 'Nature')).toMatchObject({ op: 'update', uid: expect.stringMatching(/[0-9a-f-]{16,}/) });
+    expect(todos.flatMap(l => l.ops).find(o => o.type === 'project' && o.set.targetVenue === 'Zenodo').set).toEqual({ type: 'Paper', submissionStatus: 'enviado', targetVenue: 'Zenodo' });
+    expect(todos.flatMap(l => l.ops).find(o => o.type === 'person' && o.op === 'add').set).toEqual({ name: 'Dr. Soto', followUpDays: 30, role: 'Estadístico' });   // los números llegan como números
+
+    for (const n of fs.readdirSync(path.join(dir, 'cambios'))) await dejar(page, n, lote('cambios/' + n));                               // y la app los entiende
+    expect(await page.evaluate(() => db.projects.where('title').equals('Paper Alfa').first().then(p => [p.submissionStatus, p.targetVenue]))).toEqual(['en_revision', 'Nature']);
+    expect(await page.evaluate(() => db.projects.where('title').equals('Dataset Beta').first().then(p => [p.type, p.submissionStatus]))).toEqual(['Paper', 'enviado']);
+    expect(await page.evaluate(() => db.collaborators.where('name').equals('Dra. Vega').first().then(c => [c.role, c.followUpDays]))).toEqual(['Postdoc', 14]);
+    expect(await page.evaluate(() => Promise.all([db.references.where('title').equals('Un artículo').count(), db.snippets.where('title').equals('Gráfico').count(), db.collaborators.where('name').equals('Dr. Soto').count()]))).toEqual([1, 1, 1]);
+  });
+
+  test('por defecto la IA no borra proyectos ni toca los ajustes; con «Control total de los datos» sí (sin revisión en automático) y se puede deshacer', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    const ids = await page.evaluate(async () => {
+      const alfa = await db.projects.where('title').equals('Paper Alfa').first(), vega = await db.collaborators.where('name').equals('Dra. Vega').first();
+      await Tasks.add({ title: 'Con responsable', projectId: alfa.id, assigneeId: vega.id });
+      const col = await createCollection('Gráficos');
+      await db.snippets.where('title').equals('Snippet ggplot').modify({ collectionId: col });
+      await db.projects.where('title').equals('Dataset Beta').modify({ archived: true });
+      const old = await Tasks.add({ title: 'Tarea vieja', projectId: null });
+      await db.tasks.update(old, { done: true, doneAt: '2020-01-01T00:00:00.000Z' });
+      await db.meetings.add({ title: 'Reunión vieja', date: '2020-01-01', participants: '', agreements: '', projectId: null, actionItems: [], createdAt: '2020-01-01', updatedAt: '2020-01-01' });
+      return { alfa: alfa.id, vega: vega.id, col };
+    });
+    await activar(page);
+    const res = async n => JSON.parse(await leer(page, 'resultados/' + n));
+    await page.evaluate(() => Assistant.setMode('auto'));
+
+    const agents0 = await leer(page, 'AGENTS.md');                                          // sin permisos: la IA lo sabe y no puede
+    expect(agents0).toContain('Control total de los datos: desactivado');
+    expect(agents0).toContain('Ajustes de la app: desactivados');
+    const e0 = JSON.parse(await leer(page, 'estado.json'));
+    expect(e0.permissions).toEqual({ fullControl: false, appSettings: false });
+    expect(e0.archivedProjects.map(p => p.title)).toEqual(['Dataset Beta']);                // los archivados se ven aunque no se puedan borrar
+    expect(e0.tasks.map(t => t.title)).not.toContain('Tarea vieja');                        // y lo antiguo se recorta
+    expect(e0.meetings.map(m => m.title)).not.toContain('Reunión vieja');
+    await dejar(page, 'f-1.json', { format: TIPO, author: 'ia', ops: [
+      { op: 'delete', type: 'project', match: 'Paper Alfa' },
+      { op: 'delete', type: 'person', match: 'Dra. Vega' },
+      { op: 'delete', type: 'meeting', match: 'Reunión de avance' },
+      { op: 'add', type: 'area', set: { name: 'Docencia' } },
+      { op: 'update', type: 'setting', set: { dailyMinutes: 300 } },
+    ] });
+    const f1 = await res('f-1.json');
+    expect(f1.ops.map(o => o.status)).toEqual(['error', 'error', 'error', 'error', 'error']);
+    expect(f1.ops[0].error).toContain('Control total de los datos');
+    expect(f1.ops[3].error).toContain('Ajustes de la app');
+    expect(await page.evaluate(() => Promise.all([db.projects.count(), db.collaborators.count(), db.meetings.count()]))).toEqual([3, 1, 2]);
+
+    await gotoView(page, 'settings'); await openSettingsTab(page, 'sync');                  // se activa desde Ajustes, con aviso
+    await page.locator('label.toggle-switch:has(#assistantFull)').click();
+    await expect(page.locator('#confirmYes')).toBeVisible();
+    await page.locator('#confirmNo').click();
+    await expect(page.locator('#assistantFull')).not.toBeChecked();                           // cancelar no activa nada
+    expect(await page.evaluate(() => Assistant.fullControl())).toBe(false);
+    await page.locator('label.toggle-switch:has(#assistantFull)').click();
+    await page.locator('#confirmYes').click();
+    await expect.poll(() => page.evaluate(() => Assistant.fullControl())).toBe(true);
+    await expect.poll(async () => leer(page, 'AGENTS.md')).toContain('Control total de los datos: ACTIVADO');
+    const e1 = JSON.parse(await leer(page, 'estado.json'));
+    expect(e1.permissions.fullControl).toBe(true);
+    expect(e1.tasks.map(t => t.title)).toContain('Tarea vieja');                             // con el control total la IA ve todo, sin recortes
+    expect(e1.meetings.map(m => m.title)).toContain('Reunión vieja');
+
+    await dejar(page, 'f-2.json', { format: TIPO, author: 'ia', ops: [
+      { op: 'delete', type: 'project', match: 'Paper Alfa' },
+      { op: 'delete', type: 'person', match: 'Dra. Vega' },
+      { op: 'delete', type: 'meeting', match: 'Reunión de avance' },
+      { op: 'delete', type: 'collection', match: 'Gráficos' },
+    ] });
+    expect((await res('f-2.json')).ops.map(o => o.status)).toEqual(['applied', 'applied', 'applied', 'applied']);      // en automático no esperan revisión
+    await expect(page.locator('#assistantBar')).toHaveCount(0);
+    expect(await page.evaluate(() => Promise.all([db.projects.where('title').equals('Paper Alfa').count(), db.collaborators.count(), db.meetings.where('title').equals('Reunión de avance').count(), db.snippetCollections.count()]))).toEqual([0, 0, 0, 0]);
+    expect(await page.evaluate(() => db.tasks.filter(t => t.title === 'Con responsable').first().then(t => t ? [t.projectId, t.assigneeId] : 'no existe'))).toEqual([null, null]);     // nada queda apuntando a lo borrado
+    expect(await page.evaluate(() => db.snippets.where('title').equals('Snippet ggplot').first().then(x => x.collectionId))).toBeNull();
+
+    await page.locator('.toast-undo-btn').last().click();                                    // y se deshace todo de una vez
+    await expect.poll(() => page.evaluate(() => db.projects.where('title').equals('Paper Alfa').count())).toBe(1);
+    expect(await page.evaluate(() => Promise.all([db.collaborators.count(), db.meetings.where('title').equals('Reunión de avance').count(), db.snippetCollections.count()]))).toEqual([1, 1, 1]);
+    expect(await tarea(page, 'Con responsable')).toMatchObject({ projectId: ids.alfa, assigneeId: ids.vega });
+    expect(await page.evaluate(() => db.snippets.where('title').equals('Snippet ggplot').first().then(x => x.collectionId))).toBe(ids.col);
+
+    await page.evaluate(() => Assistant.setMode('review'));                                  // en modo «revisar» el control total no se salta la revisión
+    await dejar(page, 'f-3.json', { format: TIPO, author: 'ia', ops: [{ op: 'delete', type: 'person', match: 'Dra. Vega' }] });
+    await expect(page.locator('#assistantBar')).toContainText('propone');
+    expect(await page.evaluate(() => db.collaborators.count())).toBe(1);
+    await page.locator('#assistantReview').click();
+    await expect(page.locator('#modalContent')).toContainText('⚠ borrado');
+    await page.locator('#asstApply').click();
+    await expect.poll(() => page.evaluate(() => db.collaborators.count())).toBe(0);
+
+    await gotoView(page, 'settings'); await openSettingsTab(page, 'sync');                  // y se puede volver a quitar
+    await page.locator('label.toggle-switch:has(#assistantFull)').click();
+    await expect.poll(() => page.evaluate(() => Assistant.fullControl())).toBe(false);
+    await expect.poll(async () => leer(page, 'AGENTS.md')).toContain('Control total de los datos: desactivado');
+  });
+
+  test('con «Ajustes de la app» la IA llega a áreas, columnas, etapas de Submissions, campos por tipo y horas útiles; todo se deshace', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await activar(page);
+    const res = async n => JSON.parse(await leer(page, 'resultados/' + n));
+    await page.evaluate(() => { Assistant.setMode('auto'); Assistant.setPermission('config', true); });
+    await page.evaluate(() => Assistant.syncNow());
+    expect(await leer(page, 'AGENTS.md')).toContain('**setting**');
+    const proyecto = t => page.evaluate(t => db.projects.where('title').equals(t).first(), t);
+
+    await dejar(page, 'g-1.json', { format: TIPO, author: 'ia', ops: [
+      { op: 'add', type: 'area', set: { name: 'Docencia', description: 'Clases y tesis', color: '#10b981' } },
+      { op: 'add', type: 'column', set: { title: 'Revisión interna', wip: 2, position: 2 } },
+      { op: 'update', type: 'setting', set: { dailyMinutes: 300, profile: 'Investigación', theme: 'claro', accent: 'verde', syncPaperColumn: true } },
+      { op: 'update', type: 'setting', set: { submissionColumnMap: { enviado: 'Revisión interna' } } },
+      { op: 'update', type: 'setting', set: { projectFields: { Paper: [{ key: 'targetJournal', label: 'Journal objetivo' }, { key: 'wordCount', label: 'Palabras', type: 'number' }] } } },
+      { op: 'update', type: 'setting', set: { submissionStages: [{ key: 'preparacion', label: 'En preparación' }, { key: 'interna', label: 'Revisión interna', color: '#f59e0b' }, { key: 'enviado', label: 'Enviado' }, { key: 'aceptado', label: 'Aceptado' }] } },
+      { op: 'update', type: 'setting', set: { dailyMinutes: 5 } },
+      { op: 'update', type: 'setting', set: { accent: 'rojo' } },
+    ] });
+    const g1 = await res('g-1.json');
+    expect(g1.ops.map(o => o.status)).toEqual(['applied', 'applied', 'applied', 'applied', 'applied', 'applied', 'error', 'error']);
+    expect(g1.ops[6].error).toContain('30–960');
+    expect(g1.ops[7].error).toContain('blue, green o purple');
+    const cols = await page.evaluate(() => db.kanbanColumns.orderBy('order').toArray().then(c => c.map(x => [x.title, x.wip])));
+    expect(cols[1]).toEqual(['Revisión interna', 2]);                                         // «position: 2» la dejó en el segundo lugar
+    const estado = async () => JSON.parse(await leer(page, 'estado.json'));
+    expect((await estado()).areas).toMatchObject([{ name: 'Docencia', description: 'Clases y tesis', color: '#10b981' }]);
+    const ajustes = await page.evaluate(async () => ({ min: Capacity.get(), perfil: NavProfile.get(), tema: document.documentElement.getAttribute('data-theme'), acento: document.documentElement.getAttribute('data-accent'),
+      sync: (await db.settings.get('ros-auto-sync-paper-col')).value, etapas: SUB_STATUSES.map(x => x.key), mapa: await _getSubColMapping(), campos: (await _getTypeSchemas()).Paper.map(f => [f.key, f.type]) }));
+    expect(ajustes).toMatchObject({ min: 300, perfil: 'research', tema: 'light', acento: 'green', sync: 'true', etapas: ['preparacion', 'interna', 'enviado', 'aceptado'], campos: [['targetJournal', 'text'], ['wordCount', 'number']] });
+    expect(Object.keys(ajustes.mapa)).toEqual(['enviado']);
+    const e = await estado();                                                                  // y la IA ve cómo quedó
+    expect(e.settings).toMatchObject({ dailyMinutes: 300, profile: 'research', syncPaperColumn: true, submissionColumnMap: { enviado: 'Revisión interna' } });
+    expect(e.settings.submissionStages.map(x => x.key)).toEqual(['preparacion', 'interna', 'enviado', 'aceptado']);
+    expect(e.columnsInfo.map(c => c.title)[1]).toBe('Revisión interna');
+
+    await dejar(page, 'g-2.json', { format: TIPO, author: 'ia', ops: [                        // campos por tipo y etapas
+      { op: 'update', type: 'project', match: 'Paper Alfa', set: { submissionStatus: 'interna', customFields: { wordCount: '8500', targetJournal: 'Nature' }, area: 'Docencia' } },
+      { op: 'update', type: 'project', match: 'Paper Alfa', set: { customFields: { inventado: 1 } } },
+      { op: 'update', type: 'project', match: 'Paper Alfa', set: { customFields: { wordCount: 'muchas' } } },
+      { op: 'update', type: 'setting', set: { submissionStages: [{ key: 'preparacion' }, { key: 'enviado' }] } },
+      { op: 'update', type: 'project', match: 'Dataset Beta', set: { column: 'Revisión interna' } },
+    ] });
+    const g2 = await res('g-2.json');
+    expect(g2.ops.map(o => o.status)).toEqual(['applied', 'error', 'error', 'error', 'applied']);
+    expect(g2.ops[1].error).toContain('Campos: targetJournal, wordCount');
+    expect(g2.ops[3].error).toContain('no se pueden quitar etapas en uso');                   // «Paper Alfa» sigue en «interna»
+    const alfa = await proyecto('Paper Alfa');
+    expect(alfa).toMatchObject({ submissionStatus: 'interna', customFields: { wordCount: 8500, targetJournal: 'Nature' } });
+    expect(alfa.areaId).toBeGreaterThan(0);
+    expect((await estado()).projects.find(p => p.title === 'Paper Alfa').customFields).toEqual({ wordCount: 8500, targetJournal: 'Nature' });
+
+    await dejar(page, 'g-3.json', { format: TIPO, author: 'ia', ops: [                        // borrar áreas y columnas deja todo coherente
+      { op: 'update', type: 'area', match: 'Docencia', set: { color: '#ef4444' } },
+      { op: 'delete', type: 'area', match: 'Docencia' },
+      { op: 'delete', type: 'column', match: 'Revisión interna' },
+    ] });
+    expect((await res('g-3.json')).ops.map(o => o.status)).toEqual(['applied', 'pending', 'pending']);       // los ajustes se aplican solos, pero borrar sigue necesitando revisión sin el control total
+    await page.locator('#assistantDiscardAll').click();
+    expect(await page.evaluate(() => _getAreas().then(a => a.map(x => x.color)))).toEqual(['#ef4444']);
+    await page.evaluate(() => Assistant.setPermission('full', true));
+    await dejar(page, 'g-3b.json', { format: TIPO, author: 'ia', ops: [{ op: 'delete', type: 'area', match: 'Docencia' }, { op: 'delete', type: 'column', match: 'Revisión interna' }] });
+    expect((await res('g-3b.json')).ops.map(o => o.status)).toEqual(['applied', 'applied']);
+    expect((await proyecto('Paper Alfa')).areaId).toBeNull();
+    expect(await page.evaluate(() => _getAreas().then(a => a.length))).toBe(0);
+    const columnas = await page.evaluate(() => db.kanbanColumns.toArray().then(c => c.map(x => x.title)));
+    expect(columnas).not.toContain('Revisión interna');
+    const beta = await proyecto('Dataset Beta');
+    expect(columnas).toContain(await page.evaluate(id => db.kanbanColumns.get(id).then(c => c.title), beta.columnId));       // su proyecto no quedó en una columna que ya no existe
+
+    await page.locator('.toast-undo-btn').last().click();                                    // deshacer devuelve área, columna y proyectos
+    await expect.poll(() => page.evaluate(() => db.kanbanColumns.where('title').equals('Revisión interna').count())).toBe(1);
+    expect(await page.evaluate(() => _getAreas().then(a => a.map(x => x.name)))).toEqual(['Docencia']);
+    expect((await proyecto('Paper Alfa')).areaId).toBeGreaterThan(0);
+    const colInterna = await page.evaluate(() => db.kanbanColumns.where('title').equals('Revisión interna').first().then(c => c.id));
+    expect((await proyecto('Dataset Beta')).columnId).toBe(colInterna);
+
+    await page.evaluate(() => { Assistant.setPermission('config', false); });                // y si se quita el permiso, los ajustes vuelven a ser inalcanzables
+    await dejar(page, 'g-5.json', { format: TIPO, author: 'ia', ops: [{ op: 'update', type: 'setting', set: { dailyMinutes: 120 } }] });
+    expect((await res('g-5.json')).ops[0].error).toContain('Ajustes de la app');
+    expect(await page.evaluate(() => Capacity.get())).toBe(300);
+  });
+
+  test('la herramienta para agentes conoce los permisos: borrar, áreas, columnas y ajustes (biblioteca y CLI)', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await activar(page);
+    await page.evaluate(() => { Assistant.setPermission('full', true); Assistant.setPermission('config', true); });
+    await page.evaluate(() => Assistant.syncNow());
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ros-ia-'));
+    fs.writeFileSync(path.join(dir, 'estado.json'), await leer(page, 'estado.json'));
+    const ops = () => fs.readdirSync(path.join(dir, 'cambios')).filter(n => n.endsWith('.json')).flatMap(n => JSON.parse(fs.readFileSync(path.join(dir, 'cambios', n), 'utf8')).ops);
+
+    expect((await R.callTool('researchos_overview', {}, { dir })).permissions).toEqual({ fullControl: true, appSettings: true });
+    await R.callTool('researchos_delete', { type: 'project', ref: 'Paper Alfa' }, { dir });
+    await R.callTool('researchos_update', { type: 'setting', set: { dailyMinutes: 300 } }, { dir });
+    await R.callTool('researchos_add', { type: 'area', set: { name: 'Docencia' } }, { dir });
+    execFileSync(process.execPath, [TOOL, '--dir', dir, 'cambiar', 'ajuste', 'dailyMinutes=240', 'profile=research']);
+    execFileSync(process.execPath, [TOOL, '--dir', dir, 'eliminar', 'persona', 'Vega']);
+    expect(JSON.parse(execFileSync(process.execPath, [TOOL, '--dir', dir, 'columnas', '--json'])).length).toBeGreaterThan(1);
+    const todas = ops();
+    expect(todas.find(o => o.op === 'delete' && o.type === 'project')).toMatchObject({ uid: expect.stringMatching(/[0-9a-f-]{16,}/) });
+    expect(todas.filter(o => o.type === 'setting').map(o => o.set).sort((a, b) => a.dailyMinutes - b.dailyMinutes)).toEqual([{ dailyMinutes: 240, profile: 'research' }, { dailyMinutes: 300 }]);      // sin uid ni match: es un único registro
+    expect(todas.filter(o => o.type === 'setting').every(o => !('uid' in o))).toBe(true);
+    expect(todas.find(o => o.op === 'delete' && o.type === 'person')).toBeTruthy();
+    await page.evaluate(() => Assistant.setMode('auto'));
+    for (const n of fs.readdirSync(path.join(dir, 'cambios'))) await dejar(page, n, JSON.parse(fs.readFileSync(path.join(dir, 'cambios', n), 'utf8')));       // y la app los aplica
+    expect(await page.evaluate(() => Promise.all([db.projects.where('title').equals('Paper Alfa').count(), db.collaborators.count(), Capacity.get(), NavProfile.get()]))).toEqual([0, 0, 300, 'research']);
+  });
 });

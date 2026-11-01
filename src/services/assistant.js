@@ -53,6 +53,37 @@ const _asstText = (v, max, what, { required = false } = {}) => {
 };
 const _asstTags = v => (Array.isArray(v) ? v : String(v ?? '').split(/[,;]/)).map(x => String(x).trim()).filter(Boolean).slice(0, 20);
 
+const ASST_PROJECT_TYPES = ['Proyecto', 'Grant', 'Paper', 'Análisis', 'Dataset', 'Presentación', 'Curso'];     // los de la app: solo los «Paper» aparecen en Submissions
+const ASST_DECISIONS = ['major', 'minor', 'reject', 'accept', 'pending'];
+const ASST_READ = { toread: 'toread', 'por leer': 'toread', reading: 'reading', leyendo: 'reading', read: 'read', leido: 'read', leida: 'read' };
+const _asstProjectType = v => {
+  const t = ASST_PROJECT_TYPES.find(x => foldText(x) === foldText(String(v ?? '')));
+  if (!t) throw new Error(`type «${v}» no válido (${ASST_PROJECT_TYPES.join(', ')})`);
+  return t;
+};
+/** Etapa de submission por clave o etiqueta (las etapas son las que la persona tenga configuradas en la app). */
+const _asstStage = v => {
+  const f = foldText(String(v ?? ''));
+  const st = SUB_STATUSES.find(x => foldText(x.key) === f || foldText(x.label) === f || foldText(x.shortLabel) === f);
+  if (!st) throw new Error(`submissionStatus «${v}» no válido (${SUB_STATUSES.map(x => x.key).join(', ')})`);
+  return st;
+};
+/** Los campos de submission solo se ven en proyectos de tipo Paper: sin ese tipo, el cambio pasaría sin efecto visible. */
+const _asstNeedPaper = (field, v, set, existing) => {
+  if (_asstEmpty(v)) return;
+  const type = set?.type !== undefined ? _asstProjectType(set.type) : (existing?.type || 'Proyecto');
+  if (type !== 'Paper') throw new Error(`«${field}» solo aplica a proyectos de tipo Paper (pon también "type": "Paper")`);
+};
+const _asstRounds = list => {
+  if (!Array.isArray(list)) throw new Error('las rondas deben ser una lista de {submittedAt, decision, decisionDate, venue, notes}');
+  return list.map((r, i) => {
+    const o = r && typeof r === 'object' ? r : {}, dec = _asstEmpty(o.decision) ? 'pending' : foldText(String(o.decision));
+    if (!ASST_DECISIONS.includes(dec)) throw new Error(`ronda ${i + 1}: decision «${o.decision}» no válida (${ASST_DECISIONS.join(', ')})`);
+    return { id: Date.now() + i, submittedAt: _asstDate(o.submittedAt) || '', decision: dec, decisionDate: _asstDate(o.decisionDate) || '',
+      venue: _asstText(o.venue, 200, 'venue'), notes: _asstText(o.notes, 2000, 'notes') };
+  });
+};
+
 /** Acceso a las entidades por referencia. Se consulta la BD en cada llamada: un lote puede crear un proyecto y usarlo después. */
 const _asstCx = {
   project: async ref => _asstFind(await db.projects.toArray(), ref, p => p.title, 'proyecto'),
@@ -103,7 +134,7 @@ const ASST_FIELDS = {
   project: {
     title:       v => ({ title: _asstText(v, 200, 'title', { required: true }) }),
     description: v => ({ description: _asstText(v, 20000, 'description') }),
-    type:        v => ({ type: _asstText(v, 40, 'type', { required: true }) }),
+    type:        v => ({ type: _asstProjectType(v) }),
     priority:    v => ({ priority: _asstPriority(v) || 'Media' }),
     deadline:    v => ({ deadline: _asstDate(v) }),
     tags:        v => ({ tags: _asstTags(v) }),
@@ -117,6 +148,40 @@ const ASST_FIELDS = {
     parent:      _asstRef('project', 'parentId'),
     archived:    v => ({ archived: !!v }),
     starred:     v => ({ starred: !!v }),
+    coauthors:   async v => {                                                  // personas de la agenda (con su id) o nombres sueltos
+      const names = (Array.isArray(v) ? v : String(v ?? '').split(/[,;]/)).map(x => String(x).trim()).filter(Boolean).slice(0, 30), people = await db.collaborators.toArray();
+      const hit = names.map(n => people.find(c => foldText(c.name) === foldText(n)));
+      return { coauthors: names.map((n, i) => hit[i]?.name ?? n), coauthorIds: hit.filter(Boolean).map(c => c.id) };
+    },
+    // Submissions (solo proyectos «Paper»): estado del pipeline, venue, envío, notas y rondas de revisión
+    submissionStatus: async (v, existing, set) => {
+      if (_asstEmpty(v)) return { submissionStatus: null };
+      _asstNeedPaper('submissionStatus', v, set, existing);
+      const st = _asstStage(v), out = { submissionStatus: st.key };
+      if ((existing?.submissionStatus ?? null) !== st.key) {                 // igual que mover el paper en el pipeline: historial y fecha de envío
+        out.submissionStatusHistory = [...(existing?.submissionStatusHistory || []), { from: existing?.submissionStatus ?? null, to: st.key, date: new Date().toISOString() }];
+        if (st.key === 'enviado' && !existing?.submittedAt && set.submittedAt === undefined) out.submittedAt = localDateISO();
+      }
+      return out;
+    },
+    targetVenue:      (v, e, set) => { _asstNeedPaper('targetVenue', v, set, e); return { targetVenue: _asstText(v, 200, 'targetVenue') }; },
+    submittedAt:      (v, e, set) => { _asstNeedPaper('submittedAt', v, set, e); return { submittedAt: _asstDate(v) }; },
+    submissionNotes:  (v, e, set) => { _asstNeedPaper('submissionNotes', v, set, e); return { submissionNotes: _asstText(v, 5000, 'submissionNotes') }; },
+    submissionRounds: (v, e, set) => { _asstNeedPaper('submissionRounds', v, set, e); return { submissionRounds: _asstEmpty(v) ? [] : _asstRounds(v) }; },
+    addSubmissionRounds: (v, e, set) => { _asstNeedPaper('addSubmissionRounds', v, set, e); return { submissionRounds: [...(e?.submissionRounds || []), ..._asstRounds(v)] }; },
+    customFields: async (v, existing, set) => {                                // los campos extra de cada tipo de proyecto (ver «projectFields» en los ajustes)
+      if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('customFields debe ser un objeto {campo: valor}');
+      const type = set.type !== undefined ? _asstProjectType(set.type) : (existing?.type || 'Proyecto'), schema = (await _getTypeSchemas())[type] || [];
+      const out = { ...(existing?.customFields || {}) };
+      for (const [k, val] of Object.entries(v)) {
+        const f = schema.find(x => x.key === k);
+        if (!f) throw new Error(`customFields.${k} no existe en los proyectos ${type}. Campos: ${schema.map(x => x.key).join(', ') || '(ninguno)'}`);
+        if (_asstEmpty(val)) delete out[k];
+        else if (f.type === 'number') { if (!Number.isFinite(+val)) throw new Error(`customFields.${k} debe ser un número`); out[k] = +val; }
+        else out[k] = _asstText(val, 500, k);
+      }
+      return { customFields: out };
+    },
   },
   meeting: {
     title:        v => ({ title: _asstText(v, 200, 'title', { required: true }) }),
@@ -136,6 +201,105 @@ const ASST_FIELDS = {
     role:        v => ({ role: _asstText(v, 120, 'role') }),
     affiliation: v => ({ affiliation: _asstText(v, 200, 'affiliation') }),
     notes:       v => ({ notes: _asstText(v, 5000, 'notes') }),
+    followUpDays: v => {
+      if (_asstEmpty(v)) return { followUpDays: null };
+      if (![7, 14, 30, 90, 180].includes(+v)) throw new Error('followUpDays debe ser 7, 14, 30, 90 o 180 (cada cuántos días hay que escribirle)');
+      return { followUpDays: +v };
+    },
+    lastContact: v => ({ lastContact: _asstDate(v) }),
+  },
+  reference: {
+    title:      v => ({ title: _asstText(v, 500, 'title', { required: true }) }),
+    authors:    v => ({ authors: _asstText(v, 1000, 'authors') }),
+    year:       v => { if (_asstEmpty(v)) return { year: null }; const y = +v; if (!Number.isInteger(y) || y < 1000 || y > 2100) throw new Error(`year no válido «${v}»`); return { year: y }; },
+    journal:    v => ({ journal: _asstText(v, 300, 'journal') }),
+    doi:        v => ({ doi: _asstText(v, 200, 'doi') }),
+    url:        v => { if (_asstEmpty(v)) return { url: '' }; const l = Tasks.cleanLink(v); if (!l) throw new Error('url debe ser una dirección http:// o https://'); return { url: l }; },
+    notes:      v => ({ notes: _asstText(v, 20000, 'notes') }),
+    tags:       v => ({ tags: _asstTags(v) }),
+    project:    _asstRef('project', 'projectId'),
+    citeKey:    v => ({ citeKey: _asstText(v, 100, 'citeKey') }),
+    readStatus: (v, existing) => {
+      if (_asstEmpty(v)) return { readStatus: null, readAt: null };
+      const s = ASST_READ[foldText(String(v))];
+      if (!s) throw new Error(`readStatus no válido «${v}» (toread, reading o read)`);
+      return { readStatus: s, readAt: s === 'read' ? (existing?.readStatus === 'read' && existing.readAt) || new Date().toISOString() : null };
+    },
+    source:     v => ({ source: Tasks.cleanSource(v) }),
+  },
+  snippet: {
+    title:       v => ({ title: _asstText(v, 300, 'title', { required: true }) }),
+    code:        v => ({ code: _asstText(v, 100000, 'code', { required: true }) }),
+    language:    v => { const l = _asstText(v, 40, 'language').replace(/[^\w+#. -]/g, '').trim(); return { language: LANGS.find(x => foldText(x) === foldText(l) && x !== 'all') || l || 'Other' }; },
+    description: v => ({ description: _asstText(v, 2000, 'description') }),
+    tags:        v => ({ tags: _asstTags(v) }),
+    project:     _asstRef('project', 'projectId', p => ({ projectIds: p ? [p.id] : [] })),
+    starred:     v => ({ starred: !!v }),
+  },
+  collection: {
+    name:  v => ({ name: _asstText(v, 100, 'name', { required: true }) }),
+    color: v => ({ color: cssColor(v, '#38bdf8') }),
+  },
+  // -- ajustes de la app (solo con «Ajustes de la app» activado) --
+  area: {
+    name:        v => ({ name: _asstText(v, 100, 'name', { required: true }) }),
+    description: v => ({ description: _asstText(v, 500, 'description') }),
+    color:       v => ({ color: cssColor(v, AREA_COLORS[0]) }),
+  },
+  column: {
+    title:    v => ({ title: _asstText(v, 60, 'title', { required: true }) }),
+    color:    v => ({ color: cssColor(v, '#38bdf8') }),
+    wip:      v => { if (_asstEmpty(v)) return { wip: null }; const n = +v; if (!Number.isInteger(n) || n < 1) throw new Error('wip es el límite de proyectos en la columna (entero ≥ 1, o null)'); return { wip: n }; },
+    position: v => { const n = +v; if (!Number.isInteger(n) || n < 1) throw new Error('position es el lugar en el tablero (1 = la primera columna)'); return { __position: n }; },
+  },
+  setting: {
+    dailyMinutes: v => { const n = +v; if (!Number.isFinite(n) || n < 30 || n > 960) throw new Error('dailyMinutes son los minutos útiles al día (30–960)'); return { dailyMinutes: Math.round(n) }; },
+    submissionStages: async v => {
+      if (!Array.isArray(v) || !v.length) throw new Error('submissionStages debe ser una lista con al menos una etapa: [{"key","label","shortLabel","color","icon"}]');
+      const plain = x => String(x ?? '').replace(/[<>"'`]/g, '').trim(), seen = new Set();
+      const stages = v.map((st, i) => {
+        const o = st && typeof st === 'object' ? st : {}, key = String(o.key ?? '').replace(/[^\w-]/g, '');
+        if (!key) throw new Error(`etapa ${i + 1}: falta «key» (letras, números y _)`);
+        if (seen.has(key)) throw new Error(`etapa ${i + 1}: la clave «${key}» está repetida`);
+        seen.add(key);
+        const label = plain(o.label ?? key).slice(0, 40) || key;
+        return { key, label, shortLabel: plain(o.shortLabel ?? label).slice(0, 20) || label, color: cssColor(o.color, '#64748b'), icon: plain(o.icon ?? '•').slice(0, 4) || '•', order: i };
+      });
+      const huerfano = await db.projects.filter(p => p.submissionStatus && !seen.has(p.submissionStatus)).first();
+      if (huerfano) throw new Error(`no se pueden quitar etapas en uso: «${huerfano.title}» está en «${huerfano.submissionStatus}» (muévelo antes)`);
+      return { submissionStages: stages };
+    },
+    projectFields: async (v, existing) => {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('projectFields debe ser un objeto {"Paper":[{"key","label","type":"text|number","placeholder"}]}');
+      const out = { ...(existing?.projectFields || {}) };
+      for (const [t, list] of Object.entries(v)) {
+        const type = _asstProjectType(t), keys = new Set();
+        if (!Array.isArray(list)) throw new Error(`projectFields.${type} debe ser una lista de campos`);
+        out[type] = list.map((f, i) => {
+          const o = f && typeof f === 'object' ? f : {}, key = String(o.key ?? '').trim();
+          if (!/^[A-Za-z]\w{0,39}$/.test(key)) throw new Error(`projectFields.${type}[${i}]: «key» debe empezar por una letra (solo letras, números y _)`);
+          if (keys.has(key)) throw new Error(`projectFields.${type}: la clave «${key}» está repetida`);
+          keys.add(key);
+          if (!_asstEmpty(o.type) && !['text', 'number'].includes(o.type)) throw new Error(`projectFields.${type}.${key}: type es text o number`);
+          return { key, label: _asstText(o.label ?? key, 80, 'label') || key, type: o.type === 'number' ? 'number' : 'text', placeholder: _asstText(o.placeholder, 120, 'placeholder') };
+        });
+      }
+      return { projectFields: out };
+    },
+    submissionColumnMap: async (v, existing) => {                              // a qué columna del tablero va cada etapa (con «syncPaperColumn»)
+      if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('submissionColumnMap debe ser un objeto {"enviado":"Columna"}');
+      const out = { ...(existing?.submissionColumnMap || {}) };
+      for (const [k, name] of Object.entries(v)) { const st = _asstStage(k); if (_asstEmpty(name)) delete out[st.key]; else out[st.key] = (await _asstCx.column(name)).id; }
+      return { submissionColumnMap: out };
+    },
+    syncPaperColumn: v => ({ syncPaperColumn: !!v }),
+    profile: v => {
+      const f = foldText(String(v ?? '')), p = NAV_PROFILES.find(x => x.key === f || foldText(x.label) === f);
+      if (!p) throw new Error(`profile no válido «${v}» (${NAV_PROFILES.map(x => x.key).join(', ')})`);
+      return { profile: p.key };
+    },
+    theme: v => { const t = { dark: 'dark', oscuro: 'dark', light: 'light', claro: 'light' }[foldText(String(v ?? ''))]; if (!t) throw new Error('theme es dark o light'); return { theme: t }; },
+    accent: v => { const a = { blue: 'blue', azul: 'blue', green: 'green', verde: 'green', purple: 'purple', morado: 'purple' }[foldText(String(v ?? ''))]; if (!a) throw new Error('accent es blue, green o purple'); return { accent: a }; },
   },
 };
 async function _asstActionItems(list) {
@@ -150,12 +314,51 @@ async function _asstActionItems(list) {
 }
 
 // Qué operaciones admite cada tipo, su tabla y cómo se nombra
+//  ops: siempre disponibles · full: solo con «Control total de los datos» · config: el tipo pertenece a los ajustes de la app y solo existe con «Ajustes de la app»
 const ASST_TYPES = {
-  task:    { table: 'tasks',         noun: 'tarea',    ops: ['add', 'update', 'complete', 'delete'], label: r => r.title },
-  idea:    { table: 'ideas',         noun: 'idea',     ops: ['add', 'update', 'delete'],             label: r => r.title },
-  project: { table: 'projects',      noun: 'proyecto', ops: ['add', 'update'],                       label: r => r.title },
-  meeting: { table: 'meetings',      noun: 'reunión',  ops: ['add', 'update'],                       label: r => r.title },
-  person:  { table: 'collaborators', noun: 'persona',  ops: ['add'],                                 label: r => r.name },
+  task:    { table: 'tasks',         noun: 'tarea',    key: 'title', ops: ['add', 'update', 'complete', 'delete'], label: r => r.title },
+  idea:    { table: 'ideas',         noun: 'idea',     key: 'title', ops: ['add', 'update', 'delete'],             label: r => r.title },
+  project: { table: 'projects',      noun: 'proyecto', key: 'title', ops: ['add', 'update'], full: ['delete'],    label: r => r.title },
+  meeting: { table: 'meetings',      noun: 'reunión',  key: 'title', ops: ['add', 'update'], full: ['delete'],    label: r => r.title },
+  person:  { table: 'collaborators', noun: 'persona',  key: 'name',  ops: ['add', 'update'], full: ['delete'],    label: r => r.name },
+  reference: { table: 'references',  noun: 'referencia', key: 'title', ops: ['add', 'update', 'delete'],          label: r => r.title },
+  snippet: { table: 'snippets',      noun: 'snippet',  key: 'title', ops: ['add', 'update', 'delete'],             label: r => r.title },
+  collection: { table: 'snippetCollections', noun: 'colección de snippets', key: 'name', ops: ['add', 'update'], full: ['delete'], label: r => r.name },
+  area:    { store: () => _asstAreaStore,     noun: 'área',    key: 'name',  config: true, ops: ['add', 'update', 'delete'], label: r => r.name },
+  column:  { table: 'kanbanColumns', noun: 'columna del tablero', key: 'title', config: true, ops: ['add', 'update', 'delete'], label: r => r.title },
+  setting: { store: () => _asstSettingsStore, noun: 'ajuste', key: 'name', config: true, singleton: true, ops: ['update'], label: r => r.name },
+};
+const _asstTable = T => T.store ? T.store() : db[T.table];                    // los tipos que no viven en una tabla (áreas, ajustes) hablan con la misma interfaz
+const _asstOps = T => [...T.ops, ...(T.full && Assistant.fullControl() ? T.full : [])];
+
+/** Las áreas viven en `settings` (JSON); este adaptador les da la interfaz de una tabla. */
+const _asstAreaStore = {
+  toArray: () => _getAreas(),
+  get: async id => (await _getAreas()).find(a => a.id === id),
+  add: async o => { const all = await _getAreas(), id = Math.max(Date.now(), ...all.map(a => +a.id || 0)) + 1; all.push({ ...o, id }); await _saveAreas(all); return id; },
+  update: async (id, patch) => { const all = await _getAreas(), i = all.findIndex(a => a.id === id); if (i < 0) throw new Error('área ya no existe'); all[i] = { ...all[i], ...patch }; await _saveAreas(all); },
+  delete: async id => { await _saveAreas((await _getAreas()).filter(a => a.id !== id)); },
+};
+/** Los ajustes de la app son un único registro: cada clave se lee y se escribe donde la app la guarda. */
+const _asstSettingsRow = { id: 1, uid: 'app-settings', name: 'ajustes' };
+const _asstSettingsRead = async () => ({
+  dailyMinutes: Capacity.get(), submissionStages: SUB_STATUSES.map(x => ({ ...x })), projectFields: await _getTypeSchemas(), submissionColumnMap: await _getSubColMapping(),
+  syncPaperColumn: (await db.settings.get('ros-auto-sync-paper-col'))?.value === 'true', profile: NavProfile.get(),
+  theme: document.documentElement.getAttribute('data-theme') || 'dark', accent: document.documentElement.getAttribute('data-accent') || 'blue' });
+const _asstSettingsStore = {
+  toArray: async () => [_asstSettingsRow],
+  get: async () => ({ ..._asstSettingsRow, ...await _asstSettingsRead() }),
+  update: async (_id, p) => {
+    if ('dailyMinutes' in p) Capacity.set(p.dailyMinutes);
+    if ('submissionStages' in p) await _saveSubStages(p.submissionStages);
+    if ('projectFields' in p) await _saveTypeSchemas(p.projectFields);
+    if ('submissionColumnMap' in p) await _saveSubColMapping(p.submissionColumnMap);
+    if ('syncPaperColumn' in p) await db.settings.put({ key: 'ros-auto-sync-paper-col', value: p.syncPaperColumn ? 'true' : 'false' });
+    if ('profile' in p) NavProfile.set(p.profile);
+    if ('theme' in p) { document.documentElement.setAttribute('data-theme', p.theme); try { localStorage.setItem('ros-theme', p.theme); } catch {} }
+    if ('accent' in p) _applyAccent(p.accent);
+    Live.touch();
+  },
 };
 
 /** Convierte los campos recibidos en campos de la BD (resolviendo nombres a ids). Lanza un Error legible si algo no vale. */
@@ -163,21 +366,82 @@ async function _asstBuild(type, set, existing) {
   const defs = ASST_FIELDS[type], out = {};
   for (const [k, v] of Object.entries(set)) {
     if (!defs[k]) throw new Error(`campo «${k}» no admitido en ${ASST_TYPES[type].noun}. Admitidos: ${Object.keys(defs).join(', ')}`);
-    Object.assign(out, await defs[k](v, existing));
+    Object.assign(out, await defs[k](v, existing, set));
   }
   return out;
 }
 
+/** Deja a una persona sin referencias colgantes antes de borrarla; devuelve cómo volver atrás. */
+async function _asstDetachPerson(id) {
+  const restore = [];
+  for (const t of await db.tasks.filter(t => t.assigneeId === id).toArray()) { restore.push(['tasks', t.id, { assigneeId: id }]); await db.tasks.update(t.id, { assigneeId: null }); }
+  for (const p of await db.projects.filter(p => p.responsibleId === id || (p.coauthorIds || []).includes(id)).toArray()) {
+    restore.push(['projects', p.id, { responsibleId: p.responsibleId ?? null, coauthorIds: p.coauthorIds }]);
+    await db.projects.update(p.id, { responsibleId: p.responsibleId === id ? null : p.responsibleId, coauthorIds: (p.coauthorIds || []).filter(x => x !== id) });
+  }
+  for (const m of await db.meetings.filter(m => (m.actionItems || []).some(a => a.assigneeId === id)).toArray()) {
+    restore.push(['meetings', m.id, { actionItems: m.actionItems }]);
+    await db.meetings.update(m.id, { actionItems: m.actionItems.map(a => a.assigneeId === id ? { ...a, assigneeId: null } : a) });
+  }
+  return async () => { for (const [t, rid, fields] of restore) await db[t].update(rid, fields); };
+}
+/** Coloca una columna en el lugar indicado (1 = la primera) y devuelve cómo dejar el orden como estaba. */
+async function _asstPlaceColumn(id, pos) {
+  const cols = await db.kanbanColumns.orderBy('order').toArray(), before = cols.map(c => [c.id, c.order]);
+  const rest = cols.filter(c => c.id !== id); rest.splice(Math.max(0, Math.min(rest.length, pos - 1)), 0, cols.find(c => c.id === id));
+  for (const [i, c] of rest.entries()) if (c.order !== i) await db.kanbanColumns.update(c.id, { order: i });
+  return async () => { for (const [cid, o] of before) await db.kanbanColumns.update(cid, { order: o }); };
+}
+
+/** Borra un registro dejando los demás coherentes. Devuelve { uid, undo }. */
+async function _asstDelete(type, row, table) {
+  const back = () => table.add(row);
+  switch (type) {
+    case 'task': await Tasks.remove(row.id); return { uid: row.uid, undo: back };
+    case 'idea': return { uid: row.uid, undo: await deleteIdeaCascade(row.id) };
+    case 'project': return { uid: row.uid, undo: await deleteProjectCascade(row.id) };
+    case 'person': { const undo = await _asstDetachPerson(row.id); await table.delete(row.id); return { uid: row.uid, undo: async () => { await back(); await undo(); } }; }
+    case 'collection': {
+      const snips = await db.snippets.where('collectionId').equals(row.id).toArray();
+      for (const sn of snips) await db.snippets.update(sn.id, { collectionId: null });
+      await table.delete(row.id);
+      return { uid: row.uid, undo: async () => { await back(); for (const sn of snips) await db.snippets.update(sn.id, { collectionId: row.id }); } };
+    }
+    case 'area': {
+      const projs = await db.projects.filter(p => p.areaId === row.id).toArray(), tasks = await db.tasks.filter(t => t.areaId === row.id).toArray();
+      for (const p of projs) await db.projects.update(p.id, { areaId: null });
+      for (const t of tasks) await db.tasks.update(t.id, { areaId: null });
+      await table.delete(row.id);
+      return { uid: row.uid, undo: async () => {
+        await db.tombstones.where('uid').equals(row.uid).delete();                         // si no, la lápida del borrado lo volvería a quitar al sincronizar
+        await _saveAreas([...await _getAreas(), row]);
+        for (const p of projs) await db.projects.update(p.id, { areaId: row.id });
+        for (const t of tasks) await db.tasks.update(t.id, { areaId: row.id });
+      } };
+    }
+    case 'column': {
+      const cols = await db.kanbanColumns.orderBy('order').toArray(), pos = cols.findIndex(c => c.id === row.id);
+      if (cols.length <= 1) throw new Error('no se puede borrar la única columna del tablero');
+      const dest = (cols[pos - 1] ?? cols[pos + 1]).id, moved = await db.projects.where('columnId').equals(row.id).toArray();      // como en la app: pasan a la anterior (o a la siguiente)
+      const snap = moved.map(p => ({ id: p.id, columnId: p.columnId, columnHistory: p.columnHistory }));
+      for (const p of moved) await recordColumnChange(p.id, dest);
+      await table.delete(row.id);
+      return { uid: row.uid, undo: async () => { await back(); for (const sn of snap) await db.projects.update(sn.id, { columnId: sn.columnId, columnHistory: sn.columnHistory }); } };
+    }
+    default: await table.delete(row.id); return { uid: row.uid, undo: back };       // reunión, referencia, snippet
+  }
+}
+
 /** Pone en marcha una operación ya validada. Devuelve { uid, undo }. */
 async function _asstRun(it) {
-  const { type, op } = it, T = ASST_TYPES[type], table = db[T.table], now = new Date().toISOString();
+  const { type, op } = it, T = ASST_TYPES[type], table = _asstTable(T), now = new Date().toISOString();
   if (op === 'add') {
     const c = await _asstBuild(type, it.set, null);
     if (c.source) {                                                            // mismo origen que algo que ya existe: no se duplica
       const dup = (await table.toArray()).find(r => r.source === c.source);
       if (dup) return { uid: dup.uid, undo: async () => {}, skipped: 'ya existe (mismo origen)' };
     }
-    let id;
+    let id, placeUndo = null;
     if (type === 'task') {
       const { __done, __ideaProject, ...f } = c;
       if (__ideaProject != null && f.projectId === undefined) f.projectId = __ideaProject;
@@ -191,30 +455,40 @@ async function _asstRun(it) {
       id = await table.add({ status: 'active', archived: false, starred: false, tags: [], coauthors: [], type: 'Proyecto', priority: 'Media', responsible: '', deadline: null, description: '', createdAt: now, updatedAt: now, ...c, columnId: col });
     } else if (type === 'meeting') {
       id = await table.add({ title: '', date: localDateISO(), participants: '', agreements: '', projectId: null, actionItems: [], createdAt: now, updatedAt: now, ...c });
+    } else if (type === 'reference') {
+      id = await table.add({ title: '', authors: '', year: null, journal: '', doi: '', url: '', projectId: null, notes: '', tags: [], createdAt: now, updatedAt: now, ...c });
+    } else if (type === 'snippet') {
+      id = await table.add({ title: '', code: '', language: 'Other', description: '', projectId: null, projectIds: [], tags: [], collectionId: null, starred: false, createdAt: now, updatedAt: now, ...c });
+    } else if (type === 'collection') {
+      id = await table.add({ name: '', color: '#38bdf8', createdAt: now, ...c });
+    } else if (type === 'area') {
+      id = await table.add({ name: '', description: '', color: AREA_COLORS[0], ...c });
+    } else if (type === 'column') {
+      const { __position, ...f } = c, last = (await table.toArray()).reduce((m, x) => Math.max(m, x.order ?? 0), -1);
+      id = await table.add({ title: '', color: '#38bdf8', wip: null, isDefault: false, order: last + 1, ...f });
+      if (__position) placeUndo = await _asstPlaceColumn(id, __position);
     } else {
       if ((await table.toArray()).some(p => foldText(p.name) === foldText(c.name))) throw new Error(`ya existe la persona «${c.name}»`);
       id = await table.add({ email: '', role: '', affiliation: '', notes: '', createdAt: now, ...c });
     }
-    return { uid: (await table.get(id)).uid, undo: () => table.delete(id) };
+    if (type === 'project' && c.submissionStatus && c.columnId === undefined) await _syncPaperColumn(id, c.submissionStatus);      // el tablero sigue al pipeline si la persona lo activó
+    return { uid: (await table.get(id)).uid, undo: async () => { await placeUndo?.(); await table.delete(id); } };
   }
 
   const row = await table.get(it.id);
   if (!row) throw new Error(`${T.noun} ya no existe`);
-  if (op === 'delete') {
-    if (type === 'task') { await Tasks.remove(row.id); return { uid: row.uid, undo: () => table.add(row) }; }
-    const undo = await deleteIdeaCascade(row.id);
-    return { uid: row.uid, undo };
-  }
+  if (op === 'delete') return _asstDelete(type, row, table);
   // update / complete
   const set = op === 'complete' ? { done: true } : it.set;
   const c = await _asstBuild(type, set, row);
-  let spawned = null;
+  let spawned = null, position = null;
   if (type === 'task') {
     const { __done, __ideaProject } = c;
     delete c.__done; delete c.__ideaProject;
     if (__ideaProject != null && c.projectId === undefined) c.projectId = __ideaProject;
     if (__done !== undefined && __done !== !!row.done) spawned = await Tasks.setDone(row.id, __done);
   }
+  if (type === 'column' && c.__position !== undefined) { position = c.__position; delete c.__position; }
   const keys = Object.keys(c);
   const before = Object.fromEntries(keys.map(k => [k, row[k]]));
   if (type === 'project' && 'columnId' in c) {
@@ -222,12 +496,20 @@ async function _asstRun(it) {
     const { columnId, ...rest } = c;
     await recordColumnChange(row.id, columnId);
     if (Object.keys(rest).length) await table.update(row.id, rest);
-  } else if (keys.length) await table.update(row.id, c);
+  } else if (keys.length) {
+    if (type === 'project' && c.submissionStatus !== undefined && c.submissionStatus !== row.submissionStatus) {      // el tablero sigue al pipeline si la persona lo activó
+      before.columnId = row.columnId; before.columnHistory = row.columnHistory;
+      await table.update(row.id, c);
+      await _syncPaperColumn(row.id, c.submissionStatus);
+    } else await table.update(row.id, c);
+  }
+  const placeUndo = position ? await _asstPlaceColumn(row.id, position) : null;
   return {
     uid: row.uid,
     undo: async () => {
       if (spawned) await db.tasks.delete(spawned);
       if (type === 'task' && 'done' in set) await db.tasks.update(row.id, { done: !!row.done, doneAt: row.doneAt ?? null });
+      await placeUndo?.();
       if (Object.keys(before).length) await table.update(row.id, before);
     },
   };
@@ -250,6 +532,11 @@ const Assistant = {
   enabled:   () => localStorage.getItem('ros-assistant') === '1',
   mode:      () => localStorage.getItem('ros-assistant-mode') === 'auto' ? 'auto' : 'review',
   setMode(m) { try { localStorage.setItem('ros-assistant-mode', m === 'auto' ? 'auto' : 'review'); } catch {} },
+  // Dos permisos, ambos desactivados por defecto: con el primero la IA puede borrar cualquier dato (y, en modo automático, sin revisión);
+  // con el segundo llega a los ajustes de la app (áreas, columnas del tablero, etapas de Submissions, campos por tipo, horas útiles…).
+  fullControl: () => { try { return localStorage.getItem('ros-assistant-full') === '1'; } catch { return false; } },
+  appSettings: () => { try { return localStorage.getItem('ros-assistant-config') === '1'; } catch { return false; } },
+  setPermission(which, on) { try { localStorage.setItem(which === 'full' ? 'ros-assistant-full' : 'ros-assistant-config', on ? '1' : '0'); } catch {} },
   lastRun:   () => +localStorage.getItem('ros-assistant-last') || null,
   async handle() { return (await db.settings.get(this.KEY))?.value || null; },
   async permission(h, { ask = false } = {}) {
@@ -278,8 +565,10 @@ const Assistant = {
   /** Estado para el LLM: nombres en vez de ids, sin campos vacíos. */
   async state() {
     const today = localDateISO(), cut = addDaysISO(-30), recent = new Date(Date.now() - 14 * 86400000).toISOString();
-    const [projects, tasks, ideas, meetings, people, columns] = await Promise.all([
-      db.projects.toArray(), db.tasks.toArray(), db.ideas.toArray(), db.meetings.toArray(), db.collaborators.toArray(), db.kanbanColumns.orderBy('order').toArray()]);
+    const [projects, tasks, ideas, meetings, people, columns, references, snippets, collections] = await Promise.all([
+      db.projects.toArray(), db.tasks.toArray(), db.ideas.toArray(), db.meetings.toArray(), db.collaborators.toArray(), db.kanbanColumns.orderBy('order').toArray(),
+      db.references.toArray(), db.snippets.toArray(), db.snippetCollections.toArray()]);
+    const full = Assistant.fullControl(), cap = n => full ? Infinity : n;                // con el control total la IA ve todo, sin recortes
     const areas = await _getAreas();
     const name = (rows, key) => new Map(rows.map(r => [r.id, r[key]]));
     const P = name(projects, 'title'), I = name(ideas, 'title'), C = name(people, 'name'), K = name(columns, 'title'), A = name(areas, 'name');
@@ -293,19 +582,33 @@ const Assistant = {
       summary: { openTasks: open.length, overdueTasks: open.filter(t => t.due && t.due < today).length, dueToday: open.filter(t => t.due === today).length,
         dueNext7Days: open.filter(t => t.due > today && t.due <= addDaysISO(7)).length, waitingOnOthers: open.filter(t => t.assigneeId).length,
         activeProjects: projects.filter(p => !p.archived).length, archivedProjects: projects.filter(p => p.archived).length, unreadIdeas: ideas.filter(i => i.status === 'unread').length },
-      columns: columns.map(c => c.title), areas: areas.map(a => ({ uid: a.uid, name: a.name })),
-      people: people.map(c => clean({ uid: c.uid, name: c.name, role: c.role, affiliation: c.affiliation, email: c.email, followUpDays: c.followUpDays, lastContact: c.lastContact })),
+      permissions: { fullControl: full, appSettings: Assistant.appSettings() },
+      columns: columns.map(c => c.title), columnsInfo: columns.map(c => clean({ uid: c.uid, title: c.title, color: c.color, wip: c.wip, order: c.order })),
+      areas: areas.map(a => clean({ uid: a.uid, name: a.name, description: a.description, color: a.color })),
+      collections: collections.map(c => clean({ uid: c.uid, name: c.name, color: c.color })),
+      settings: await (async () => { const r = await _asstSettingsRead(); return { ...r, submissionStages: r.submissionStages.map(x => ({ key: x.key, label: x.label })),
+        submissionColumnMap: Object.fromEntries(Object.entries(r.submissionColumnMap).map(([k, id]) => [k, K.get(+id)]).filter(([, v]) => v)) }; })(),
+      archivedProjects: projects.filter(p => p.archived).map(p => clean({ uid: p.uid, title: p.title, type: p.type, submissionStatus: p.submissionStatus })),
+      projectTypes: ASST_PROJECT_TYPES, submissionStages: SUB_STATUSES.map(x => ({ key: x.key, label: x.label })),
+      people: people.map(c => clean({ uid: c.uid, name: c.name, role: c.role, affiliation: c.affiliation, email: c.email, followUpDays: c.followUpDays, lastContact: c.lastContact, notes: cut_(c.notes, 300) })),
       projects: projects.filter(p => !p.archived).map(p => clean({ uid: p.uid, title: p.title, type: p.type, column: K.get(p.columnId), priority: p.priority, deadline: p.deadline,
-        responsible: p.responsible || C.get(p.responsibleId), area: A.get(p.areaId), parent: P.get(p.parentId), tags: p.tags, starred: p.starred, submissionStatus: p.submissionStatus, description: cut_(p.description, 400) })),
-      tasks: tasks.filter(t => !t.done || (t.doneAt || '') > recent).sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999')).slice(0, 600).map(t => clean({
+        responsible: p.responsible || C.get(p.responsibleId), area: A.get(p.areaId), parent: P.get(p.parentId), tags: p.tags, starred: p.starred, coauthors: p.coauthors, submissionStatus: p.submissionStatus, targetVenue: p.targetVenue, submittedAt: p.submittedAt,
+        customFields: p.customFields, submissionNotes: cut_(p.submissionNotes, 300), submissionRounds: (p.submissionRounds || []).map(r => clean({ submittedAt: r.submittedAt, decision: r.decision, decisionDate: r.decisionDate, venue: r.venue, notes: cut_(r.notes, 200) })),
+        description: cut_(p.description, 400) })),
+      tasks: tasks.filter(t => !t.done || full || (t.doneAt || '') > recent).sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999')).slice(0, cap(600)).map(t => clean({
         uid: t.uid, title: t.title, done: t.done, doneAt: t.done ? t.doneAt : null, due: t.due, late: !t.done && t.due && t.due < today, priority: t.priority,
         notes: cut_(t.notes, 300), link: t.link, source: t.source,
         project: P.get(t.projectId), idea: I.get(t.ideaId), assignee: C.get(t.assigneeId), repeat: t.recurrence, minutes: t.effort, planDate: t.planDate, area: A.get(t.areaId) })),
-      ideas: ideas.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, 200).map(i => clean({
+      ideas: ideas.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, cap(200)).map(i => clean({
         uid: i.uid, title: i.title, status: i.status, project: P.get(i.projectId), tags: i.tags, deadline: i.deadline, starred: i.starred, source: i.source, content: cut_(i.content, 500) })),
-      meetings: meetings.filter(m => (m.date || '') >= cut).sort((a, b) => (a.date || '').localeCompare(b.date || '')).slice(0, 60).map(m => clean({
+      meetings: meetings.filter(m => full || (m.date || '') >= cut).sort((a, b) => (a.date || '').localeCompare(b.date || '')).slice(0, cap(60)).map(m => clean({
         uid: m.uid, title: m.title, date: m.date, time: m.time, duration: m.duration, source: m.source, project: P.get(m.projectId), participants: m.participants, agreements: cut_(m.agreements, 400),
         actionItems: (m.actionItems || []).map(a => clean({ text: a.text, done: a.done, due: a.due, assignee: C.get(a.assigneeId) })) })),
+      references: references.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, cap(300)).map(r => clean({
+        uid: r.uid, title: r.title, authors: r.authors, year: r.year, journal: r.journal, doi: r.doi, url: r.url, project: P.get(r.projectId), tags: r.tags,
+        readStatus: r.readStatus, citeKey: r.citeKey, source: r.source, notes: cut_(r.notes, 300) })),
+      snippets: snippets.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, cap(150)).map(r => clean({
+        uid: r.uid, title: r.title, language: r.language, description: cut_(r.description, 200), project: P.get(r.projectId), tags: r.tags, starred: r.starred, code: cut_(r.code, 300) })),
     };
     return state;
   },
@@ -333,10 +636,12 @@ const Assistant = {
   /** Instrucciones para cualquier LLM, generadas desde los mismos campos que valida la app (nunca se desactualizan). */
   instructions() {
     const f = t => Object.keys(ASST_FIELDS[t]).map(k => '`' + k + '`').join(', ');
+    const typeLines = Object.entries(ASST_TYPES).filter(([, T]) => !T.config || Assistant.appSettings())
+      .map(([k, T]) => `${T.noun} \`${k}\` (${_asstOps(T).join(', ')})`).join(' · ');
     return `${ASST_MARK}
 # ResearchOS — instrucciones para un asistente de IA
 
-Esta carpeta es la puerta de entrada de un asistente de IA a ResearchOS (una app local de gestión de investigación). Tu trabajo: ayudar a la persona a mantener al día sus pendientes, tareas, ideas, reuniones y proyectos.
+Esta carpeta es la puerta de entrada de un asistente de IA a ResearchOS (una app local de gestión de investigación). Tu trabajo: ayudar a la persona a mantener al día sus pendientes, tareas, ideas, reuniones, proyectos (incluidos los papers de *Submissions*), personas, referencias y snippets.
 
 ## Qué hay aquí
 
@@ -370,8 +675,8 @@ Crea un archivo nuevo en \`cambios/\` (nombre único, p. ej. \`2026-11-01T10-30-
 }
 \`\`\`
 
-- \`op\`: \`add\`, \`update\`, \`complete\` (solo tareas) o \`delete\` (solo tareas e ideas).
-- \`type\`: \`task\`, \`idea\`, \`project\`, \`meeting\` o \`person\`. Operaciones por tipo: tarea (add, update, complete, delete) · idea (add, update, delete) · proyecto (add, update) · reunión (add, update) · persona (add).
+- \`op\`: \`add\`, \`update\`, \`complete\` (solo tareas) o \`delete\`. Qué operaciones admite cada tipo depende de los permisos que la persona haya dado (ver «Permisos»).
+- \`type\` y operaciones permitidas ahora: ${typeLines}.
 - Para \`update\`, \`complete\` y \`delete\` indica el registro con \`uid\` (el completo o sus **8 primeros caracteres**, como en \`pendientes.md\`). Si no lo tienes, \`"match": "título exacto"\` también sirve cuando es único.
 - \`set\` lleva los campos. Para borrar un valor ponlo en \`null\`.
 - Los **nombres** de proyectos, personas, ideas, columnas y áreas sirven como referencia (sin importar mayúsculas ni tildes). Si son ambiguos, usa el \`uid\`.
@@ -382,14 +687,31 @@ Crea un archivo nuevo en \`cambios/\` (nombre único, p. ej. \`2026-11-01T10-30-
 
 - **task**: ${f('task')}. \`repeat\`: \`{"freq":"daily|weekly|monthly","interval":1,"until":"AAAA-MM-DD"}\` (o solo \`"weekly"\`). \`minutes\`: tiempo estimado. \`planDate\`: el día en que la harás. \`assignee\`: persona de la que esperas la tarea.
 - **idea**: ${f('idea')}. \`status\`: \`unread\` o \`reviewed\`.
-- **project**: ${f('project')}. \`column\`: nombre de la columna del tablero (ver \`columns\`).
+- **project**: ${f('project')}. \`column\`: nombre de la columna del tablero (ver \`columns\`). \`type\` es uno de \`projectTypes\` (\`Proyecto\`, \`Grant\`, \`Paper\`…).
+  - **Submissions:** un proyecto de \`type\` \`Paper\` aparece en la vista *Submissions*. Su etapa es \`submissionStatus\` (una clave de \`submissionStages\` en \`estado.json\`; por defecto \`preparacion\`, \`enviado\`, \`en_revision\`, \`revision_solicitada\`, \`aceptado\`, \`rechazado\`). Al pasar a \`enviado\` se anota la fecha de envío, y si la persona activó la sincronización con el tablero, la columna se mueve sola. \`targetVenue\`: revista o fondo objetivo; \`submittedAt\`: fecha de envío; \`submissionNotes\`: notas. \`submissionRounds\` reemplaza las rondas de revisión y \`addSubmissionRounds\` añade: lista de \`{"submittedAt","decision","decisionDate","venue","notes"}\` con \`decision\` = \`major\`, \`minor\`, \`reject\`, \`accept\` o \`pending\`. Estos campos solo se aceptan en proyectos Paper (pon \`"type":"Paper"\` en el mismo \`set\` si hace falta).
+  - \`coauthors\`: nombres separados por coma o lista; los que coincidan con una persona se enlazan a ella.
 - **meeting**: ${f('meeting')}. \`addActionItems\`: lista de \`{"text","due","assignee","done"}\` que se añade a los acuerdos.
-- **person**: ${f('person')}.
+- **person**: ${f('person')}. \`followUpDays\`: cada cuántos días hay que escribirle (7, 14, 30, 90 o 180; \`null\` para quitarlo); \`lastContact\`: última vez que se hablaron.
+- **reference** (bibliografía): ${f('reference')}. \`readStatus\`: \`toread\`, \`reading\` o \`read\`. \`doi\` sin la URL; \`url\` solo http(s).
+- **snippet** (código): ${f('snippet')}. Para añadir hacen falta \`title\` y \`code\`; \`language\` es R, Python, Bash, SQL u Other.
+- **collection** (colección de snippets): ${f('collection')}.${Assistant.appSettings() ? `
+- **area** (frentes de trabajo, p. ej. Investigación o Docencia): ${f('area')}. Borrar un área deja sin área a sus proyectos y tareas.
+- **column** (columnas del tablero): ${f('column')}. \`position\` es el lugar (1 = la primera); al borrar una columna sus proyectos pasan a la anterior (o a la siguiente). Siempre queda al menos una.
+- **setting** (un único registro, sin \`uid\`: \`{"op":"update","type":"setting","set":{…}}\`): ${f('setting')}. \`dailyMinutes\`: minutos útiles al día (30–960) para la carga y el plan semanal; \`submissionStages\`: lista \`[{"key","label","shortLabel","color","icon"}]\` que **reemplaza** las etapas de Submissions (no se pueden quitar las que usa algún paper); \`projectFields\`: \`{"Paper":[{"key","label","type":"text|number","placeholder"}]}\` define los campos extra de cada tipo de proyecto, que luego se rellenan con \`customFields\` en el proyecto; \`submissionColumnMap\`: \`{"enviado":"Nombre de columna"}\`; \`syncPaperColumn\`: si el tablero sigue al pipeline; \`profile\`: \`all\`, \`research\`, \`teaching\` o \`management\`; \`theme\`: \`dark\`/\`light\`; \`accent\`: \`blue\`/\`green\`/\`purple\`. Los valores actuales están en \`settings\` de \`estado.json\`.` : ''}
+
+## Permisos
+
+La persona decide hasta dónde llegas (Ajustes → Asistente de IA). Ahora mismo:
+
+- **Control total de los datos: ${Assistant.fullControl() ? 'ACTIVADO' : 'desactivado'}.** ${Assistant.fullControl() ? 'Puedes borrar cualquier dato (proyectos, personas, reuniones, colecciones, tareas, ideas, referencias y snippets) y `estado.json` trae todo sin recortes. Borrar un proyecto deja sus tareas, ideas y reuniones sueltas; borrar una persona la quita de responsables y coautores. Úsalo con criterio: aunque se pueda deshacer, no borres por tu cuenta lo que la persona no haya pedido.' : 'No puedes borrar proyectos, personas, reuniones ni colecciones, y los borrados de tareas, ideas, referencias y snippets los revisa la persona. `estado.json` recorta lo antiguo (tareas hechas hace más de 14 días, reuniones de hace más de 30 días…).'}
+- **Ajustes de la app: ${Assistant.appSettings() ? 'ACTIVADOS' : 'desactivados'}.** ${Assistant.appSettings() ? 'Puedes tocar áreas, columnas del tablero y los ajustes (`setting`). Cambia solo lo que la persona pida.' : 'Los tipos `area`, `column` y `setting` se rechazan. Si la persona te pide algo de eso, dile que lo active.'}
+- Nunca están a tu alcance: restaurar o vaciar datos, la sincronización, las copias de seguridad, las carpetas vinculadas, los permisos del navegador y estos mismos permisos.
+
 
 ## Qué pasa después
 
 1. La app (debe estar abierta en el navegador) lee \`cambios/\` cada pocos segundos.
-2. Por defecto **la persona revisa y acepta** tus cambios; los borrados **siempre** se revisan. Si activó «aplicar automáticamente», lo que no es un borrado se aplica enseguida y se puede deshacer.
+2. Por defecto **la persona revisa y acepta** tus cambios; ${Assistant.fullControl() ? 'con el **control total** activado, los borrados siguen el mismo modo que el resto (en automático se aplican enseguida y se pueden deshacer)' : 'los borrados **siempre** se revisan'}. Si activó «aplicar automáticamente», ${Assistant.fullControl() ? 'todo se aplica enseguida y se puede deshacer' : 'lo que no es un borrado se aplica enseguida y se puede deshacer'}.
 3. La app escribe \`resultados/<mismo nombre>.json\` con \`status\` (\`pending\` mientras espera revisión, luego \`done\`) y, por operación, \`applied\`, \`rejected\` o \`error\` (con el motivo y el \`uid\` creado). **Léelo** y corrige lo que haya fallado en un archivo nuevo.
 4. \`estado.json\` se actualiza con lo aplicado.
 
@@ -398,6 +720,7 @@ Crea un archivo nuevo en \`cambios/\` (nombre único, p. ej. \`2026-11-01T10-30-
 - Lee primero \`estado.json\` (o \`pendientes.md\`) y no inventes \`uid\`: cópialos.
 - Propón cambios pequeños y explicados en \`note\`; no reorganices todo de golpe.
 - Antes de añadir una tarea, comprueba que no existe ya una igual.
+- Un lote no puede modificar lo que ese mismo lote acaba de crear (todavía no tiene \`uid\`): hazlo en un segundo archivo, o localízalo luego por su \`source\`.
 - **Si lo que traes viene de fuera (un correo, un evento del calendario…), pon siempre \`source\`** (p. ej. \`gmail:<id del hilo>\`, \`gcal:<id del evento>\`) y, si existe, \`link\` a la página original. La app **omite** lo que ya entró con ese \`source\` y lo que la persona descartó o borró (así puedes repasar el correo cada día sin duplicar), y te deja completar o modificar sin conocer el \`uid\`: \`{ "op": "complete", "type": "task", "source": "gmail:18c3" }\`. En \`add\`, \`source\` va dentro de \`set\`; en \`update\`/\`complete\`/\`delete\` va al lado de \`op\`.
 - Las reuniones llevan \`date\`, \`time\` (HH:MM, hora local) y \`duration\` (minutos); las tareas pueden llevar \`notes\` (contexto) y \`link\`.
 - No borres salvo que la persona lo pida. Completar una tarea es \`complete\`, no \`delete\`.
@@ -409,6 +732,7 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
 - \`node researchos.js resumen\` · \`node researchos.js tareas --hasta semana\` · \`node researchos.js buscar "figuras"\`
 - \`node researchos.js añadir-tarea "Enviar borrador" --fecha 2026-11-06 --proyecto "Paper Alfa" --prioridad Alta --esperar\`
 - \`node researchos.js completar "Enviar borrador"\` · \`node researchos.js modificar <uid> --fecha 2026-11-10\` · \`node researchos.js ayuda\`
+- Cualquier tipo: \`node researchos.js cambiar proyecto "Paper Alfa" submissionStatus=en_revision targetVenue=Nature\` · \`node researchos.js añadir referencia "Título" year=2020\`
 - Servidor MCP para Claude Desktop, Cursor, etc.: \`node researchos.js mcp --dir <esta carpeta>\`. Definiciones de funciones para otras APIs: \`node researchos.js schema --formato openai|anthropic\`.
 `;
   },
@@ -453,7 +777,9 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
       try {
         const T = ASST_TYPES[raw?.type];
         if (!T) throw new Error(`type «${raw?.type}» no existe (${Object.keys(ASST_TYPES).join(', ')})`);
-        if (!T.ops.includes(raw.op)) throw new Error(`«${raw.op}» no está permitido para ${T.noun} (admite: ${T.ops.join(', ')})`);
+        if (T.config && !Assistant.appSettings()) throw new Error(`«${raw.type}» es parte de los ajustes de la app: la persona debe activar «Ajustes de la app» en Ajustes → Asistente de IA`);
+        const allowed = _asstOps(T);
+        if (!allowed.includes(raw.op)) throw new Error(`«${raw.op}» no está permitido para ${T.noun} (admite: ${allowed.join(', ')})${T.full?.includes(raw.op) ? '. Para borrar la persona debe activar «Control total de los datos» en Ajustes → Asistente de IA' : ''}`);
         const reserved = new Set(['op', 'type', 'uid', 'match', 'note', ...(raw.op === 'add' ? [] : ['source'])]);     // fuera de «add», «source» solo localiza el registro
         it.set = raw.set && typeof raw.set === 'object' && !Array.isArray(raw.set) ? raw.set
           : Object.fromEntries(Object.entries(raw).filter(([k]) => !reserved.has(k)));
@@ -461,7 +787,8 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
           const known = ASST_FIELDS[raw.type];
           const bad = Object.keys(it.set).filter(k => !known[k]);
           if (bad.length) throw new Error(`campo «${bad[0]}» no admitido en ${T.noun}. Admitidos: ${Object.keys(known).join(', ')}`);
-          if (raw.op === 'add' && !(raw.type === 'person' ? it.set.name : it.set.title)) throw new Error(`falta ${raw.type === 'person' ? 'name' : 'title'} en «set»`);
+          if (raw.op === 'add' && !it.set[T.key]) throw new Error(`falta ${T.key} en «set»`);
+          if (raw.op === 'add' && raw.type === 'snippet' && !it.set.code) throw new Error('falta code en «set»');
           if (raw.op === 'update' && !Object.keys(it.set).length) throw new Error('«set» está vacío');
         }
         if (raw.op === 'add') {
@@ -469,16 +796,17 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
           it.label = `Añadir ${T.noun} «${s.title ?? s.name}»${bits.length ? ' · ' + bits.join(' · ') : ''}`;
           const src = s.source != null ? Tasks.cleanSource(s.source) : '';                      // lo que ya entró desde ese origen (o que descartaste) no se vuelve a proponer
           if (src) {
-            const dup = (await db[T.table].toArray()).find(r => r.source === src);
+            const dup = (await _asstTable(T).toArray()).find(r => r.source === src);
             if (dup) { it.status = 'skipped'; it.reason = 'ya existe (mismo origen)'; it.uid = dup.uid; }
             else if (Assistant.isIgnored(src)) { it.status = 'skipped'; it.reason = 'la descartaste antes'; }
           }
         } else {
-          const bySource = _asstEmpty(raw.uid) && _asstEmpty(raw.match) && !_asstEmpty(raw.source);
-          if (_asstEmpty(raw.uid) && _asstEmpty(raw.match) && !bySource) throw new Error('falta «uid» (o «match» con el título exacto, o «source» con el origen)');
-          const rows = await db[T.table].toArray();
+          const bySource = !T.singleton && _asstEmpty(raw.uid) && _asstEmpty(raw.match) && !_asstEmpty(raw.source);
+          if (!T.singleton && _asstEmpty(raw.uid) && _asstEmpty(raw.match) && !bySource) throw new Error('falta «uid» (o «match» con el título exacto, o «source» con el origen)');
+          const rows = await _asstTable(T).toArray();
           let row;
-          if (bySource) {
+          if (T.singleton) row = rows[0];
+          else if (bySource) {
             const src = Tasks.cleanSource(raw.source), hits = rows.filter(r => r.source === src);
             if (hits.length !== 1) throw new Error(hits.length ? `hay ${hits.length} ${T.noun}s con el origen «${src}»: usa su uid` : `no hay ${T.noun} con el origen «${src}»`);
             row = hits[0];
@@ -550,7 +878,7 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
       const todo = batch.items.filter(i => i.status === 'pending');
       if (!todo.length) { await this._result(batch); this._handled.add(name); continue; }
       const auto = this.mode() === 'auto';
-      const now = auto ? todo.filter(i => !i.destructive) : [];
+      const now = auto ? todo.filter(i => !i.destructive || this.fullControl()) : [];         // los borrados solo se aplican solos con el «Control total»
       const held = todo.filter(i => !now.includes(i));
       if (held.length) { this._queue.push(batch); await this._result(batch); }
       if (now.length) await this._apply(batch, now);
@@ -680,11 +1008,21 @@ async function renderAssistantSection() {
       </div>
       ${handle ? `<div class="settings-row">
         <div><div class="settings-row-label">Cuando la IA propone cambios</div>
-          <div class="settings-row-desc">«Revisar» te enseña la lista y eliges qué aplicar. «Automático» aplica de inmediato lo que no sea un borrado (con «Deshacer»). Los borrados siempre se revisan.</div></div>
+          <div class="settings-row-desc">«Revisar» te enseña la lista y eliges qué aplicar. «Automático» aplica de inmediato lo que no sea un borrado (con «Deshacer»). Los borrados siempre se revisan, salvo que actives el control total.</div></div>
         <select class="form-select" id="assistantMode" aria-label="Cuando la IA propone cambios" style="max-width:230px">
           <option value="review"${Assistant.mode() === 'review' ? ' selected' : ''}>Revisar antes de aplicar</option>
           <option value="auto"${Assistant.mode() === 'auto' ? ' selected' : ''}>Aplicar automáticamente</option>
         </select>
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-row-label">Control total de los datos</div>
+          <div class="settings-row-desc">Deja que la IA también <strong>borre</strong> (proyectos, personas, reuniones, colecciones…) y vea todo sin recortes. Con «Aplicar automáticamente», los borrados se hacen sin pedirte permiso (siempre puedes pulsar «Deshacer»). Para delegar más y revisar menos. Desactivado por defecto.</div></div>
+        <label class="toggle-switch"><input type="checkbox" id="assistantFull"${Assistant.fullControl() ? ' checked' : ''} aria-label="Control total de los datos"><span class="toggle-slider"></span></label>
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-row-label">Ajustes de la app</div>
+          <div class="settings-row-desc">Deja que la IA toque también la configuración: áreas, columnas del tablero, etapas de Submissions, campos extra por tipo de proyecto, horas útiles al día, perfil y apariencia. Desactivado por defecto.</div></div>
+        <label class="toggle-switch"><input type="checkbox" id="assistantConfig"${Assistant.appSettings() ? ' checked' : ''} aria-label="Ajustes de la app"><span class="toggle-slider"></span></label>
       </div>` : ''}`}
     </div>`;
   wireSameFolder('assistant', groups, async h => { await Assistant.use(h); await initAssistant(); }, refreshFolderUI);
@@ -697,4 +1035,14 @@ async function renderAssistantSection() {
   $('assistantNow')?.addEventListener('click', () => run(true));
   $('assistantResume')?.addEventListener('click', async () => { await run(true); await initAssistant(); });
   $('assistantMode')?.addEventListener('change', e => Assistant.setMode(e.target.value));
+  const permission = (id, which, ask) => $(id)?.addEventListener('change', async e => {
+    const on = e.target.checked;
+    if (on && ask && !(await askConfirm(ask.text, { title: ask.title, confirmLabel: 'Activar', danger: true }))) { e.target.checked = false; return; }
+    Assistant.setPermission(which, on);
+    showToast(on ? 'Permiso activado' : 'Permiso desactivado', on ? 'success' : 'info');
+    try { await Assistant.syncNow(); } catch {}                                          // AGENTS.md y estado.json cuentan lo que ahora se puede hacer
+    renderAssistantSection();
+  });
+  permission('assistantFull', 'full', { title: '¿Dar control total de los datos a la IA?', text: 'Podrá borrar proyectos, personas, reuniones y el resto de tus datos, y con «Aplicar automáticamente» lo hará sin pedirte permiso. Siempre podrás deshacer lo último desde el aviso, pero te conviene tener una copia de seguridad reciente.' });
+  permission('assistantConfig', 'config', { title: '¿Dejar que la IA cambie los ajustes de la app?', text: 'Podrá crear, editar y borrar áreas y columnas del tablero, y cambiar etapas de Submissions, campos por tipo de proyecto, horas útiles y apariencia.' });
 }

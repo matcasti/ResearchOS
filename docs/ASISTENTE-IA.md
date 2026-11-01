@@ -28,9 +28,30 @@ La app deja en la carpeta:
 ## Cómo se mantiene el control
 
 - **Por defecto revisas tú.** Cuando la IA propone algo aparece «🤖 Tu asistente propone N cambios»; ves la lista, desmarcas lo que no quieras y pulsas *Aplicar*.
-- **Modo automático (opcional):** lo que no sea un borrado se aplica enseguida y puedes pulsar «Deshacer». **Los borrados siempre se revisan.**
-- **La IA no ejecuta código en tu app.** Solo existe un conjunto cerrado de operaciones (añadir, modificar, completar, borrar sobre tareas, ideas, proyectos, reuniones y personas), y cada campo se valida. Un lote con errores no rompe nada: cada operación informa su resultado.
-- Los proyectos no se pueden borrar desde aquí; las personas solo se pueden añadir.
+- **Modo automático (opcional):** lo que no sea un borrado se aplica enseguida y puedes pulsar «Deshacer». **Los borrados siempre se revisan**, salvo que actives el control total (abajo).
+- **Dos permisos más, desactivados por defecto** (Ajustes → Sincronización e IA → Asistente de IA), para delegar más cuando te sientas cómoda o cómodo:
+  - **Control total de los datos.** La IA puede borrar *cualquier* dato (también proyectos, personas, reuniones y colecciones) y ve todo sin recortes (por defecto `estado.json` omite lo antiguo). En «Revisar antes de aplicar» los borrados se siguen revisando; en «Aplicar automáticamente» se hacen solos y los deshaces con el aviso. Al borrar, nada queda colgando: un proyecto deja sus tareas, ideas y reuniones sueltas; una persona se quita de responsables y coautores; una columna pasa sus proyectos a la vecina; un área, los suyos a «sin área». La app pide confirmación al activarlo.
+  - **Ajustes de la app.** Añade los tipos `area`, `column` y `setting`: áreas, columnas del tablero (con su orden y límite), etapas de Submissions, campos extra por tipo de proyecto, a qué columna va cada etapa, horas útiles al día (para la carga y el plan semanal), perfil de menú y apariencia. Con el permiso apagado, la app rechaza esas operaciones con un mensaje que lo explica.
+  - `AGENTS.md` y `estado.json` (`permissions`) le cuentan a la IA qué permisos tiene en cada momento.
+- **La IA no ejecuta código en tu app.** Solo existe un conjunto cerrado de operaciones sobre estos tipos, y cada campo se valida. Un lote con errores no rompe nada: cada operación informa su resultado.
+
+  | Tipo | Operaciones | Notas |
+  |---|---|---|
+  | Tareas | añadir, modificar, completar, borrar | notas, enlace, origen, repetición, responsable… |
+  | Ideas | añadir, modificar, borrar | |
+  | Proyectos | añadir, modificar, *borrar¹* | incluye **Submissions**: un `Paper` con etapa (`submissionStatus`), venue, fecha de envío, notas y rondas de revisión; coautores y los campos extra de su tipo (`customFields`) |
+  | Reuniones | añadir, modificar, *borrar¹* | hora, duración, acuerdos y próximos pasos |
+  | Personas | añadir, modificar, *borrar¹* | rol, afiliación, correo, notas y cada cuántos días escribirles |
+  | Referencias | añadir, modificar, borrar | autores, año, DOI, enlace, proyecto, etiquetas y estado de lectura |
+  | Snippets | añadir, modificar, borrar | código, lenguaje, proyecto y etiquetas |
+  | Colecciones de snippets | añadir, modificar, *borrar¹* | nombre y color |
+  | Áreas² | añadir, modificar, borrar | nombre, descripción y color |
+  | Columnas del tablero² | añadir, modificar, borrar | título, color, límite de proyectos (`wip`) y lugar (`position`) |
+  | Ajustes² | modificar | `dailyMinutes`, `submissionStages`, `projectFields`, `submissionColumnMap`, `syncPaperColumn`, `profile`, `theme`, `accent` |
+
+  ¹ Solo con *Control total de los datos*. ² Solo con *Ajustes de la app*; el borrado además sigue la regla del control total.
+
+- Fuera del alcance de la IA, siempre: restaurar o vaciar datos, la sincronización, las copias de seguridad, las carpetas vinculadas, los permisos del navegador y estos mismos permisos. Solo los cambias tú.
 - La carpeta contiene tus datos en claro. Si la pones en Dropbox/Drive, viajan por ese servicio; si la IA es un servicio en la nube, lo que lea saldrá de tu equipo. Elige a conciencia qué asistente la abre.
 
 ## Conectar distintos asistentes
@@ -45,6 +66,11 @@ node researchos.js resumen
 node researchos.js tareas --hasta semana
 node researchos.js añadir-tarea "Enviar borrador" --fecha 2026-11-06 --proyecto "Paper Alfa" --prioridad Alta --esperar
 node researchos.js completar "Enviar borrador"
+node researchos.js cambiar proyecto "Paper Alfa" submissionStatus=en_revision targetVenue=Nature   # un paper en Submissions
+node researchos.js cambiar persona Vega role=Postdoc followUpDays=14
+node researchos.js añadir referencia "Mixed models in R" year=2015 doi=10.18637/jss.v067.i01
+node researchos.js cambiar ajuste dailyMinutes=300 profile=research        # con «Ajustes de la app»
+node researchos.js eliminar proyecto "Idea abandonada"                      # con «Control total»
 node researchos.js ayuda
 ```
 
@@ -62,7 +88,7 @@ node researchos.js ayuda
 }
 ```
 
-Herramientas: `researchos_overview`, `researchos_list`, `researchos_search`, `researchos_add_task`, `researchos_update_task`, `researchos_complete_task` (por `uid`, título u origen), `researchos_add_idea`, `researchos_add_meeting`, `researchos_propose_changes` (lote completo) y `researchos_get_result`.
+Herramientas: `researchos_overview`, `researchos_list`, `researchos_search`, `researchos_add_task`, `researchos_update_task`, `researchos_complete_task` (por `uid`, título u origen), `researchos_add_idea`, `researchos_add_meeting`, **`researchos_add`, `researchos_update` y `researchos_delete`** (genéricas: sirven para cualquier tipo, incluidos proyectos y papers, personas, referencias, snippets y —con permiso— áreas, columnas y ajustes), `researchos_propose_changes` (lote completo) y `researchos_get_result`.
 
 ### OpenAI, Anthropic API y otros con *function calling*
 Las mismas herramientas como definiciones de funciones:
@@ -120,9 +146,27 @@ Para que sea más automático, ponla en un trabajo programado (p. ej. una tarea 
 
 > Lo que lea el asistente sale de tu equipo hacia el servicio de IA que uses. Si hay correo sensible, restringe la búsqueda (por etiqueta, remitente o carpeta) en las instrucciones de la skill.
 
+## Papers, personas y bibliografía
+
+Un proyecto de tipo `Paper` aparece en **Submissions**. La IA puede crearlo, moverlo por el pipeline y registrar las rondas de revisión:
+
+```json
+{ "format": "researchos-changes/1", "author": "mi-asistente", "ops": [
+  { "op": "update", "type": "project", "match": "Paper Alfa", "set": {
+      "submissionStatus": "en_revision", "targetVenue": "Nature", "coauthors": "Dra. Vega, Externo X",
+      "addSubmissionRounds": [{ "submittedAt": "2026-10-01", "decision": "major", "decisionDate": "2026-10-20", "notes": "Piden más análisis" }] } },
+  { "op": "update", "type": "person", "match": "Dra. Vega", "set": { "role": "Postdoc", "followUpDays": 14 } },
+  { "op": "add", "type": "reference", "set": { "title": "Mixed models in R", "year": 2015, "project": "Paper Alfa", "readStatus": "reading" } }
+] }
+```
+
+- `submissionStatus` acepta la clave de la etapa (`preparacion`, `enviado`, `en_revision`, `revision_solicitada`, `aceptado`, `rechazado`) o su etiqueta, y respeta las etapas que hayas personalizado (`estado.json` las lista en `submissionStages`). Funciona igual que mover el paper en el pipeline: anota el historial, la fecha de envío al pasar a «enviado» y, si activaste la sincronización con el tablero, mueve la columna. Deshacer lo devuelve todo.
+- Los campos de Submissions solo se aceptan en proyectos `Paper`; si no lo es, el error indica que hay que poner `"type": "Paper"`. Los tipos de proyecto válidos están en `projectTypes`.
+- Dentro de un mismo lote no se puede modificar algo que ese mismo lote acaba de crear (no tiene `uid` todavía): crea en un archivo y modifica en otro, o usa `source` en el alta y localízalo después por `source`.
+
 ## Referencia rápida del formato
 
-- **Operaciones:** `add`, `update`, `complete` (solo tareas), `delete` (solo tareas e ideas). Tipos: `task`, `idea`, `project`, `meeting`, `person`.
+- **Operaciones:** `add`, `update`, `complete` (solo tareas), `delete` (según permisos). Tipos: `task`, `idea`, `project`, `meeting`, `person`, `reference`, `snippet`, `collection` y, con «Ajustes de la app», `area`, `column` y `setting` (este último es un único registro: no lleva `uid`).
 - **Referencias:** por `uid` (o sus 8 primeros caracteres) o por nombre exacto (sin importar mayúsculas ni tildes). `"match": "título"` sirve en lugar de `uid`.
 - **`set`:** los campos admitidos por tipo están en `AGENTS.md` (se generan de lo que valida la app, así nunca se desactualizan). Un campo desconocido se rechaza con un mensaje claro.
 - **Fechas:** `AAAA-MM-DD`, hora local. **Prioridad:** `Alta`, `Media`, `Baja`.
