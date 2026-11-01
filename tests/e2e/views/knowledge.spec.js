@@ -171,11 +171,20 @@ test.describe('Reuniones y colaboradores', () => {
     await page.locator('#addMeetingBtn').click();
     await page.fill('#am-title', 'Defensa capítulo 3');
     await page.fill('#am-date', '2026-11-05');
+    await page.fill('#am-time', '10:00');
+    await page.fill('#am-duration', '90');
     await page.fill('#am-actions', 'Revisar sección 2\nEnviar datos\n\nPreparar slides');
     await page.locator('#amSave').click();
-    await expect(page.locator('.meeting-card', { hasText: 'Defensa capítulo 3' })).toBeVisible();
+    await expect(page.locator('.meeting-card', { hasText: 'Defensa capítulo 3' })).toContainText('10:00–11:30');          // la hora y la duración se ven en la lista
     const m = await page.evaluate(() => db.meetings.where('title').equals('Defensa capítulo 3').first());
     expect(m.actionItems.map(a => a.text)).toEqual(['Revisar sección 2', 'Enviar datos', 'Preparar slides']);
+    expect([m.time, m.duration]).toEqual(['10:00', 90]);
+    await page.locator('.meeting-card', { hasText: 'Defensa capítulo 3' }).click();
+    await expect(page.locator('#inspectorBody')).toContainText('10:00–11:30');
+    await page.locator('#meetEditBtn').click();                                                                          // y se editan: quitar la hora quita también la duración
+    await page.fill('#em-time', '');
+    await page.locator('#emSave').click();
+    await expect.poll(() => page.evaluate(() => db.meetings.where('title').equals('Defensa capítulo 3').first().then(r => [r.time, r.duration]))).toEqual([null, null]);
 
     await page.locator('.meeting-card', { hasText: 'Reunión de avance' }).click();             // marcar una acción como hecha desde el inspector
     await page.locator('[data-toggle-ai]').first().click();

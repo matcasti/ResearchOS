@@ -319,6 +319,10 @@ test.describe('Referencias y calendario', () => {
     await openApp(page);
     await seed(page);
     await page.evaluate(() => Tasks.add({ title: 'clase, semanal; lunes', due: '2026-11-02', recurrence: { freq: 'weekly', interval: 2, until: '2026-12-14' } }));
+    await page.evaluate(async () => {
+      await Tasks.add({ title: 'Responder a la editora', due: '2026-11-04', notes: 'Pide la versión final', link: 'https://mail.google.com/mail/u/0/#inbox/18c3' });
+      await db.meetings.add({ title: 'Comité con hora', date: '2026-11-09', time: '09:30', duration: 45, participants: '', projectId: null, agreements: '', actionItems: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    });
     await gotoView(page, 'settings');
     const [dl] = await Promise.all([page.waitForEvent('download'), page.locator('#icsExportBtn').click()]);
     const ics = await fs.promises.readFile(await dl.path(), 'utf8');
@@ -328,6 +332,10 @@ test.describe('Referencias y calendario', () => {
     expect(ics).toContain('SUMMARY:☐ clase\\, semanal\; lunes');
     expect(ics).toContain('RRULE:FREQ=WEEKLY;INTERVAL=2;UNTIL=20261214');
     expect(ics).toContain('DTSTART;VALUE=DATE:20261102');
+    expect(ics).toContain('DTSTART:20261109T093000');                                                // una reunión con hora es un evento con hora y duración
+    expect(ics).toContain('DTEND:20261109T101500');
+    expect(ics).toContain('DESCRIPTION:Pide la versión final');                                      // las notas y el enlace de una tarea viajan
+    expect(ics).toContain('URL:https://mail.google.com/mail/u/0/#inbox/18c3');
     for (const line of ics.split('\r\n')) expect(line.length).toBeLessThanOrEqual(71);          // líneas plegadas
 
     const semanal = ['BEGIN:VCALENDAR', 'BEGIN:VEVENT', 'SUMMARY:Estadística I', 'DTSTART;TZID=America/Santiago:20261102T100000',
@@ -338,14 +346,26 @@ test.describe('Referencias y calendario', () => {
     expect(ev.filter(e => e.title === 'Estadística I').map(e => e.date)).toEqual(['2026-11-02', '2026-11-04', '2026-11-09', '2026-11-11', '2026-11-16', '2026-11-18']);
     expect(ev.find(e => e.title === 'Comité, tesis').date).toBe('2026-11-10');
     expect(ev.some(e => e.title === 'Fuera de rango')).toBe(false);
+    expect(ev.filter(e => e.title === 'Estadística I').map(e => [e.time, e.duration])[0]).toEqual(['10:00', null]);      // con hora, sin fin: sin duración
+    expect(ev.find(e => e.title === 'Comité, tesis')).toMatchObject({ time: null, duration: null });                    // de día completo: sin hora
+    const hora = await page.evaluate(() => {
+      const t = text => parseICS(text, { from: '2026-11-01', to: '2026-12-31' })[0];
+      const z = new Date(Date.UTC(2026, 10, 10, 12, 0, 0)), p = n => String(n).padStart(2, '0');
+      const ev = t(['BEGIN:VCALENDAR', 'BEGIN:VEVENT', 'SUMMARY:Seminario', 'DTSTART:20261110T120000Z', 'DTEND:20261110T133000Z', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n'));
+      return { ev, local: `${p(z.getHours())}:${p(z.getMinutes())}`, localDate: `${z.getFullYear()}-${p(z.getMonth() + 1)}-${p(z.getDate())}`,
+               cruza: t(['BEGIN:VEVENT', 'SUMMARY:Noche', 'DTSTART:20261110T230000', 'DTEND:20261111T010000', 'END:VEVENT'].join('\r\n')) };
+    });
+    expect(hora.ev).toMatchObject({ time: hora.local, date: hora.localDate, duration: 90 });                              // UTC se pasa a hora local
+    expect(hora.cruza.duration).toBeNull();                                                                               // un evento que cruza la medianoche no tiene duración válida en un solo día
 
     const d = iso(3).replace(/-/g, '');
-    const seminario = `BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Seminario\r\nDTSTART;VALUE=DATE:${d}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
+    const seminario = `BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Seminario\r\nDTSTART:${d}T143000\r\nDTEND:${d}T153000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
     const upload = () => page.locator('#icsImportInput').setInputFiles({ name: 'c.ics', mimeType: 'text/calendar', buffer: Buffer.from(seminario) });
     await upload();
     await page.locator('#icsOk').click();
     await expect(page.locator('.toast.success').last()).toContainText('1 evento(s) importado(s)');
     expect(await page.evaluate(() => db.meetings.filter(m => m.title === 'Seminario').count())).toBe(1);
+    expect(await page.evaluate(() => db.meetings.filter(m => m.title === 'Seminario').first().then(m => [m.time, m.duration]))).toEqual(['14:30', 60]);      // la hora y la duración se conservan al importar
     await upload();
     await expect(page.locator('#icsOk')).toBeDisabled();
   });
@@ -464,5 +484,12 @@ test.describe('PWA, ajustes y backups', () => {
       { title: 'y', recurrence: { freq: 'weekly', interval: 999, until: '"><img>' } }] }).tasks);
     expect(t[0]).toMatchObject({ recurrence: null, assigneeId: null });
     expect(t[1].recurrence).toEqual({ freq: 'weekly', interval: 52, until: null });
+    const nuevo = await page.evaluate(() => sanitizeBackup({
+      tasks: [{ title: 'x', link: 'javascript:alert(1)', notes: 'n'.repeat(6000), source: '  gmail:1  ' }, { title: 'y', link: 'https://example.org/a?b=1' }],
+      meetings: [{ title: 'm', date: '2026-12-01', time: '25:61', duration: 'x', source: 'gcal:9' }, { title: 'n', date: '2026-12-01', time: '9:05', duration: 45 }] }));
+    expect(nuevo.tasks[0]).toMatchObject({ link: null, source: 'gmail:1' });                         // un enlace peligroso no entra; el origen se limpia
+    expect(nuevo.tasks[0].notes).toHaveLength(5000);
+    expect(nuevo.tasks[1].link).toBe('https://example.org/a?b=1');
+    expect(nuevo.meetings.map(m => [m.time, m.duration, m.source ?? ''])).toEqual([[null, null, 'gcal:9'], ['09:05', 45, '']]);
   });
 });

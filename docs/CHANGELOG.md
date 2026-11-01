@@ -6,6 +6,13 @@ Todos los cambios relevantes de ResearchOS, de lo más reciente a lo más antigu
 
 ## Sin publicar
 
+### 🔗 Tareas y reuniones más completas
+
+- **Reuniones con hora y duración.** Al crear o editar una reunión puedes fijar la hora y cuánto dura; se muestran ordenadas en Hoy, el Calendario y el panel del proyecto (`10:00–11:30`), y se exportan al `.ics` como eventos con hora. Al importar un `.ics` se conservan la hora y la duración (con la conversión de horas UTC a tu zona).
+- **Tareas con notas y enlace.** Al capturar una tarea, la dirección web que pegues queda como su enlace (se ve como 🔗 en Hoy y abre en otra pestaña); desde el menú ⋯ → «Notas y enlace…» se editan ambos. Solo se aceptan enlaces `http://` y `https://`. Las notas y el enlace viajan también en las copias de seguridad y en el `.ics`.
+- **Lo que viene de fuera no se duplica.** Tareas, ideas y reuniones pueden llevar un identificador de origen (`source`, p. ej. `gmail:<hilo>` o `gcal:<evento>`): si el asistente de IA intenta añadir algo con un origen que ya existe, se omite y se le indica cuál era; lo que descartaste en la revisión o borraste tú mismo no se vuelve a proponer. Las tareas se pueden completar indicando el origen. Pensado para que una *skill* de Claude Code mantenga tus pendientes al día leyendo tu correo y tu calendario.
+- **Herramienta para agentes:** `researchos_add_task` acepta notas, enlace y origen; nuevas `researchos_add_meeting` (con hora, duración y asistentes) y `researchos_complete_task` por origen; la CLI suma `nueva-reunion`, `--notas`, `--enlace`, `--origen`, `--hora` y `--duracion`.
+
 ### 📁 Una sola carpeta
 
 - **La sincronización, la copia automática y el asistente de IA pueden compartir carpeta.** Si ya elegiste una para una función, las demás ofrecen «Usar la carpeta «…»» (un clic, sin abrir el selector) y cada sección indica con quién la comparte («Misma carpeta que: …»). Cada función guarda sus archivos con nombres propios y se activa o desactiva por separado; las instrucciones de la IA le indican que ignore los archivos técnicos de sincronización y copia.

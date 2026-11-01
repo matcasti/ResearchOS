@@ -4211,8 +4211,8 @@ async function renderWeeklyAgenda() {
     // Fecha de envío efectivo de Papers (el deadline ya aparece vía projects)
     projects.filter(p => p.type === 'Paper' && p.submittedAt === iso).forEach(p =>
       evs.push({ color:'var(--green)', label:`✓ Enviado: ${p.title}`, kind:'project', id:p.id }));
-    meetings.filter(m => m.date === iso).forEach(m =>
-      evs.push({ color:'var(--teal)', label:`🗓 ${m.title}`, kind:'meeting', id:m.id }));
+    meetings.filter(m => m.date === iso).sort((a, b) => (a.time || '99').localeCompare(b.time || '99')).forEach(m =>
+      evs.push({ color:'var(--teal)', label:`🗓 ${m.time ? m.time + ' ' : ''}${m.title}`, kind:'meeting', id:m.id }));
     // Tareas con fecha: las abiertas primero; las hechas se ven atenuadas (para repasar lo avanzado)
     tasks.filter(t => t.due === iso && taskShown(t))
       .sort((a, b) => (a.done - b.done) || a.id - b.id)
@@ -5084,7 +5084,7 @@ async function renderMeetings() {
           const ais  = (m.actionItems || []).filter(a => !a.done);
           return `
             <div class="meeting-card" data-inspect-meeting="${m.id}">
-              <div class="meeting-card-date">${formatDate(m.date)}</div>
+              <div class="meeting-card-date">${formatDate(m.date)}${m.time ? ` · ${esc(meetingWhen(m))}` : ''}</div>
               <div class="meeting-card-title">${esc(m.title)}</div>
               ${m.participants ? `<div class="meeting-card-meta">👤 ${esc(m.participants)}</div>` : ''}
               ${proj ? `<div class="meeting-card-meta" style="color:var(--accent)">⬡ ${esc(proj.title)}</div>` : ''}
@@ -5120,6 +5120,12 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
       <div class="form-group">
         <label class="form-label">Fecha *</label>
         <input class="form-input" type="date" id="am-date" value="${prefillDate || localDateISO()}">
+      </div>
+      <div class="form-row-2">
+        <div class="form-group"><label class="form-label">Hora <span class="form-hint">(opcional)</span></label>
+          <input class="form-input" type="time" id="am-time"></div>
+        <div class="form-group"><label class="form-label">Duración (min)</label>
+          <input class="form-input" type="number" id="am-duration" min="5" max="1440" step="5" placeholder="60"></div>
       </div>
       <div class="form-group">
         <label class="form-label">Participantes</label>
@@ -5167,7 +5173,7 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
         return { id: Date.now() + Math.random(), text: c.title || line, done: false, due: c.due, assigneeId: c.assigneeId }; });
     const now = new Date().toISOString();
     await dbWrite(() => db.meetings.add({
-      title, date,
+      title, date, time: timeOrNull($('am-time').value), duration: $('am-time').value ? durationOrNull($('am-duration').value) : null,
       participants: $('am-participants').value.trim(),
       projectId:    +$('am-project').value || null,
       agreements:   $('am-agreements').value.trim(),
@@ -5212,7 +5218,7 @@ async function inspectMeeting(id) {
       <div class="inspector-meta">
         <div class="inspector-meta-row">
           <span class="inspector-meta-key">Fecha</span>
-          <span class="inspector-meta-val">${formatDate(m.date)}</span>
+          <span class="inspector-meta-val">${formatDate(m.date)}${m.time ? ` · ${esc(meetingWhen(m))}` : ''}</span>
         </div>
         ${_participantChips ? `<div class="inspector-meta-row">
           <span class="inspector-meta-key">Participantes</span>
@@ -5283,6 +5289,12 @@ async function inspectMeeting(id) {
           <label class="form-label">Fecha *</label>
           <input class="form-input" type="date" id="em-date" value="${esc(m.date)}">
         </div>
+        <div class="form-row-2">
+          <div class="form-group"><label class="form-label">Hora <span class="form-hint">(opcional)</span></label>
+            <input class="form-input" type="time" id="em-time" value="${esc(m.time || '')}"></div>
+          <div class="form-group"><label class="form-label">Duración (min)</label>
+            <input class="form-input" type="number" id="em-duration" min="5" max="1440" step="5" value="${esc(m.duration || '')}" placeholder="60"></div>
+        </div>
         <div class="form-group">
           <label class="form-label">Participantes</label>
           <input class="form-input" id="em-participants" value="${esc(m.participants||'')}">
@@ -5309,7 +5321,7 @@ async function inspectMeeting(id) {
       const title = $('em-title').value.trim();
       if (!title) { showToast('Título requerido', 'error'); return; }
       await dbWrite(() => db.meetings.update(id, {
-        title, date: $('em-date').value,
+        title, date: $('em-date').value, time: timeOrNull($('em-time').value), duration: $('em-time').value ? durationOrNull($('em-duration').value) : null,
         participants: $('em-participants').value.trim(),
         projectId:    +$('em-project').value || null,
         agreements:   $('em-agreements').value.trim(),

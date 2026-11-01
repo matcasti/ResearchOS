@@ -104,6 +104,13 @@ async function seed(page) {
     await db.references.add({ title: 'A unifying framework', authors: 'García, J., Vega, M.', year: 2021, journal: 'Nature', doi: '10.1038/x', projectId: p1, createdAt: now, updatedAt: now });
     return { p1, p2, p3 };
   });
+  await settled(page);
+}
+
+/** Espera a que termine el repintado automático que sigue a una escritura directa en la base de datos (~70 ms después):
+ *  si llegara con el inspector ya abierto y a medio rellenar lo borraría, y un segundo pintado de Hoy no repite la felicitación. */
+async function settled(page) {
+  await page.waitForFunction(() => !App._rendering && App._renderStartedAt >= Live.dirtyAt);
 }
 
 /** Navega y espera a que la vista haya re-renderizado (los renders son async). */
@@ -113,6 +120,7 @@ async function reload(page) {
 }
 
 module.exports.seed = seed;
+module.exports.settled = settled;
 module.exports.reload = reload;
 module.exports.routeExternal = routeExternal;
 

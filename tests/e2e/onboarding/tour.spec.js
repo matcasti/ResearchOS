@@ -1,4 +1,4 @@
-const { test, expect, openApp, gotoView, seed, openSettingsTab, openNotices } = require('../helpers');
+const { test, expect, openApp, gotoView, seed, settled, openSettingsTab, openNotices } = require('../helpers');
 
 // Recorrido guiado interactivo y lista de primeros pasos.
 
@@ -267,6 +267,7 @@ test.describe('Primeros pasos en Hoy', () => {
       await Tasks.add({ title: 'Mi tarea', projectId: pid });
       Onboard.set({ moved: true, search: true }); BackupMeta.mark();
     });
+    await settled(page);                                                                  // el repintado automático de esas escrituras no debe coincidir con el de Hoy
     await gotoView(page, 'dashboard');
     await expect(page.locator('.onboard')).toContainText('Ya conoces lo esencial');
     await gotoView(page, 'ideas');

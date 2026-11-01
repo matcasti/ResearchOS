@@ -137,6 +137,47 @@ test.describe('Vista Hoy', () => {
   });
 });
 
+test.describe('Tareas con enlace y notas', () => {
+  test('un enlace pegado en la captura queda como enlace de la tarea; desde ⋯ se editan notas y enlace; lo peligroso se rechaza', async ({ page }) => {
+    await openApp(page);
+    const c = await page.evaluate(() => {
+      const now = new Date('2026-10-31T12:00:00'), p = raw => parseCapture(raw, [], now, []);
+      return { a: p('responder a la editora https://mail.google.com/a/b?x=1 mañana'), b: p('ver (https://example.org/doc).'), c: p('abrir javascript:alert(1) mañana'), d: p('i: leer https://example.org/x') };
+    });
+    expect(c.a).toMatchObject({ title: 'responder a la editora', link: 'https://mail.google.com/a/b?x=1', due: '2026-11-01', kind: 'task' });
+    expect(c.b.link).toBe('https://example.org/doc');                                  // la puntuación pegada al enlace no es parte de él
+    expect(c.c.link).toBeNull();                                                       // solo http(s)
+    expect(c.d).toMatchObject({ kind: 'idea', link: 'https://example.org/x' });
+
+    await page.fill('#captureInput', 'responder a la editora https://mail.google.com/mail/u/0/#inbox/18c3 mañana');
+    await expect(page.locator('#capturePreview')).toContainText('🔗 enlace');
+    await page.press('#captureInput', 'Enter');
+    await expect(page.locator('.toast.success').last()).toContainText('Tarea creada');
+    const row = page.locator('.tw-row', { hasText: 'responder a la editora' });
+    const link = row.locator('a.tw-link');
+    await expect(link).toHaveAttribute('href', 'https://mail.google.com/mail/u/0/#inbox/18c3');
+    await expect(link).toHaveAttribute('target', '_blank');
+    await expect(link).toHaveAttribute('rel', /noopener/);
+    expect(await page.locator('#todayRoot').evaluate(() => App.view)).toBe('dashboard');            // abrir el enlace no abre nada dentro de la app
+    await row.hover(); await row.locator('.tw-more').click();
+    await page.locator('.tw-menu-item', { hasText: 'Notas y enlace…' }).click();
+    await page.fill('#tdNotes', 'Pide la versión final con las figuras');
+    await page.fill('#tdLink', 'ftp://servidor/archivo');
+    await page.locator('#tdSave').click();
+    await expect(page.locator('.toast.error').last()).toContainText('http');                        // no se acepta otro esquema
+    await page.fill('#tdLink', 'https://example.org/carta');
+    await page.locator('#tdSave').click();
+    await expect(page.locator('.toast.success').last()).toContainText('Guardado');
+    await expect(page.locator('.tw-row', { hasText: 'responder a la editora' }).locator('.tw-notes')).toHaveAttribute('title', /versión final/);
+    await expect(page.locator('.tw-row', { hasText: 'responder a la editora' }).locator('a.tw-link')).toHaveAttribute('href', 'https://example.org/carta');
+    expect(await page.evaluate(() => db.tasks.filter(t => t.title === 'responder a la editora').first().then(t => [t.notes, t.link]))).toEqual(['Pide la versión final con las figuras', 'https://example.org/carta']);
+
+    await page.evaluate(() => db.tasks.filter(t => t.title === 'responder a la editora').modify({ link: 'javascript:alert(1)' }));   // un dato que llegó de fuera con un esquema peligroso no se pinta como enlace
+    await gotoView(page, 'ideas'); await gotoView(page, 'dashboard');
+    await expect(page.locator('.tw-row', { hasText: 'responder a la editora' }).locator('a.tw-link')).toHaveCount(0);
+  });
+});
+
 test.describe('Contexto por área', () => {
   test('elegir un área filtra Hoy, el Tablero y Proyectos y persiste al recargar; «Sin área»; el formulario de proyecto usa el área activa', async ({ page }) => {
     await openApp(page);

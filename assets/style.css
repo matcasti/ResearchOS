@@ -4740,3 +4740,12 @@ body.sidebar-collapsed .backup-line { display: none; }
 .risk-top { margin-top: 2px; font-size: .74rem; color: var(--text-3); }
 .risk-proj { color: var(--accent); text-decoration: none; }
 .risk-proj:hover { text-decoration: underline; }
+
+/* Dos campos en una fila (hora y duración, notas y enlace…) */
+.form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 420px) { .form-row-2 { grid-template-columns: 1fr; gap: 0; } }
+.tw-when { font-variant-numeric: tabular-nums; }
+
+/* Tareas con enlace o notas */
+.tw-link, .tw-notes { flex: 0 0 auto; font-size: .78rem; text-decoration: none; opacity: .75; margin-left: 2px; cursor: pointer; }
+.tw-link:hover, .tw-notes:hover { opacity: 1; }

@@ -62,7 +62,7 @@ node researchos.js ayuda
 }
 ```
 
-Herramientas: `researchos_overview`, `researchos_list`, `researchos_search`, `researchos_add_task`, `researchos_update_task`, `researchos_complete_task`, `researchos_add_idea`, `researchos_propose_changes` (lote completo) y `researchos_get_result`.
+Herramientas: `researchos_overview`, `researchos_list`, `researchos_search`, `researchos_add_task`, `researchos_update_task`, `researchos_complete_task` (por `uid`, título u origen), `researchos_add_idea`, `researchos_add_meeting`, `researchos_propose_changes` (lote completo) y `researchos_get_result`.
 
 ### OpenAI, Anthropic API y otros con *function calling*
 Las mismas herramientas como definiciones de funciones:
@@ -83,13 +83,50 @@ Si solo puede leer y escribir archivos, le sirve `AGENTS.md`: describe el format
   ] }
 ```
 
+## Mantener tus pendientes al día desde el correo y el calendario
+
+Si tu asistente tiene acceso a tu correo y a tu calendario (por ejemplo, los conectores de Gmail y Google Calendar de Claude), puede **revisarlos y dejar en ResearchOS lo que requiera tu atención**. La app solo recibe propuestas por la carpeta: ni se conecta a tu correo ni guarda credenciales; quien lee el correo es el asistente.
+
+Tres campos hacen que esto sea cómodo y seguro de repetir a diario:
+
+- **`source`** (tareas, ideas y reuniones): identificador de dónde salió, p. ej. `gmail:<id del hilo>` o `gcal:<id del evento>`. Si ya existe algo con ese origen, la app **omite** la operación (`skipped`, «ya existe (mismo origen)») y devuelve el `uid` del existente; así revisar el mismo correo cada día no duplica nada. Lo que **descartas** en la revisión o **borras** tú tampoco se vuelve a proponer. En `update`, `complete` o `delete` también sirve para localizar el registro (`{"op":"complete","type":"task","source":"gmail:18c3"}`).
+- **`link`** (tareas): la dirección de la página original (solo `http://` o `https://`); en Hoy aparece un 🔗 que la abre. **`notes`**: contexto breve (hasta 5000 caracteres).
+- **`time` y `duration`** (reuniones): hora de inicio `HH:MM` y duración en minutos (5–1440). Un evento de todo el día va sin hora.
+
+### Ejemplo de skill para Claude Code
+
+Guárdala como `.claude/skills/pendientes-correo/SKILL.md` (en la carpeta del asistente, o en `~/.claude/skills/` para tenerla siempre). Es un punto de partida: ajústala a tus etiquetas y a los conectores que uses.
+
+```markdown
+---
+name: pendientes-correo
+description: Revisa mi correo y mi calendario y propone en ResearchOS las tareas y reuniones que falten. Úsala cuando pida ponerme al día.
+---
+
+1. Lee `estado.json` y `AGENTS.md` de esta carpeta. Fíjate en los `source` que ya existen.
+2. Correo: busca hilos recientes que me pidan algo (respuesta, revisión, entrega) y que NO tengan la etiqueta `researchos`. Ignora boletines y automáticos.
+   Por cada uno propón una tarea con:
+   - `title` en imperativo y breve («Responder a la editora»), `due` si el correo da un plazo,
+   - `link` a la conversación, `notes` con una línea de contexto,
+   - `source`: `gmail:<id del hilo>`, y `project`/`assignee` solo si coinciden exactamente con `estado.json`.
+   Si un hilo ya resuelto corresponde a una tarea abierta (mismo `source`), propón `complete` con ese `source`.
+3. Calendario: lista los eventos de los próximos 14 días. Por cada uno que no sea personal propón una reunión con `title`, `date`, `time`, `duration`, `participants` y `source`: `gcal:<id del evento>`.
+4. Escribe UN solo archivo en `cambios/` (formato `researchos-changes/1`, `author: "pendientes-correo"`) y espera su resultado en `resultados/`.
+5. Solo cuando la app confirme (`applied` o `skipped`), etiqueta los hilos procesados con `researchos` para no volver a leerlos. Lo `rejected` o con `error` se deja sin etiquetar y se me cuenta.
+6. Termina con un resumen corto: qué propusiste, qué se omitió por repetido y qué falló.
+```
+
+Para que sea más automático, ponla en un trabajo programado (p. ej. una tarea diaria de Claude Code) con la carpeta abierta; con el modo **automático** las altas se aplican solas y los borrados siguen pidiendo tu revisión. Mientras no estés seguro de lo que propone, deja el modo de **revisión**.
+
+> Lo que lea el asistente sale de tu equipo hacia el servicio de IA que uses. Si hay correo sensible, restringe la búsqueda (por etiqueta, remitente o carpeta) en las instrucciones de la skill.
+
 ## Referencia rápida del formato
 
 - **Operaciones:** `add`, `update`, `complete` (solo tareas), `delete` (solo tareas e ideas). Tipos: `task`, `idea`, `project`, `meeting`, `person`.
 - **Referencias:** por `uid` (o sus 8 primeros caracteres) o por nombre exacto (sin importar mayúsculas ni tildes). `"match": "título"` sirve en lugar de `uid`.
 - **`set`:** los campos admitidos por tipo están en `AGENTS.md` (se generan de lo que valida la app, así nunca se desactualizan). Un campo desconocido se rechaza con un mensaje claro.
 - **Fechas:** `AAAA-MM-DD`, hora local. **Prioridad:** `Alta`, `Media`, `Baja`.
-- **Resultados:** `resultados/<archivo>.json` → `status` (`pending` esperando tu revisión o `done`) y, por operación, `applied`, `rejected` o `error` (con el motivo).
+- **Resultados:** `resultados/<archivo>.json` → `status` (`pending` esperando tu revisión o `done`) y, por operación, `applied`, `rejected`, `skipped` (p. ej. ya existía ese `source`; trae el motivo) o `error` (con el motivo).
 
 ## Si algo no va
 

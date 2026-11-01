@@ -86,6 +86,9 @@ const ASST_FIELDS = {
     minutes:  v => { if (_asstEmpty(v)) return { effort: null }; const m = Tasks.cleanEffort(v); if (m == null) throw new Error('minutes debe ser un número positivo'); return { effort: m }; },
     planDate: v => ({ planDate: _asstDate(v) }),
     area:     _asstRef('area', 'areaId'),
+    notes:    v => ({ notes: Tasks.cleanNotes(v) }),
+    link:     v => { if (_asstEmpty(v)) return { link: null }; const l = Tasks.cleanLink(v); if (!l) throw new Error('link debe ser una dirección http(s) válida'); return { link: l }; },
+    source:   v => ({ source: Tasks.cleanSource(v) }),
   },
   idea: {
     title:    v => ({ title: _asstText(v, 300, 'title', { required: true }) }),
@@ -95,6 +98,7 @@ const ASST_FIELDS = {
     project:  _asstRef('project', 'projectId', p => ({ projectIds: p ? [p.id] : [] })),
     deadline: v => ({ deadline: _asstDate(v) }),
     starred:  v => ({ starred: !!v }),
+    source:   v => ({ source: Tasks.cleanSource(v) }),
   },
   project: {
     title:       v => ({ title: _asstText(v, 200, 'title', { required: true }) }),
@@ -117,6 +121,9 @@ const ASST_FIELDS = {
   meeting: {
     title:        v => ({ title: _asstText(v, 200, 'title', { required: true }) }),
     date:         v => ({ date: _asstDate(v) || localDateISO() }),
+    time:         v => { if (_asstEmpty(v)) return { time: null, duration: null }; const t = timeOrNull(v); if (!t) throw new Error(`hora no válida «${v}» (usa HH:MM)`); return { time: t }; },
+    duration:     v => { if (_asstEmpty(v)) return { duration: null }; const d = durationOrNull(v); if (d == null) throw new Error('duration son minutos (5 o más)'); return { duration: d }; },
+    source:       v => ({ source: Tasks.cleanSource(v) }),
     project:      _asstRef('project', 'projectId'),
     participants: v => ({ participants: _asstText(v, 500, 'participants') }),
     agreements:   v => ({ agreements: _asstText(v, 20000, 'agreements') }),
@@ -166,12 +173,16 @@ async function _asstRun(it) {
   const { type, op } = it, T = ASST_TYPES[type], table = db[T.table], now = new Date().toISOString();
   if (op === 'add') {
     const c = await _asstBuild(type, it.set, null);
+    if (c.source) {                                                            // mismo origen que algo que ya existe: no se duplica
+      const dup = (await table.toArray()).find(r => r.source === c.source);
+      if (dup) return { uid: dup.uid, undo: async () => {}, skipped: 'ya existe (mismo origen)' };
+    }
     let id;
     if (type === 'task') {
       const { __done, __ideaProject, ...f } = c;
       if (__ideaProject != null && f.projectId === undefined) f.projectId = __ideaProject;
       id = await Tasks.add({ title: f.title, due: f.due, projectId: f.projectId, ideaId: f.ideaId, areaId: f.areaId, priority: f.priority,
-        assigneeId: f.assigneeId, recurrence: f.recurrence, effort: f.effort, planDate: f.planDate });
+        assigneeId: f.assigneeId, recurrence: f.recurrence, effort: f.effort, planDate: f.planDate, notes: f.notes, link: f.link, source: f.source });
       if (__done) await Tasks.setDone(id, true);
     } else if (type === 'idea') {
       id = await table.add({ title: '', content: '', status: 'unread', projectId: null, projectIds: [], tags: [], subtasks: [], starred: false, deadline: null, createdAt: now, updatedAt: now, ...c });
@@ -227,6 +238,14 @@ const Assistant = {
   paused: false, _busy: false, _dirty: false, _timer: null, _poll: null,
   _queue: [], _handled: new Set(), _hash: '', _md: '',
 
+  /** Orígenes (correo, evento…) que la persona descartó o borró: si la IA vuelve a proponerlos, se omiten sin preguntar otra vez. */
+  _ignored() { try { return JSON.parse(localStorage.getItem('ros-asst-ignored') || '[]'); } catch { return []; } },
+  isIgnored(src) { return !!src && this._ignored().includes(Tasks.cleanSource(src)); },
+  rememberSource(src) {
+    const s = Tasks.cleanSource(src);
+    if (!s) return;
+    try { localStorage.setItem('ros-asst-ignored', JSON.stringify([...new Set([...this._ignored(), s])].slice(-500))); } catch {}
+  },
   supported: () => typeof window.showDirectoryPicker === 'function',
   enabled:   () => localStorage.getItem('ros-assistant') === '1',
   mode:      () => localStorage.getItem('ros-assistant-mode') === 'auto' ? 'auto' : 'review',
@@ -280,11 +299,12 @@ const Assistant = {
         responsible: p.responsible || C.get(p.responsibleId), area: A.get(p.areaId), parent: P.get(p.parentId), tags: p.tags, starred: p.starred, submissionStatus: p.submissionStatus, description: cut_(p.description, 400) })),
       tasks: tasks.filter(t => !t.done || (t.doneAt || '') > recent).sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999')).slice(0, 600).map(t => clean({
         uid: t.uid, title: t.title, done: t.done, doneAt: t.done ? t.doneAt : null, due: t.due, late: !t.done && t.due && t.due < today, priority: t.priority,
+        notes: cut_(t.notes, 300), link: t.link, source: t.source,
         project: P.get(t.projectId), idea: I.get(t.ideaId), assignee: C.get(t.assigneeId), repeat: t.recurrence, minutes: t.effort, planDate: t.planDate, area: A.get(t.areaId) })),
       ideas: ideas.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, 200).map(i => clean({
-        uid: i.uid, title: i.title, status: i.status, project: P.get(i.projectId), tags: i.tags, deadline: i.deadline, starred: i.starred, content: cut_(i.content, 500) })),
+        uid: i.uid, title: i.title, status: i.status, project: P.get(i.projectId), tags: i.tags, deadline: i.deadline, starred: i.starred, source: i.source, content: cut_(i.content, 500) })),
       meetings: meetings.filter(m => (m.date || '') >= cut).sort((a, b) => (a.date || '').localeCompare(b.date || '')).slice(0, 60).map(m => clean({
-        uid: m.uid, title: m.title, date: m.date, project: P.get(m.projectId), participants: m.participants, agreements: cut_(m.agreements, 400),
+        uid: m.uid, title: m.title, date: m.date, time: m.time, duration: m.duration, source: m.source, project: P.get(m.projectId), participants: m.participants, agreements: cut_(m.agreements, 400),
         actionItems: (m.actionItems || []).map(a => clean({ text: a.text, done: a.done, due: a.due, assignee: C.get(a.assigneeId) })) })),
     };
     return state;
@@ -378,6 +398,8 @@ Crea un archivo nuevo en \`cambios/\` (nombre único, p. ej. \`2026-11-01T10-30-
 - Lee primero \`estado.json\` (o \`pendientes.md\`) y no inventes \`uid\`: cópialos.
 - Propón cambios pequeños y explicados en \`note\`; no reorganices todo de golpe.
 - Antes de añadir una tarea, comprueba que no existe ya una igual.
+- **Si lo que traes viene de fuera (un correo, un evento del calendario…), pon siempre \`source\`** (p. ej. \`gmail:<id del hilo>\`, \`gcal:<id del evento>\`) y, si existe, \`link\` a la página original. La app **omite** lo que ya entró con ese \`source\` y lo que la persona descartó o borró (así puedes repasar el correo cada día sin duplicar), y te deja completar o modificar sin conocer el \`uid\`: \`{ "op": "complete", "type": "task", "source": "gmail:18c3" }\`. En \`add\`, \`source\` va dentro de \`set\`; en \`update\`/\`complete\`/\`delete\` va al lado de \`op\`.
+- Las reuniones llevan \`date\`, \`time\` (HH:MM, hora local) y \`duration\` (minutos); las tareas pueden llevar \`notes\` (contexto) y \`link\`.
 - No borres salvo que la persona lo pida. Completar una tarea es \`complete\`, no \`delete\`.
 
 ## Herramienta incluida (opcional)
@@ -432,7 +454,7 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
         const T = ASST_TYPES[raw?.type];
         if (!T) throw new Error(`type «${raw?.type}» no existe (${Object.keys(ASST_TYPES).join(', ')})`);
         if (!T.ops.includes(raw.op)) throw new Error(`«${raw.op}» no está permitido para ${T.noun} (admite: ${T.ops.join(', ')})`);
-        const reserved = new Set(['op', 'type', 'uid', 'match', 'note']);
+        const reserved = new Set(['op', 'type', 'uid', 'match', 'note', ...(raw.op === 'add' ? [] : ['source'])]);     // fuera de «add», «source» solo localiza el registro
         it.set = raw.set && typeof raw.set === 'object' && !Array.isArray(raw.set) ? raw.set
           : Object.fromEntries(Object.entries(raw).filter(([k]) => !reserved.has(k)));
         if (raw.op !== 'complete' && raw.op !== 'delete') {
@@ -445,10 +467,22 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
         if (raw.op === 'add') {
           const s = it.set, bits = [s.due && `vence ${s.due}`, (s.project) && `proyecto ${s.project}`, s.assignee && `esperando a ${s.assignee}`, s.date && s.date].filter(Boolean);
           it.label = `Añadir ${T.noun} «${s.title ?? s.name}»${bits.length ? ' · ' + bits.join(' · ') : ''}`;
+          const src = s.source != null ? Tasks.cleanSource(s.source) : '';                      // lo que ya entró desde ese origen (o que descartaste) no se vuelve a proponer
+          if (src) {
+            const dup = (await db[T.table].toArray()).find(r => r.source === src);
+            if (dup) { it.status = 'skipped'; it.reason = 'ya existe (mismo origen)'; it.uid = dup.uid; }
+            else if (Assistant.isIgnored(src)) { it.status = 'skipped'; it.reason = 'la descartaste antes'; }
+          }
         } else {
-          if (_asstEmpty(raw.uid) && _asstEmpty(raw.match)) throw new Error('falta «uid» (o «match» con el título exacto)');
+          const bySource = _asstEmpty(raw.uid) && _asstEmpty(raw.match) && !_asstEmpty(raw.source);
+          if (_asstEmpty(raw.uid) && _asstEmpty(raw.match) && !bySource) throw new Error('falta «uid» (o «match» con el título exacto, o «source» con el origen)');
           const rows = await db[T.table].toArray();
-          const row = _asstFind(rows, raw.uid ?? raw.match, T.label, T.noun);
+          let row;
+          if (bySource) {
+            const src = Tasks.cleanSource(raw.source), hits = rows.filter(r => r.source === src);
+            if (hits.length !== 1) throw new Error(hits.length ? `hay ${hits.length} ${T.noun}s con el origen «${src}»: usa su uid` : `no hay ${T.noun} con el origen «${src}»`);
+            row = hits[0];
+          } else row = _asstFind(rows, raw.uid ?? raw.match, T.label, T.noun);
           it.id = row.id; it.uid = row.uid;
           const fmt = v => v === null ? 'vacío' : typeof v === 'object' ? JSON.stringify(v) : String(v);
           it.label = raw.op === 'delete' ? `Eliminar ${T.noun} «${T.label(row)}»`
@@ -466,7 +500,7 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
     const pending = batch.items.some(i => i.status === 'pending');
     const text = JSON.stringify({ format: 'researchos-result/1', file: batch.name, status: pending ? 'pending' : 'done', mode: this.mode(), at: new Date().toISOString(),
       ...(batch.error ? { error: batch.error } : {}),
-      ops: batch.items.map(({ i, op, type, status, label, uid, error }) => ({ index: i, op, type, status, label, ...(uid ? { uid } : {}), ...(error ? { error } : {}) })) }, null, 1);
+      ops: batch.items.map(({ i, op, type, status, label, uid, error, reason }) => ({ index: i, op, type, status, label, ...(uid ? { uid } : {}), ...(error ? { error } : {}), ...(reason ? { reason } : {}) })) }, null, 1);
     try { await this._write(await batch.dir.getDirectoryHandle('resultados', { create: true }), batch.name, text); } catch (e) { console.warn('Asistente: no se pudo escribir el resultado', e); }
   },
 
@@ -474,7 +508,7 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
   async _apply(batch, items) {
     const undos = [];
     for (const it of items) {
-      try { const r = await _asstRun(it); it.status = 'applied'; it.uid = r.uid || it.uid; undos.push(r.undo); }
+      try { const r = await _asstRun(it); it.status = r.skipped ? 'skipped' : 'applied'; it.reason = r.skipped; it.uid = r.uid || it.uid; undos.push(r.undo); }
       catch (e) { it.status = 'error'; it.error = e.message; }
     }
     await this._result(batch);
@@ -549,6 +583,7 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
         ${b.items.filter(i => i.status === 'pending').map(i => `<label style="display:flex;gap:8px;align-items:flex-start;padding:4px 0;cursor:pointer">
           <input type="checkbox" data-asst="${bi}:${i.i}" checked style="margin-top:3px"><span>${esc(i.label)}${i.destructive ? ' <strong style="color:var(--red)">⚠ borrado</strong>' : ''}</span></label>`).join('')}
         ${b.items.some(i => i.status === 'error') ? `<div class="settings-row-desc">${b.items.filter(i => i.status === 'error').length} operación(es) no válidas: la IA lo verá en resultados/.</div>` : ''}
+        ${b.items.some(i => i.status === 'skipped') ? `<div class="settings-row-desc">${b.items.filter(i => i.status === 'skipped').length} omitida(s): ya existían o las descartaste antes.</div>` : ''}
       </div>`).join('')}
       <div class="modal-footer"><button class="btn btn-ghost" id="asstDiscard">Descartar todo</button><button class="btn btn-primary" id="asstApply">Aplicar lo marcado</button></div>`);
     $('asstApply').onclick = () => { const sel = new Set([...modalContent.querySelectorAll('[data-asst]:checked')].map(c => c.dataset.asst)); closeModal(); this.decide(true, sel, batches); };
@@ -559,7 +594,7 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
     for (const [bi, b] of batches.entries()) {
       const pending = b.items.filter(i => i.status === 'pending');
       const yes = apply ? pending.filter(i => !selected || selected.has(`${bi}:${i.i}`)) : [];
-      pending.filter(i => !yes.includes(i)).forEach(i => { i.status = 'rejected'; });
+      pending.filter(i => !yes.includes(i)).forEach(i => { i.status = 'rejected'; if (i.op === 'add' && i.set?.source) Assistant.rememberSource(i.set.source); });
       if (yes.length) await this._apply(b, yes); else await this._result(b);
     }
     this._queue = this._queue.filter(b => b.items.some(i => i.status === 'pending'));

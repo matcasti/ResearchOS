@@ -133,6 +133,11 @@ function parseCapture(raw, projects = [], now = new Date(), people = []) {
     text = text.slice(pre[0].length);
   }
 
+  // un enlace pegado (p. ej. el de un correo) no es parte del título ni de las fechas: se guarda aparte
+  let link = null;
+  const um0 = text.match(/https?:\/\/[^\s<>"']+/i);
+  if (um0) { link = Tasks.cleanLink(um0[0].replace(/[).,;:]+$/, '')); if (link) text = text.replace(um0[0], ' '); }
+
   // @proyecto  o  @"nombre con espacios"
   let projectId = null, projectTitle = null;
   const at = text.match(/@"([^"]+)"|@([\p{L}\p{N}_-]+)/u);
@@ -226,7 +231,7 @@ function parseCapture(raw, projects = [], now = new Date(), people = []) {
 
   const title = text.replace(/\s+/g, ' ').replace(/\s+(para|hasta|el|de|del|a)$/i, '').replace(/^[\s,;:.-]+|[\s,;:]+$/g, '');
   if (!kind) kind = (projectId || due || assigneeId || recurrence || effort) ? 'task' : 'idea';
-  return { kind, title, due, projectId, projectTitle, priority, assigneeId, assigneeName, recurrence, effort, explicit };
+  return { kind, title, due, projectId, projectTitle, priority, assigneeId, assigneeName, recurrence, effort, link, explicit };
 }
 
 /** 90 → «1 h 30», 45 → «45 min», 120 → «2 h». */
@@ -247,6 +252,7 @@ function describeCapture(c) {
   if (c.recurrence) bits.push(`↻ ${esc(recurrenceLabel(c.recurrence))}`);
   if (c.priority) bits.push(`prioridad ${esc(c.priority.toLowerCase())}`);
   if (c.effort && c.kind === 'task') bits.push(`⏱ ${esc(fmtEffort(c.effort))}`);
+  if (c.link) bits.push('🔗 enlace');
   if (c.kind !== 'project' && !c.projectTitle && typeof App.areaContext === 'number') bits.push('en el área activa');
   return bits.join(' · ');
 }
@@ -283,7 +289,7 @@ async function runCapture(c) {
   switch (c.kind) {
     case 'task':
       await dbWrite(() => Tasks.add({ title: c.title, due: c.due, projectId: c.projectId, areaId: area, priority: c.priority,
-                                      assigneeId: c.assigneeId, recurrence: c.recurrence, effort: c.effort }));
+                                      assigneeId: c.assigneeId, recurrence: c.recurrence, effort: c.effort, link: c.link }));
       return `Tarea creada${c.projectTitle ? ` en «${c.projectTitle}»` : ''}${c.assigneeName ? ` · esperando a ${c.assigneeName}` : ''}${c.due ? ` · ${dueLabel(c.due)}` : ''}${c.recurrence ? ' · ↻' : ''}`;
     case 'project': {
       const cols = await db.kanbanColumns.orderBy('order').toArray();
@@ -299,7 +305,7 @@ async function runCapture(c) {
         agreements: '', actionItems: [], createdAt: now, updatedAt: now }));
       return 'Reunión creada';
     default:
-      await dbWrite(() => db.ideas.add({ title: c.title, content: '', status: 'unread', projectId: c.projectId,
+      await dbWrite(() => db.ideas.add({ title: c.title, content: c.link || '', status: 'unread', projectId: c.projectId,
         projectIds: c.projectId ? [c.projectId] : [], deadline: c.due, tags: [], subtasks: [], createdAt: now, updatedAt: now }));
       return 'Idea guardada en la bandeja';
   }
@@ -352,7 +358,7 @@ const _snoozeOptions = (onPick) => [
 //  VISTA «HOY»
 // ==============================================================
 const _prioRank = { Alta: 0, Media: 1, Baja: 2 };
-const _byUrgency = (a, b) => (a.due || '9').localeCompare(b.due || '9') || (_prioRank[a.priority] ?? 3) - (_prioRank[b.priority] ?? 3);
+const _byUrgency = (a, b) => (a.due || '9').localeCompare(b.due || '9') || (a.time && b.time ? a.time.localeCompare(b.time) : 0) || (_prioRank[a.priority] ?? 3) - (_prioRank[b.priority] ?? 3);
 
 async function collectToday() {
   await refreshColumnFlags();
@@ -379,7 +385,7 @@ async function collectToday() {
   const push = r => (r.assigneeId ? theirs : mine).push(r);
   for (const t of allTasks.filter(t => !t.done && taskVisible(t)))
     push({ kind: 'task', id: t.id, title: t.title, due: t.due, priority: t.priority, ideaId: t.ideaId, rec: !!t.recurrence,
-           assigneeId: t.assigneeId, assignee: who[t.assigneeId], effort: t.effort || null, planDate: t.planDate || null, ...chipFor(t.projectId) });
+           assigneeId: t.assigneeId, assignee: who[t.assigneeId], effort: t.effort || null, planDate: t.planDate || null, notes: t.notes || '', link: t.link || null, ...chipFor(t.projectId) });
   for (const p of ctxLive.filter(p => p.deadline && !isFinished(p)))
     mine.push({ kind: 'deadline', id: p.id, title: p.title, due: p.deadline, type: p.type, priority: p.priority, projectId: p.id,
                 projectTitle: null, color: cssColor(areaMap[p.areaId]?.color, 'var(--accent)') });
@@ -387,7 +393,7 @@ async function collectToday() {
     const inScope = c === 'all' || (m.projectId && ctxIds.has(m.projectId));
     if (!inScope) continue;
     if (m.date >= todayISO && m.date <= weekEnd)
-      mine.push({ kind: 'meeting', id: m.id, title: m.title, due: m.date, ...chipFor(m.projectId) });
+      mine.push({ kind: 'meeting', id: m.id, title: m.title, due: m.date, time: m.time || null, duration: m.duration || null, ...chipFor(m.projectId) });
     for (const a of (m.actionItems || []).filter(a => !a.done))
       push({ kind: 'action', id: a.id, sub: m.id, title: a.text, due: a.due || null, meetingTitle: m.title,
              assigneeId: a.assigneeId, assignee: who[a.assigneeId], ...chipFor(m.projectId) });
@@ -434,15 +440,19 @@ function _todayRowHTML(r, todayISO) {
     ? `<button class="tw-proj" data-act="project" style="--pc:${r.color || 'var(--accent)'}" title="Abrir proyecto">${esc(r.projectTitle)}</button>` : '';
   const sub  = r.assignee ? `<span class="tw-sub">→ ${esc(r.assignee)}</span>`
              : r.kind === 'action' ? `<span class="tw-sub">${esc(r.meetingTitle)}</span>`
+             : r.kind === 'meeting' && r.time ? `<span class="tw-sub tw-when">${esc(meetingWhen(r))}</span>`
              : r.kind === 'deadline' ? `<span class="tw-sub">${esc(r.type)}${r.priority === 'Alta' ? ' · alta' : ''}</span>` : '';
   const rec  = r.rec ? `<span class="tw-rec" title="Tarea recurrente" aria-label="Se repite">↻</span>` : '';
   const eff  = r.effort ? `<span class="tw-effort" title="Tiempo estimado">⏱ ${esc(fmtEffort(r.effort))}</span>` : '';
   const carry = r.carried ? `<span class="tw-carry" title="Planificada para un día anterior y sigue pendiente">↪ pendiente de ayer</span>` : '';
   const due  = r.due ? `<span class="tw-due ${overdue ? 'overdue' : r.due === todayISO ? 'today' : ''}">${esc(dueLabel(r.due))}</span>` : '';
+  const href = r.kind === 'task' ? Tasks.cleanLink(r.link) : null;           // se vuelve a validar al pintar: el dato pudo venir de fuera
+  const ext = (href ? `<a class="tw-link" data-act="link" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="Abrir el enlace (${esc(new URL(href).host)})" aria-label="Abrir enlace">🔗</a>` : '')
+            + (r.kind === 'task' && r.notes ? `<span class="tw-notes" title="${esc(r.notes.slice(0, 400))}" role="img" aria-label="Tiene notas">📝</span>` : '');
   const more = doable ? `<button class="tw-more" data-act="menu" aria-label="Más acciones: posponer, asignar, repetir" title="Más acciones…">⋯</button>` : '';
   return `<div class="tw-row" data-kind="${r.kind}" data-id="${esc(r.id)}" ${r.sub != null ? `data-sub="${esc(r.sub)}"` : ''}
                data-project="${esc(r.projectId ?? '')}" ${r.ideaId ? `data-idea="${esc(r.ideaId)}"` : ''}>
-    ${check}<span class="tw-text">${esc(r.title)}</span>${rec}${carry}${sub}${chip}${eff}${due}${more}</div>`;
+    ${check}<span class="tw-text">${esc(r.title)}</span>${ext}${rec}${carry}${sub}${chip}${eff}${due}${more}</div>`;
 }
 
 function _foldOpen(id, n) {                       // «Sin fecha» y «Más adelante»: abiertas si son pocas; si no, la persona decide y se recuerda
@@ -669,6 +679,28 @@ const TaskOps = {
   },
 };
 
+/** Notas y enlace de una tarea (p. ej. el correo del que salió). */
+async function editTaskDetails(id, reload) {
+  const t = await db.tasks.get(id);
+  if (!t) return;
+  showModal('📝 Notas y enlace', `
+    <div class="modal-body">
+      <div class="form-group"><label class="form-label">${esc(t.title)}</label>
+        <textarea class="form-textarea" id="tdNotes" rows="4" maxlength="5000" placeholder="Contexto, qué falta, a quién preguntar…">${esc(t.notes || '')}</textarea></div>
+      <div class="form-group"><label class="form-label">Enlace <span class="form-hint">(correo, documento, página…)</span></label>
+        <input class="form-input" id="tdLink" type="url" placeholder="https://…" value="${esc(t.link || '')}"></div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-ghost" id="tdCancel">Cancelar</button><button class="btn btn-primary" id="tdSave">Guardar</button></div>`);
+  focusField($('tdNotes'));
+  $('tdCancel').addEventListener('click', closeModal);
+  $('tdSave').addEventListener('click', async () => {
+    const raw = $('tdLink').value.trim(), link = Tasks.cleanLink(raw);
+    if (raw && !link) { showToast('El enlace debe empezar por http:// o https://', 'error'); return; }
+    await dbWrite(() => db.tasks.update(id, { notes: Tasks.cleanNotes($('tdNotes').value), link }));
+    closeModal(); showToast('Guardado ✓', 'success'); reload?.();
+  });
+}
+
 function _taskMenu(anchor, row, reload) {
   const kind = row.dataset.kind, id = row.dataset.id, sub = row.dataset.sub;
   const numId = kind === 'task' ? +id : id;
@@ -691,6 +723,7 @@ function _taskMenu(anchor, row, reload) {
       { label: 'Cada semana', action: async () => { await dbWrite(() => Tasks.setRecurrence(numId, { freq: 'weekly', interval: 1 })); reload(); } },
       { label: 'Cada 2 semanas', action: async () => { await dbWrite(() => Tasks.setRecurrence(numId, { freq: 'weekly', interval: 2 })); reload(); } },
       { label: 'Cada mes',   action: async () => { await dbWrite(() => Tasks.setRecurrence(numId, { freq: 'monthly', interval: 1 })); reload(); } }]) });
+    items.push({ label: 'Notas y enlace…', action: () => editTaskDetails(numId, reload) });
     items.push({ label: 'Eliminar tarea', danger: true, action: async () => {
       const t = await db.tasks.get(numId);
       await dbWrite(() => Tasks.remove(numId));
@@ -770,6 +803,7 @@ function _wireToday(d, overdueTasks) {
     const kind = row.dataset.kind, id = +row.dataset.id;
     const act = e.target.closest('[data-act]')?.dataset.act;
 
+    if (act === 'link') return;                                          // un enlace se abre solo: no hay que tratar el clic como un clic en la fila
     if (act === 'done') {
       if (row.classList.contains('tw-done-now')) return;              // un segundo clic no debe completarla dos veces (¡ni crear dos repeticiones!)
       row.classList.add('tw-done-now');                               // se ve hecha al instante; la lista se actualiza justo después

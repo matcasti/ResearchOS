@@ -133,18 +133,24 @@ const TOOLS = [
     schema: { type: 'object', required: ['text'], properties: { text: str('Texto a buscar') } }, run: (s, a) => search(s, a.text) },
   { name: 'researchos_add_task', description: 'Propone una tarea nueva. Los nombres de proyecto/persona se resuelven en la app.',
     schema: { type: 'object', required: ['title'], properties: { title: str('Título'), due: str('Fecha AAAA-MM-DD'), project: str('Nombre o uid del proyecto'), priority: { type: 'string', enum: ['Alta', 'Media', 'Baja'] },
-      assignee: str('Persona de la que se espera la tarea'), repeat: str('daily | weekly | monthly'), minutes: { type: 'number' }, plan_date: str('Día en que se hará, AAAA-MM-DD'), ...WAIT } },
-    write: (s, a) => [{ op: 'add', type: 'task', set: clean({ title: a.title, due: a.due, project: a.project, priority: a.priority, assignee: a.assignee, repeat: a.repeat, minutes: a.minutes, planDate: a.plan_date }) }] },
+      assignee: str('Persona de la que se espera la tarea'), repeat: str('daily | weekly | monthly'), minutes: { type: 'number' }, plan_date: str('Día en que se hará, AAAA-MM-DD'), notes: str('Contexto de la tarea'), link: str('Enlace http(s) al correo, documento o página de origen'),
+      source: str('Origen estable, p. ej. gmail:<id del hilo>. Si ya entró desde ahí, la app lo omite (no se duplica)'), ...WAIT } },
+    write: (s, a) => [{ op: 'add', type: 'task', set: clean({ title: a.title, due: a.due, project: a.project, priority: a.priority, assignee: a.assignee, repeat: a.repeat, minutes: a.minutes, planDate: a.plan_date, notes: a.notes, link: a.link, source: a.source }) }] },
   { name: 'researchos_update_task', description: 'Propone modificar una tarea existente (por uid o título). Pon null en un campo para vaciarlo.',
     schema: { type: 'object', required: ['task'], properties: { task: str('uid (o sus 8 primeros caracteres) o título exacto'), title: str('Nuevo título'), due: str('AAAA-MM-DD o null'), priority: str('Alta | Media | Baja | null'),
       project: str('Proyecto o null'), assignee: str('Persona o null'), repeat: str('daily | weekly | monthly | null'), minutes: { type: 'number' }, plan_date: str('AAAA-MM-DD o null'), done: { type: 'boolean' }, ...WAIT } },
     write: (s, a) => [{ op: 'update', type: 'task', uid: find(s.tasks, a.task, 'title', 'tarea').uid, set: clean({ title: a.title, due: a.due, priority: a.priority, project: a.project, assignee: a.assignee, repeat: a.repeat, minutes: a.minutes, planDate: a.plan_date, done: a.done }) }] },
-  { name: 'researchos_complete_task', description: 'Propone marcar una tarea como hecha (por uid o título).',
-    schema: { type: 'object', required: ['task'], properties: { task: str('uid (o sus 8 primeros caracteres) o título exacto'), ...WAIT } },
-    write: (s, a) => [{ op: 'complete', type: 'task', uid: find(s.tasks.filter(t => !t.done), a.task, 'title', 'tarea abierta').uid }] },
+  { name: 'researchos_complete_task', description: 'Propone marcar una tarea como hecha: por uid, por título o por el origen con el que entró (source).',
+    schema: { type: 'object', properties: { task: str('uid (o sus 8 primeros caracteres) o título exacto'), source: str('Origen con el que se creó, p. ej. gmail:<id del hilo>'), ...WAIT } },
+    write: (s, a) => [a.source && !a.task ? { op: 'complete', type: 'task', source: a.source } : { op: 'complete', type: 'task', uid: find(s.tasks.filter(t => !t.done), a.task, 'title', 'tarea abierta').uid }] },
   { name: 'researchos_add_idea', description: 'Propone una idea nueva para la bandeja de ideas.',
-    schema: { type: 'object', required: ['title'], properties: { title: str('Título'), content: str('Texto (Markdown)'), tags: { type: 'array', items: { type: 'string' } }, project: str('Proyecto'), ...WAIT } },
-    write: (s, a) => [{ op: 'add', type: 'idea', set: clean({ title: a.title, content: a.content, tags: a.tags, project: a.project }) }] },
+    schema: { type: 'object', required: ['title'], properties: { title: str('Título'), content: str('Texto (Markdown)'), tags: { type: 'array', items: { type: 'string' } }, project: str('Proyecto'), source: str('Origen estable, p. ej. gmail:<id>'), ...WAIT } },
+    write: (s, a) => [{ op: 'add', type: 'idea', set: clean({ title: a.title, content: a.content, tags: a.tags, project: a.project, source: a.source }) }] },
+  { name: 'researchos_add_meeting', description: 'Propone una reunión (p. ej. un evento del calendario) con fecha, hora y duración.',
+    schema: { type: 'object', required: ['title', 'date'], properties: { title: str('Título'), date: str('Fecha AAAA-MM-DD (hora local)'), time: str('Hora de inicio HH:MM'), duration: { type: 'number', description: 'Minutos' },
+      participants: str('Nombres separados por comas'), project: str('Proyecto'), agreements: str('Notas / acuerdos'), source: str('Origen estable, p. ej. gcal:<id del evento>'),
+      action_items: { type: 'array', items: { type: 'string' }, description: 'Próximos pasos' }, ...WAIT } },
+    write: (s, a) => [{ op: 'add', type: 'meeting', set: clean({ title: a.title, date: a.date, time: a.time, duration: a.duration, participants: a.participants, project: a.project, agreements: a.agreements, source: a.source, addActionItems: a.action_items }) }] },
   { name: 'researchos_propose_changes', description: 'Envía un lote de operaciones con el formato completo de AGENTS.md (add/update/complete/delete sobre task, idea, project, meeting, person). Úsalo para varios cambios a la vez o para proyectos y reuniones.',
     schema: { type: 'object', required: ['ops'], properties: { ops: { type: 'array', items: { type: 'object' }, description: 'Operaciones, ver AGENTS.md' }, note: str('Explicación breve para la persona que revisa'), ...WAIT } },
     write: (s, a) => a.ops },
@@ -210,14 +216,15 @@ function parseArgs(argv) {
 }
 const ALIAS = { resumen: 'overview', overview: 'overview', tareas: 'tasks', tasks: 'tasks', proyectos: 'projects', projects: 'projects', ideas: 'ideas', reuniones: 'meetings', meetings: 'meetings',
   personas: 'people', people: 'people', buscar: 'search', search: 'search', 'añadir-tarea': 'add-task', 'anadir-tarea': 'add-task', 'add-task': 'add-task', completar: 'complete', complete: 'complete', done: 'complete',
-  modificar: 'update', update: 'update', borrar: 'delete', delete: 'delete', 'nueva-idea': 'add-idea', 'add-idea': 'add-idea', aplicar: 'apply', apply: 'apply', resultado: 'result', result: 'result',
+  modificar: 'update', update: 'update', borrar: 'delete', delete: 'delete', 'nueva-idea': 'add-idea', 'add-idea': 'add-idea', 'nueva-reunion': 'add-meeting', 'add-meeting': 'add-meeting', aplicar: 'apply', apply: 'apply', resultado: 'result', result: 'result',
   schema: 'schema', mcp: 'mcp', ayuda: 'help', help: 'help' };
 const HELP = `ResearchOS — herramienta para asistentes de IA
 Uso: node tools/researchos.js [--dir CARPETA] <comando> [opciones]
 
 Lectura   resumen · tareas [--hasta atrasadas|hoy|semana|sin-fecha|AAAA-MM-DD] [--proyecto X] [--buscar T] [--todas] · proyectos · ideas · reuniones · personas · buscar <texto>
-Cambios   añadir-tarea "título" [--fecha F] [--proyecto P] [--prioridad Alta|Media|Baja] [--persona N] [--repite weekly] [--minutos 30]
-          completar <uid|título> · modificar <uid|título> [--titulo T] [--fecha F|null] [--prioridad P] [--proyecto P] [--persona N] [--hecha true|false]
+Cambios   añadir-tarea "título" [--fecha F] [--proyecto P] [--prioridad Alta|Media|Baja] [--persona N] [--repite weekly] [--minutos 30] [--notas T] [--enlace URL] [--origen gmail:ID]
+          nueva-reunion "título" [--fecha F] [--hora HH:MM] [--duracion 60] [--participantes A,B] [--proyecto P] [--origen gcal:ID]
+          completar <uid|título> (o --origen gmail:ID) · modificar <uid|título> [--titulo T] [--fecha F|null] [--prioridad P] [--proyecto P] [--persona N] [--hecha true|false]
           borrar <uid|título> · nueva-idea "título" [--texto T] [--etiquetas a,b] [--proyecto P] · aplicar <lote.json>
 Resultado resultado <archivo>   ·   cualquier cambio acepta --esperar [segundos] para esperar la respuesta de la app
 Integración  mcp (servidor MCP por stdio) · schema --formato openai|anthropic|mcp (definiciones de funciones)
@@ -247,9 +254,10 @@ async function cli(argv) {
     if (['projects', 'ideas', 'meetings', 'people'].includes(cmd)) { const r = listOther(s, cmd, { query: opt.buscar }); out(r, r => r.map(x => `${x.title || x.name}${x.date ? ` · ${x.date}` : ''}${x.column ? ` · ${x.column}` : ''}${x.project ? ` — ${x.project}` : ''} (${x.uid.slice(0, 8)})`).join('\n') || '(ninguno)'); return 0; }
     if (cmd === 'search') { const r = search(s, text); out(r, r => Object.entries(r).map(([k, v]) => `${k}: ${v.length}`).join(' · ') + '\n' + r.tasks.map(taskLine).join('\n')); return 0; }
     let ops;
-    if (cmd === 'add-task') ops = [{ op: 'add', type: 'task', set: set({ title: text, due: opt.fecha, project: opt.proyecto, priority: opt.prioridad, assignee: opt.persona, repeat: opt.repite, minutes: opt.minutos && +opt.minutos, planDate: opt.planificada }) }];
-    else if (cmd === 'add-idea') ops = [{ op: 'add', type: 'idea', set: set({ title: text, content: opt.texto, tags: opt.etiquetas && String(opt.etiquetas).split(','), project: opt.proyecto }) }];
-    else if (cmd === 'complete') ops = [{ op: 'complete', type: 'task', uid: find(s.tasks.filter(t => !t.done), text, 'title', 'tarea abierta').uid }];
+    if (cmd === 'add-task') ops = [{ op: 'add', type: 'task', set: set({ title: text, due: opt.fecha, project: opt.proyecto, priority: opt.prioridad, assignee: opt.persona, repeat: opt.repite, minutes: opt.minutos && +opt.minutos, planDate: opt.planificada, notes: opt.notas, link: opt.enlace, source: opt.origen }) }];
+    else if (cmd === 'add-meeting') ops = [{ op: 'add', type: 'meeting', set: set({ title: text, date: opt.fecha || s.today, time: opt.hora, duration: opt.duracion && +opt.duracion, participants: opt.participantes, project: opt.proyecto, agreements: opt.notas, source: opt.origen }) }];
+    else if (cmd === 'add-idea') ops = [{ op: 'add', type: 'idea', set: set({ title: text, content: opt.texto, tags: opt.etiquetas && String(opt.etiquetas).split(','), project: opt.proyecto, source: opt.origen }) }];
+    else if (cmd === 'complete') ops = [opt.origen && !text ? { op: 'complete', type: 'task', source: opt.origen } : { op: 'complete', type: 'task', uid: find(s.tasks.filter(t => !t.done), text, 'title', 'tarea abierta').uid }];
     else if (cmd === 'delete') ops = [{ op: 'delete', type: 'task', uid: find(s.tasks, text, 'title', 'tarea').uid }];
     else if (cmd === 'update') ops = [{ op: 'update', type: 'task', uid: find(s.tasks, text, 'title', 'tarea').uid,
       set: set({ title: opt.titulo, due: opt.fecha, priority: opt.prioridad, project: opt.proyecto, assignee: opt.persona, repeat: opt.repite, minutes: opt.minutos && +opt.minutos, planDate: opt.planificada, done: opt.hecha === undefined ? undefined : opt.hecha !== 'false' }) }];

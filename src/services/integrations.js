@@ -312,7 +312,7 @@ async function enhanceSettings() {
     $('icsCancel').addEventListener('click', closeModal);
     $('icsOk').addEventListener('click', async () => {
       const now = new Date().toISOString();
-      await dbWrite(() => db.meetings.bulkAdd(fresh.map(ev => ({ title: ev.title, date: ev.date, participants: '', projectId: null, agreements: '', actionItems: [], createdAt: now, updatedAt: now }))));
+      await dbWrite(() => db.meetings.bulkAdd(fresh.map(ev => ({ title: ev.title, date: ev.date, time: ev.time || null, duration: ev.duration || null, participants: '', projectId: null, agreements: '', actionItems: [], createdAt: now, updatedAt: now }))));
       closeModal(); showToast(`${fresh.length} evento(s) importado(s) ✓`, 'success'); renderSettings();
     });
   });

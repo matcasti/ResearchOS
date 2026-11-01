@@ -126,6 +126,15 @@ db.version(5).stores({
 const SYNC_TABLES = ['projects', 'ideas', 'snippets', 'snippetCollections', 'resources', 'collaborators',
                      'kanbanColumns', 'submissions', 'meetings', 'references', 'tasks'];
 
+/** «HH:MM» válido (00:00–23:59) o null. */
+function timeOrNull(v) { const m = /^(\d{1,2}):(\d{2})$/.exec(String(v ?? '').trim()); return m && +m[1] < 24 && +m[2] < 60 ? `${m[1].padStart(2, '0')}:${m[2]}` : null; }
+/** Minutos enteros de 5 a 1440, o null (duración de una reunión). */
+function durationOrNull(v) { const n = Math.round(+v); return Number.isFinite(n) && n >= 5 ? Math.min(1440, n) : null; }
+/** «10:00» + 90 → «11:30» (se queda en el mismo día). */
+function addMinutesToTime(t, min) { const [h, m] = t.split(':').map(Number), x = Math.min(23 * 60 + 59, h * 60 + m + min); return `${String(Math.floor(x / 60)).padStart(2, '0')}:${String(x % 60).padStart(2, '0')}`; }
+/** «10:00–11:30» (o «10:00» sin duración), o '' si la reunión no tiene hora. */
+function meetingWhen(m) { return m?.time ? (m.duration ? `${m.time}–${addMinutesToTime(m.time, m.duration)}` : m.time) : ''; }
+
 /** Hash FNV-1a de 32 bits (hex). Sirve para identidades deterministas, no criptográficas. */
 function _fnv(str, seed = 0x811c9dc5) {
   let h = seed >>> 0;
@@ -245,7 +254,13 @@ const Tasks = {
   },
   /** Minutos enteros entre 1 y 1440 (24 h), o null. */
   cleanEffort(m) { const n = Math.round(+m); return Number.isFinite(n) && n >= 1 ? Math.min(1440, n) : null; },
-  async add({ title, due = null, projectId = null, ideaId = null, areaId = null, priority = null, assigneeId = null, recurrence = null, effort = null, planDate = null }) {
+  /** Texto de notas (hasta 5 000 caracteres) o ''. */
+  cleanNotes(v) { return String(v ?? '').trim().slice(0, 5000); },
+  /** Solo enlaces http(s) válidos (nunca javascript:, data:…), o null. */
+  cleanLink(v) { const s = String(v ?? '').trim(); try { const u = new URL(s); return /^https?:$/.test(u.protocol) && s.length <= 2000 ? u.href : null; } catch { return null; } },
+  /** Identificador del origen de un dato traído de fuera («gmail:18c3…», «gcal:abc»): sirve para no duplicarlo si se vuelve a proponer. */
+  cleanSource(v) { return String(v ?? '').trim().replace(/\s+/g, ' ').slice(0, 200); },
+  async add({ title, due = null, projectId = null, ideaId = null, areaId = null, priority = null, assigneeId = null, recurrence = null, effort = null, planDate = null, notes = '', link = null, source = '' }) {
     const text = String(title ?? '').trim();
     if (!text) return null;
     const now = new Date().toISOString();
@@ -253,7 +268,7 @@ const Tasks = {
     return db.tasks.add({ title: text, done: false, doneAt: null, due: isoDateOrNull(due) || (rec ? localDateISO() : null),
       projectId: projectId ?? null, ideaId: ideaId ?? null, areaId: projectId ? null : (areaId ?? null),
       priority: priority || null, assigneeId: assigneeId ?? null, recurrence: rec, effort: Tasks.cleanEffort(effort), planDate: isoDateOrNull(planDate),
-      createdAt: now, updatedAt: now });
+      notes: Tasks.cleanNotes(notes), link: Tasks.cleanLink(link), source: Tasks.cleanSource(source), createdAt: now, updatedAt: now });
   },
   /**
    * Marca como hecha (o reabre). Si la tarea es recurrente, al completarla nace la siguiente ocurrencia.
@@ -283,7 +298,7 @@ const Tasks = {
   async setDue(id, due)   { await db.tasks.update(id, { due: isoDateOrNull(due), updatedAt: new Date().toISOString() }); },
   async setEffort(id, minutes) { await db.tasks.update(id, { effort: Tasks.cleanEffort(minutes), updatedAt: new Date().toISOString() }); },
   async setPlan(id, date) { await db.tasks.update(id, { planDate: isoDateOrNull(date), updatedAt: new Date().toISOString() }); },
-  async remove(id)        { await db.tasks.delete(id); },
+  async remove(id)        { const t = await db.tasks.get(id); await db.tasks.delete(id); if (t?.source) window.Assistant?.rememberSource(t.source); },   // lo borrado a mano no se vuelve a proponer
   /** Tareas de un proyecto (type='project') o de una idea (type='idea'), en orden de creación. */
   async forEntity(type, id) {
     const col = type === 'project' ? 'projectId' : 'ideaId';
@@ -547,7 +562,7 @@ function sanitizeBackup(raw) {
   }));
   out.ideas = rows('ideas').map(r => withId({
     ...r, ...stamps(r), title: str(r.title), content: str(r.content), tags: strs(r.tags),
-    projectId: num(r.projectId), projectIds: nums(r.projectIds),
+    projectId: num(r.projectId), projectIds: nums(r.projectIds), source: Tasks.cleanSource(r.source),
     deadline: isoDateOrNull(r.deadline) }));
   out.snippets = rows('snippets').map(r => withId({
     ...r, ...stamps(r), title: str(r.title), code: str(r.code),
@@ -555,6 +570,7 @@ function sanitizeBackup(raw) {
     projectId: num(r.projectId), projectIds: nums(r.projectIds), collectionId: num(r.collectionId) }));
   out.meetings = rows('meetings').map(r => withId({
     ...r, ...stamps(r), title: str(r.title), date: isoDateOrNull(r.date) || localDateISO(),
+    time: timeOrNull(r.time), duration: durationOrNull(r.duration), source: Tasks.cleanSource(r.source),
     projectId: num(r.projectId), actionItems: items(r.actionItems) }));
   out.references = rows('references').map(r => withId({
     ...r, ...stamps(r), title: str(r.title), tags: strs(r.tags), projectId: num(r.projectId),
@@ -565,6 +581,7 @@ function sanitizeBackup(raw) {
   const mkTask = (t, extra) => ({ title: str(t.title ?? t.text), done: !!t.done, doneAt: t.done ? (str(t.doneAt) || now) : null,
     due: isoDateOrNull(t.due), projectId: null, ideaId: null, areaId: num(t.areaId),
     assigneeId: num(t.assigneeId), recurrence: Tasks.cleanRecurrence(t.recurrence), effort: Tasks.cleanEffort(t.effort), planDate: isoDateOrNull(t.planDate),
+    notes: Tasks.cleanNotes(t.notes), link: Tasks.cleanLink(t.link), source: Tasks.cleanSource(t.source),
     priority: ['Alta', 'Media', 'Baja'].includes(t.priority) ? t.priority : null, ...(t.uid !== undefined ? { uid: t.uid } : {}), ...stamps(t), ...extra });
   if (Array.isArray(raw.tasks)) {
     out.tasks = rows('tasks').map(r => withId(mkTask(r, { projectId: num(r.projectId), ideaId: num(r.ideaId) })));
@@ -1000,10 +1017,17 @@ async function buildICS() {
   const who = Object.fromEntries(collabs.map(c => [c.id, c.name]));
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//ResearchOS//ES', 'CALSCALE:GREGORIAN', 'X-WR-CALNAME:ResearchOS'];
-  const event = ({ uid, date, summary, desc = '', rrule = '' }) => {
-    const end = new Date(date + 'T12:00:00'); end.setDate(end.getDate() + 1);
-    lines.push('BEGIN:VEVENT', `UID:${uid}@researchos`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${_icsDate(date)}`,
-      `DTEND;VALUE=DATE:${_icsDate(localDateISO(end))}`, `SUMMARY:${_icsEsc(summary)}`);
+  const event = ({ uid, date, summary, desc = '', rrule = '', time = null, duration = null, url = '' }) => {
+    if (time) {                                            // reunión con hora: evento con hora (hora local «flotante») y duración
+      const t = x => x.replace(':', '') + '00';
+      lines.push('BEGIN:VEVENT', `UID:${uid}@researchos`, `DTSTAMP:${stamp}`, `DTSTART:${_icsDate(date)}T${t(time)}`,
+        `DTEND:${_icsDate(date)}T${t(addMinutesToTime(time, duration || 60))}`, `SUMMARY:${_icsEsc(summary)}`);
+    } else {
+      const end = new Date(date + 'T12:00:00'); end.setDate(end.getDate() + 1);
+      lines.push('BEGIN:VEVENT', `UID:${uid}@researchos`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${_icsDate(date)}`,
+        `DTEND;VALUE=DATE:${_icsDate(localDateISO(end))}`, `SUMMARY:${_icsEsc(summary)}`);
+    }
+    if (url) lines.push(`URL:${url}`);
     if (desc) lines.push(`DESCRIPTION:${_icsEsc(desc)}`);
     if (rrule) lines.push(rrule);
     lines.push('TRANSP:TRANSPARENT', 'END:VEVENT');
@@ -1014,10 +1038,10 @@ async function buildICS() {
     const r = t.recurrence;
     const rrule = r ? `RRULE:FREQ=${r.freq.toUpperCase()};INTERVAL=${r.interval}${r.until ? `;UNTIL=${_icsDate(r.until)}` : ''}` : '';
     event({ uid: `t${t.id}`, date: t.due, summary: `${t.assigneeId ? '⏳' : '☐'} ${t.title}`, rrule,
-            desc: t.assigneeId ? `Esperando a ${who[t.assigneeId] || 'otra persona'}` : '' });
+            desc: [t.assigneeId ? `Esperando a ${who[t.assigneeId] || 'otra persona'}` : '', t.notes || ''].filter(Boolean).join(' · '), url: t.link || '' });
   }
   for (const m of meetings.filter(m => m.date))
-    event({ uid: `m${m.id}`, date: m.date, summary: `🗓 ${m.title}`, desc: m.participants ? `Participantes: ${m.participants}` : '' });
+    event({ uid: `m${m.id}`, date: m.date, time: m.time, duration: m.duration, summary: `🗓 ${m.title}`, desc: m.participants ? `Participantes: ${m.participants}` : '' });
   lines.push('END:VCALENDAR');
   return lines.map(_icsFold).join('\r\n') + '\r\n';
 }
@@ -1033,19 +1057,23 @@ function parseICS(text, { from = localDateISO(), to = null, cap = 400 } = {}) {
   const blocks = unfolded.split(/BEGIN:VEVENT/i).slice(1).map(b => b.split(/END:VEVENT/i)[0]);
   const prop = (b, name) => { const m = new RegExp(`^${name}([;:][^\\r\\n]*)$`, 'im').exec(b); return m ? m[1] : null; };
   const unesc = v => v.replace(/\\n/gi, ' ').replace(/\\([,;\\])/g, '$1').trim();
+  // → { date, time|null }: fecha local y, si el evento tiene hora, «HH:MM» (UTC se pasa a hora local; la hora con zona o flotante se toma tal cual)
   const parseDT = raw => {
     const m = /(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/.exec(raw);
     if (!m) return null;
-    if (m[7]) { const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])); return localDateISO(d); }   // UTC → fecha local
-    return `${m[1]}-${m[2]}-${m[3]}`;
+    if (m[7]) { const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])); return { date: localDateISO(d), time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }; }
+    return { date: `${m[1]}-${m[2]}-${m[3]}`, time: m[4] != null ? `${m[4]}:${m[5]}` : null };
   };
   const WD = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
   const events = [];
   for (const b of blocks) {
     const sm = prop(b, 'SUMMARY'); const ds = prop(b, 'DTSTART');
     if (!sm || !ds) continue;
-    const start = parseDT(ds.split(':').pop());
-    if (!start) continue;
+    const dt = parseDT(ds.split(':').pop());
+    if (!dt) continue;
+    const start = dt.date;
+    const de = prop(b, 'DTEND'), end = de && dt.time ? parseDT(de.split(':').pop()) : null;      // duración: solo si ambas puntas tienen hora y caen el mismo día
+    const duration = end?.time && end.date === dt.date ? durationOrNull((+end.time.slice(0, 2) * 60 + +end.time.slice(3)) - (+dt.time.slice(0, 2) * 60 + +dt.time.slice(3))) : null;
     const title = unesc(sm.slice(sm.indexOf(':') + 1));
     const rr = prop(b, 'RRULE');
     const rule = rr ? Object.fromEntries(rr.slice(1).split(';').map(kv => kv.split('='))) : null;
@@ -1080,10 +1108,10 @@ function parseICS(text, { from = localDateISO(), to = null, cap = 400 } = {}) {
         else cur.setMonth(cur.getMonth() + interval);
       }
     }
-    for (const date of dates) if (date >= from && date <= limit) events.push({ title, date });
+    for (const date of dates) if (date >= from && date <= limit) events.push({ title, date, time: dt.time, duration });
     if (events.length >= cap) break;
   }
-  return events.sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)).slice(0, cap);
+  return events.sort((a, b) => a.date.localeCompare(b.date) || (a.time || '').localeCompare(b.time || '') || a.title.localeCompare(b.title)).slice(0, cap);
 }
 
 // -- Meetings helpers -----------------------------------------

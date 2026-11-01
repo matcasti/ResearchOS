@@ -88,7 +88,7 @@ test.describe('Asistente de IA', () => {
     await page.keyboard.press('Escape');
     await page.evaluate(() => navigate('settings'));
     await expect(page.locator('#assistantDesc')).toBeVisible();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1 && document.getElementById('assistantSection').scrollWidth <= document.getElementById('assistantSection').clientWidth + 1)).toBe(true);
+    await expect.poll(() => page.evaluate(() => { const s = document.getElementById('assistantSection'); return !!s && document.documentElement.scrollWidth <= innerWidth + 1 && s.scrollWidth <= s.clientWidth + 1; })).toBe(true);     // Ajustes monta sus secciones de forma asíncrona
     await page.setViewportSize({ width: 1280, height: 720 });
     expect(await tarea(page, 'Enviar borrador')).toBeUndefined();                          // nada se aplica sin que la persona lo acepte
     expect(JSON.parse(await leer(page, 'resultados/lote-1.json')).status).toBe('pending');
@@ -252,5 +252,80 @@ test.describe('Asistente de IA', () => {
     await expect(page.locator('#assistantOff')).toBeVisible();
     expect(await page.evaluate(() => window.__selectores)).toBe(2);
     await expect(page.locator('#assistantSection .folder-shared')).toContainText('Sincronización');
+  });
+
+  test('lo que viene de fuera no se duplica: «source», enlaces, notas y reuniones con hora; lo descartado o borrado no vuelve', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await activar(page);
+    const [d2, d3] = await page.evaluate(() => [addDaysISO(2), addDaysISO(3)]);
+    const res = async n => JSON.parse(await leer(page, 'resultados/' + n));
+    await page.evaluate(() => Assistant.setMode('auto'));
+    await dejar(page, 'o-1.json', { format: TIPO, author: 'skill', ops: [
+      { op: 'add', type: 'task', set: { title: 'Responder a la editora', due: d2, project: 'Paper Alfa', notes: 'Pide la versión final', link: 'https://mail.google.com/mail/u/0/#inbox/18c3', source: 'gmail:18c3' } },
+      { op: 'add', type: 'meeting', set: { title: 'Seminario del lab', date: d3, time: '10:00', duration: 90, participants: 'Dra. Vega', source: 'gcal:evt1' } },
+      { op: 'add', type: 'task', set: { title: 'Enlace malo', link: 'javascript:alert(1)' } },
+      { op: 'add', type: 'meeting', set: { title: 'Hora mala', date: d3, time: '25:99' } },
+    ] });
+    const tarea1 = await tarea(page, 'Responder a la editora');
+    expect(tarea1).toMatchObject({ notes: 'Pide la versión final', link: 'https://mail.google.com/mail/u/0/#inbox/18c3', source: 'gmail:18c3' });
+    expect(await page.evaluate(() => db.meetings.where('title').equals('Seminario del lab').first().then(m => [m.time, m.duration, m.source]))).toEqual(['10:00', 90, 'gcal:evt1']);
+    const o1 = await res('o-1.json');
+    expect(o1.ops.map(o => o.status)).toEqual(['applied', 'applied', 'error', 'error']);
+    expect(o1.ops[2].error).toContain('link');                                              // un enlace que no es http(s) se rechaza
+    expect(o1.ops[3].error).toContain('hora no válida');
+    expect(await tarea(page, 'Enlace malo')).toBeUndefined();
+
+    await dejar(page, 'o-2.json', { format: TIPO, author: 'skill', ops: [                  // repasar el correo y el calendario otra vez no duplica nada
+      { op: 'add', type: 'task', set: { title: 'Responder a la editora (otra vez)', source: 'gmail:18c3' } },
+      { op: 'add', type: 'meeting', set: { title: 'Seminario del lab', date: d3, source: 'gcal:evt1' } },
+    ] });
+    const o2 = await res('o-2.json');
+    expect(o2.ops.map(o => o.status)).toEqual(['skipped', 'skipped']);
+    expect(o2.ops[0].reason).toContain('mismo origen');
+    expect(o2.ops[0].uid).toBe(tarea1.uid);                                                 // y le dice cuál ya existía
+    expect(await page.evaluate(() => Promise.all([db.tasks.filter(t => t.source === 'gmail:18c3').count(), db.meetings.filter(m => m.source === 'gcal:evt1').count()]))).toEqual([1, 1]);
+
+    await dejar(page, 'o-3.json', { format: TIPO, author: 'skill', ops: [{ op: 'complete', type: 'task', source: 'gmail:18c3' }] });     // se localiza por origen, sin uid
+    expect((await tarea(page, 'Responder a la editora')).done).toBe(true);
+    await dejar(page, 'o-3b.json', { format: TIPO, author: 'skill', ops: [{ op: 'complete', type: 'task', source: 'gmail:no-existe' }] });
+    expect((await res('o-3b.json')).ops[0].error).toContain('no hay tarea con el origen');
+
+    await page.evaluate(() => Assistant.setMode('review'));                                  // lo que descartas no vuelve a preguntarse
+    await dejar(page, 'o-4.json', { format: TIPO, author: 'skill', ops: [{ op: 'add', type: 'task', set: { title: 'Cosa descartable', source: 'gmail:zz' } }] });
+    await expect(page.locator('#assistantBar')).toContainText('propone');
+    await page.locator('#assistantDiscardAll').click();
+    await expect(page.locator('#assistantBar')).toHaveCount(0);
+    await dejar(page, 'o-5.json', { format: TIPO, author: 'skill', ops: [{ op: 'add', type: 'task', set: { title: 'Cosa descartable', source: 'gmail:zz' } }] });
+    const o5 = await res('o-5.json');
+    expect(o5.ops[0]).toMatchObject({ status: 'skipped', reason: expect.stringContaining('descartaste') });
+    await expect(page.locator('#assistantBar')).toHaveCount(0);
+
+    await page.evaluate(() => Assistant.setMode('auto'));                                    // y lo que borras a mano, tampoco
+    await dejar(page, 'o-6.json', { format: TIPO, author: 'skill', ops: [{ op: 'add', type: 'task', set: { title: 'Borrable', source: 'gmail:del' } }] });
+    await page.evaluate(async () => { const t = await db.tasks.filter(x => x.source === 'gmail:del').first(); await Tasks.remove(t.id); });
+    await dejar(page, 'o-7.json', { format: TIPO, author: 'skill', ops: [{ op: 'add', type: 'task', set: { title: 'Borrable', source: 'gmail:del' } }] });
+    expect((await res('o-7.json')).ops[0].status).toBe('skipped');
+    expect(await tarea(page, 'Borrable')).toBeUndefined();
+
+    const estado = JSON.parse(await leer(page, 'estado.json'));                              // la IA ve el origen, el enlace y la hora en el estado
+    expect(estado.tasks.find(t => t.title === 'Responder a la editora')).toMatchObject({ source: 'gmail:18c3', link: 'https://mail.google.com/mail/u/0/#inbox/18c3', notes: 'Pide la versión final' });
+    expect(estado.meetings.find(m => m.title === 'Seminario del lab')).toMatchObject({ time: '10:00', duration: 90, source: 'gcal:evt1' });
+    expect(await leer(page, 'AGENTS.md')).toContain('gmail:<id del hilo>');                  // y las instrucciones se lo explican
+
+    await page.evaluate(d => Tasks.add({ title: 'Con origen', due: d, source: 'gmail:abc', link: 'https://example.org/x' }), d2);       // la herramienta lo conoce
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ros-ia-'));
+    await page.evaluate(() => Assistant.syncNow());
+    fs.writeFileSync(path.join(dir, 'estado.json'), await leer(page, 'estado.json'));
+    const env = await R.callTool('researchos_add_meeting', { title: 'Comité', date: d3, time: '15:00', duration: 60, source: 'gcal:evt2', action_items: ['Llevar acta'] }, { dir });
+    const lote = JSON.parse(fs.readFileSync(path.join(dir, env.file), 'utf8'));
+    expect(lote.ops[0]).toEqual({ op: 'add', type: 'meeting', set: { title: 'Comité', date: d3, time: '15:00', duration: 60, source: 'gcal:evt2', addActionItems: ['Llevar acta'] } });
+    await R.callTool('researchos_complete_task', { source: 'gmail:abc' }, { dir });
+    const lotes = fs.readdirSync(path.join(dir, 'cambios')).map(n => [n, JSON.parse(fs.readFileSync(path.join(dir, 'cambios', n), 'utf8'))]);       // el orden de los archivos no importa
+    expect(lotes.map(([, l]) => l.ops[0].op).sort()).toEqual(['add', 'complete']);
+    expect(lotes.find(([, l]) => l.ops[0].op === 'complete')[1].ops[0]).toEqual({ op: 'complete', type: 'task', source: 'gmail:abc' });
+    for (const [n, l] of lotes) await dejar(page, n, l);
+    expect(await page.evaluate(() => db.meetings.where('title').equals('Comité').first().then(m => [m.time, m.duration, m.source, m.actionItems.length]))).toEqual(['15:00', 60, 'gcal:evt2', 1]);
+    expect((await tarea(page, 'Con origen')).done).toBe(true);
   });
 });
