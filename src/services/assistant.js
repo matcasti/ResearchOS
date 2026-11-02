@@ -17,6 +17,7 @@ const ASST_STATE_FORMAT = 'researchos-state/1';
 const ASST_CHANGES_FORMAT = 'researchos-changes/1';
 const ASST_MARK = '<!-- researchos-asistente -->';
 const ASST_MAX_OPS = 200;
+const ASST_API_VERSION = 3;      // sube cuando cambian los campos u operaciones admitidos (estado.json lo publica para que la IA no tenga que probarlos)
 
 // -- referencias por uid (completo o prefijo de 8+) o por nombre ---------------------------------------------------------------
 const _asstRepeat = v => {
@@ -421,7 +422,7 @@ const _asstSettingsStore = {
 async function _asstBuild(type, set, existing) {
   const defs = ASST_FIELDS[type], out = {};
   for (const [k, v] of Object.entries(set)) {
-    if (!defs[k]) throw new Error(`campo «${k}» no admitido en ${ASST_TYPES[type].noun}. Admitidos: ${Object.keys(defs).join(', ')}`);
+    if (!defs[k]) throw new Error(`campo «${k}» no admitido en ${ASST_TYPES[type].noun}. Admitidos: ${Object.keys(defs).join(', ')} (apiVersion ${ASST_API_VERSION})`);
     Object.assign(out, await defs[k](v, existing, set));
   }
   return out;
@@ -676,7 +677,7 @@ const Assistant = {
     const T = new Map(rawTasks.map(t => [t.id, t.title]));
     const blockedBy = t => Tasks.isBlocked(t, byTaskId) ? (t.afterIds || []).map(i => byTaskId.get(i)).filter(x => x && !x.done && !_asstHidden('task', x)).map(x => x.title) : [];
     const state = {
-      format: ASST_STATE_FORMAT, today, weekday: new Date(today + 'T12:00:00').toLocaleDateString('es', { weekday: 'long' }),
+      format: ASST_STATE_FORMAT, apiVersion: ASST_API_VERSION, today, weekday: new Date(today + 'T12:00:00').toLocaleDateString('es', { weekday: 'long' }),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, generated: new Date().toISOString(),
       note: 'Fechas AAAA-MM-DD en hora local. Los campos ausentes están vacíos o en falso. Para cambiar algo lee AGENTS.md y deja un archivo en cambios/.',
       summary: { openTasks: open.length, overdueTasks: open.filter(t => t.due && t.due < today).length, dueToday: open.filter(t => t.due === today).length,
@@ -684,6 +685,7 @@ const Assistant = {
         blockedTasks: open.filter(t => Tasks.isBlocked(t, byTaskId)).length, pausedProjects: projects.filter(p => p.paused && !p.archived).length,
         activeProjects: projects.filter(p => !p.archived).length, archivedProjects: projects.filter(p => p.archived).length, unreadIdeas: ideas.filter(i => i.status === 'unread').length },
       permissions: { fullControl: full, appSettings: Assistant.appSettings() },
+      fields: Object.fromEntries(Object.entries(ASST_TYPES).filter(([, T]) => !T.config || Assistant.appSettings()).map(([k, T]) => [k, { ops: _asstOps(T), set: Object.keys(ASST_FIELDS[k]) }])),      // qué se puede escribir hoy en cada tipo
       me: me && C.get(me) ? C.get(me) : null,                                                // «yo» en la agenda de personas: lo asignado a esta persona no es esperar a nadie
       ...(hiddenCount ? { privacy: 'Hay registros marcados como privados por la persona: no aparecen aquí y no puedes referirte a ellos.' } : {}),
       estimateAccuracy: Tasks.accuracy(rawTasks.filter(t => !_asstHidden('task', t))),
@@ -867,6 +869,7 @@ Una operación \`add\` puede llevar un nombre temporal (\`"id": "p1"\`) y las si
 - Lee primero \`estado.json\` (o \`pendientes.md\`) y no inventes \`uid\`: cópialos.
 - Propón cambios pequeños y explicados en \`note\`; no reorganices todo de golpe.
 - Antes de añadir una tarea, comprueba que no existe ya una igual.
+- \`estado.json\` trae \`apiVersion\` y \`fields\` (las operaciones y campos que la app admite **ahora**, por tipo): consúltalos en lugar de probar. Si un campo que aparece aquí es rechazado como «no admitido», la pestaña de ResearchOS está desactualizada: pide a la persona que la recargue.
 - Un lote no puede modificar lo que ese mismo lote acaba de crear (todavía no tiene \`uid\`): hazlo en un segundo archivo, o localízalo luego por su \`source\`.
 - **Si lo que traes viene de fuera (un correo, un evento del calendario…), pon siempre \`source\`** (p. ej. \`gmail:<id del hilo>\`, \`gcal:<id del evento>\`) y, si existe, \`link\` a la página original. La app **omite** lo que ya entró con ese \`source\` y lo que la persona descartó o borró (así puedes repasar el correo cada día sin duplicar), y te deja completar o modificar sin conocer el \`uid\`: \`{ "op": "complete", "type": "task", "source": "gmail:18c3" }\`. En \`add\`, \`source\` va dentro de \`set\`; en \`update\`/\`complete\`/\`delete\` va al lado de \`op\`.
 - Las reuniones llevan \`date\`, \`time\` (HH:MM, hora local) y \`duration\` (minutos); las tareas pueden llevar \`notes\` (contexto) y \`link\`.
@@ -936,7 +939,7 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
         if (raw.op !== 'complete' && raw.op !== 'delete') {
           const known = ASST_FIELDS[raw.type];
           const bad = Object.keys(it.set).filter(k => !known[k]);
-          if (bad.length) throw new Error(`campo «${bad[0]}» no admitido en ${T.noun}. Admitidos: ${Object.keys(known).join(', ')}`);
+          if (bad.length) throw new Error(`campo «${bad[0]}» no admitido en ${T.noun}. Admitidos: ${Object.keys(known).join(', ')} (apiVersion ${ASST_API_VERSION}; si ResearchOS se actualizó hace poco, hay que recargar su pestaña para que use la versión nueva)`);
           if (raw.op === 'add' && !it.set[T.key]) throw new Error(`falta ${T.key} en «set»`);
           if (raw.op === 'add' && raw.type === 'snippet' && !it.set.code) throw new Error('falta code en «set»');
           if (raw.op === 'update' && !Object.keys(it.set).length) throw new Error('«set» está vacío');
@@ -1221,3 +1224,38 @@ async function renderAssistantSection() {
   permission('assistantFull', 'full', { title: '¿Dar control total de los datos a la IA?', text: 'Podrá borrar proyectos, personas, reuniones y el resto de tus datos, y con «Aplicar automáticamente» lo hará sin pedirte permiso. Siempre podrás deshacer lo último desde el aviso, pero te conviene tener una copia de seguridad reciente.' });
   permission('assistantConfig', 'config', { title: '¿Dejar que la IA cambie los ajustes de la app?', text: 'Podrá crear, editar y borrar áreas y columnas del tablero, y cambiar etapas de Submissions, campos por tipo de proyecto, horas útiles y apariencia.' });
 }
+
+/**
+ * Pestaña desactualizada: la app que lee `cambios/` es la que está abierta, así que tras actualizar ResearchOS hay que recargarla o la IA
+ * seguirá viendo (y la app validando) los campos de la versión anterior. Se compara la «huella» (ETag o fecha) de los archivos principales.
+ */
+const StaleTab = {
+  FILES: ['src/core/app.js', 'src/core/db.js', 'src/services/assistant.js', 'src/modules/today.js'], base: null, timer: null,
+  async stamp() {
+    const out = [];
+    for (const f of this.FILES) {
+      try { const r = await fetch(f, { method: 'HEAD', cache: 'no-cache' }); out.push(r.headers.get('etag') || r.headers.get('last-modified') || String(r.status)); } catch { return null; }
+    }
+    return out.join('|');
+  },
+  async start() {
+    this.base = await this.stamp();
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') this.check(); });
+    clearInterval(this.timer); this.timer = setInterval(() => this.check(), 5 * 60_000);
+  },
+  async check() {
+    if (!this.base) return false;
+    const now = await this.stamp();
+    if (now && now !== this.base) { this.show(); return true; }
+    return false;
+  },
+  show() {
+    if (document.getElementById('staleBar')) return;
+    const bar = document.createElement('div');
+    bar.id = 'staleBar'; bar.className = 'reload-bar'; bar.setAttribute('role', 'alert');
+    bar.innerHTML = `<span>Hay una versión nueva de ResearchOS. Recarga para usarla (el asistente de IA solo conoce los campos de la versión abierta).</span><button class="btn btn-primary btn-sm" id="staleReload">Recargar</button>`;
+    document.body.appendChild(bar);
+    bar.querySelector('#staleReload').onclick = () => location.reload();
+  },
+};
+window.addEventListener('load', () => setTimeout(() => StaleTab.start().catch(() => {}), 2500));

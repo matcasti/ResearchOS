@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 
 const CHANGES_FORMAT = 'researchos-changes/1';
+const EXPECTED_API = 3;                                                     // versión de campos que esta herramienta conoce (estado.json → apiVersion)
 const fold = s => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 const pad = n => String(n).padStart(2, '0');
 const localDate = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -76,7 +77,8 @@ function overview(s) {
   return { today: s.today, weekday: s.weekday, stateAgeMinutes: s._ageMin, summary: s.summary,
     overdue: late.slice(0, 15).map(t => ({ uid: t.uid, title: t.title, due: t.due, project: t.project })),
     dueToday: s.tasks.filter(t => !t.done && t.due === s.today).map(t => ({ uid: t.uid, title: t.title, project: t.project })),
-    columns: s.columns, permissions: s.permissions, hint: s._ageMin > 30 ? 'El estado tiene más de 30 minutos: la app de ResearchOS probablemente está cerrada; los cambios se aplicarán cuando se abra.' : undefined };
+    apiVersion: s.apiVersion ?? 1, columns: s.columns, permissions: s.permissions,
+    hint: (s.apiVersion ?? 1) < EXPECTED_API ? `La app de ResearchOS que publica este estado es antigua (apiVersion ${s.apiVersion ?? 'sin indicar'}, esta herramienta espera ${EXPECTED_API}): recarga su pestaña en el navegador para que acepte los campos nuevos.` : s._ageMin > 30 ? 'El estado tiene más de 30 minutos: la app de ResearchOS probablemente está cerrada; los cambios se aplicarán cuando se abra.' : undefined };
 }
 function search(s, text) {
   const q = fold(text), hit = r => fold(JSON.stringify(r)).includes(q);
@@ -92,6 +94,14 @@ const KIND_ALIAS = { tarea: 'task', idea: 'idea', proyecto: 'project', paper: 'p
   coleccion: 'collection', 'colección': 'collection', area: 'area', 'área': 'area', columna: 'column', ajuste: 'setting', ajustes: 'setting', settings: 'setting' };
 const kindOf = t => { const k = KINDS[t] ? t : KIND_ALIAS[fold(t)]; if (!k) throw new Error(`tipo «${t}» desconocido (${Object.keys(KINDS).join(', ')})`); return k; };
 /** Cómo señalar un registro en un lote: por el origen con el que entró, o por uid/título. */
+/** Si el estado trae la lista de campos admitidos, avisa antes de enviar uno que la app no conoce (suele ser una pestaña de ResearchOS sin recargar). */
+function checkFields(s, type, set) {
+  const known = s.fields?.[kindOf(type)]?.set;
+  if (!known || !set) return set;
+  const bad = Object.keys(set).filter(k => !known.includes(k));
+  if (bad.length) throw new Error(`la app no admite todavía «${bad[0]}» en ${kindOf(type)} (apiVersion ${s.apiVersion ?? '?'}; admite: ${known.join(', ')}). Si ResearchOS se actualizó hace poco, recarga su pestaña y vuelve a leer el estado.`);
+  return set;
+}
 function refOf(s, type, ref) {
   const [key, label, what] = KINDS[kindOf(type)];
   if (!key) return {};                                                    // los ajustes son un único registro: no hace falta indicar cuál
@@ -173,11 +183,11 @@ const TOOLS = [
     write: (s, a) => [{ op: 'add', type: 'meeting', set: clean({ title: a.title, date: a.date, time: a.time, duration: a.duration, participants: a.participants, project: a.project, agreements: a.agreements, source: a.source, addActionItems: a.action_items }) }] },
   { name: 'researchos_add', description: 'Propone añadir un registro de cualquier tipo (task, idea, project, meeting, person, reference, snippet, collection y, con «Ajustes de la app», area y column) con los campos de AGENTS.md. Es la vía para proyectos y papers (type Paper, submissionStatus, targetVenue…), personas, referencias y snippets.',
     schema: { type: 'object', required: ['type', 'set'], properties: { type: { type: 'string', enum: Object.keys(KINDS) }, set: { type: 'object', description: 'Campos del registro (ver AGENTS.md), p. ej. {"title":"…","type":"Paper","submissionStatus":"enviado"}' }, ...WAIT } },
-    write: (s, a) => [{ op: 'add', type: kindOf(a.type), set: a.set }] },
+    write: (s, a) => [{ op: 'add', type: kindOf(a.type), set: checkFields(s, a.type, a.set) }] },
   { name: 'researchos_update', description: 'Propone modificar un registro existente de cualquier tipo: editar una persona, pasar un paper a otra etapa de Submissions, completar los datos de una referencia… Se indica por uid, nombre/título o por su origen (source). Pon null en un campo para vaciarlo.',
     schema: { type: 'object', required: ['type', 'set'], properties: { type: { type: 'string', enum: Object.keys(KINDS) }, ref: str('uid (o sus 8 primeros caracteres), título/nombre exacto o source. No hace falta para type=setting'),
       set: { type: 'object', description: 'Campos a cambiar, p. ej. {"submissionStatus":"en_revision","targetVenue":"Nature"} o {"role":"Postdoc","followUpDays":14}' }, ...WAIT } },
-    write: (s, a) => [{ op: 'update', type: kindOf(a.type), ...refOf(s, a.type, a.ref), set: a.set }] },
+    write: (s, a) => [{ op: 'update', type: kindOf(a.type), ...refOf(s, a.type, a.ref), set: checkFields(s, a.type, a.set) }] },
   { name: 'researchos_delete', description: 'Propone eliminar un registro. Tareas, ideas, referencias y snippets siempre se pueden proponer (la persona los revisa); proyectos, personas, reuniones y colecciones solo si activó «Control total de los datos» (ver permissions en researchos_overview), y áreas y columnas además «Ajustes de la app». Sin el permiso, la app rechaza la operación.',
     schema: { type: 'object', required: ['type', 'ref'], properties: { type: { type: 'string', enum: Object.keys(KINDS).filter(k => k !== 'setting') }, ref: str('uid, título/nombre exacto o source'), ...WAIT } },
     write: (s, a) => [{ op: 'delete', type: kindOf(a.type), ...refOf(s, a.type, a.ref) }] },

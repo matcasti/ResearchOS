@@ -6,6 +6,11 @@ Todos los cambios relevantes de ResearchOS, de lo más reciente a lo más antigu
 
 ## Sin publicar
 
+### 🔄 Versiones sin confusión (asistente de IA)
+
+- **`estado.json` se describe a sí mismo.** Trae `apiVersion` y `fields`: las operaciones y campos que la app admite en ese momento, por tipo. La IA ya no necesita probar para saber qué existe.
+- **Aviso de pestaña desactualizada.** Como la app que lee `cambios/` es la que está abierta, tras una actualización seguía validando con la lista de campos anterior hasta recargar. Ahora ResearchOS avisa («Hay una versión nueva… Recargar»), el error de «campo no admitido» lo explica y `researchos.js` avisa si la app publica una versión más antigua que la herramienta y no deja enviar campos que la app no conoce.
+
 ### 🧩 Flujo de trabajo más fino (a partir de lo que pidió una IA usando la app)
 
 - **«Yo» y responsable.** Indica quién eres en tu agenda (*Ajustes → Preferencias*): lo asignado a ti deja de aparecer como «esperando a otras personas» (Hoy, planificador, estado de la IA). Las tareas tienen además un **responsable** (quién la hace), distinto de «esperando a» (de quién esperas el resultado).

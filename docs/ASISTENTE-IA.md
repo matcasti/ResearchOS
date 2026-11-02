@@ -205,6 +205,7 @@ Una operación `add` puede llevar un nombre temporal (`"id": "p1"`) y las siguie
 ## Si algo no va
 
 - *«No pasa nada con lo que dejó la IA»*: la pestaña de ResearchOS debe estar abierta y visible (revisa cada ~5 s); si el navegador pide permiso para la carpeta, pulsa **Reactivar** en Ajustes.
+- *La IA recibe «campo no admitido» con un campo que sí existe* (p. ej. `owner`, `after`, `rank`): la pestaña de ResearchOS que lee `cambios/` sigue siendo la versión anterior. **Recárgala** (la app avisa con una barra «Hay una versión nueva» cuando detecta que cambió). `estado.json` trae `apiVersion` y `fields` —lo que la app admite ahora, por tipo— y `researchos.js resumen` avisa si la app es más antigua que la herramienta.
 - *`estado.json` está viejo*: la app solo lo reescribe mientras está abierta. `researchos.js resumen` avisa si tiene más de 30 minutos.
 - *Un lote aparece con errores*: lee `resultados/<archivo>.json`; cada operación dice qué falló. El resto sí se aplicó.
 - Los archivos de `cambios/` y `resultados/` se limpian solos pasados 60 días.

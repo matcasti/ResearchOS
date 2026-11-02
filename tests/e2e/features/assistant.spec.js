@@ -58,6 +58,16 @@ test.describe('Asistente de IA', () => {
     expect(md).toContain('## Atrasadas (1)');
     expect(md).toContain(`\`${estado.tasks[0].uid.slice(0, 8)}\``);
     await expect(page.locator('#assistantDesc')).toContainText('Última publicación');
+
+    // el estado dice qué admite la app hoy (la IA no tiene que probar campos) y una pestaña vieja se delata sola
+    expect(estado.apiVersion).toBeGreaterThanOrEqual(3);
+    expect(estado.fields.task.set).toEqual(expect.arrayContaining(['owner', 'rank', 'after', 'event', 'spent']));
+    expect(estado.fields.project.ops).toEqual(['add', 'update']);
+    expect(estado.fields.area).toBeUndefined();                                              // los ajustes de la app solo constan con el permiso
+    expect(agents).toContain('`apiVersion`');
+    expect(await page.evaluate(() => StaleTab.stamp())).toMatch(/\|/);
+    await page.evaluate(() => { StaleTab.base = 'huella-vieja'; return StaleTab.check(); });
+    await expect(page.locator('#staleBar')).toContainText('versión nueva');
   });
 
   test('los cambios de la IA se revisan antes de aplicarse; cada operación informa de su resultado', async ({ page }) => {
@@ -169,6 +179,13 @@ test.describe('Asistente de IA', () => {
     expect((await R.callTool('researchos_list', { type: 'tasks', due: 'overdue' }, { dir })).map(t => t.title)).toEqual(['Revisar figuras']);
     expect(JSON.parse(execFileSync(process.execPath, [TOOL, '--dir', dir, 'tareas', '--hasta', 'atrasadas', '--json'])).map(t => t.title)).toEqual(['Revisar figuras']);
     await expect(R.callTool('researchos_complete_task', { task: 'no existe' }, { dir })).rejects.toThrow('no hay tarea abierta');
+    expect(ov.apiVersion).toBeGreaterThanOrEqual(3); expect(ov.hint).toBeUndefined();
+    const viejo = JSON.parse(fs.readFileSync(path.join(dir, 'estado.json'), 'utf8'));                          // una app sin actualizar: lo dice la herramienta, y no deja enviar lo que no admite
+    delete viejo.apiVersion; viejo.fields = { task: { ops: ['add'], set: ['title', 'due'] } };
+    fs.writeFileSync(path.join(dir, 'estado.json'), JSON.stringify(viejo));
+    expect((await R.callTool('researchos_overview', {}, { dir })).hint).toContain('recarga su pestaña');
+    await expect(R.callTool('researchos_add', { type: 'task', set: { title: 'x', owner: 'Vega' } }, { dir })).rejects.toThrow('no admite todavía «owner»');
+    fs.writeFileSync(path.join(dir, 'estado.json'), await leer(page, 'estado.json'));
 
     const env = await R.callTool('researchos_add_task', { title: 'Tarea desde MCP', due: '2026-12-09', project: 'Paper Alfa', priority: 'Alta' }, { dir });   // escritura
     expect(env.status).toBe('enviado');

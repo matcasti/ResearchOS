@@ -3,7 +3,7 @@
 //  · Archivos propios: red primero (siempre ves tu última versión); sin red, o si tarda más de 3,5 s, copia en caché.
 //  · Librerías de CDN (versiones fijadas en la URL): caché primero.
 //  · Todo lo demás (Google Drive, CrossRef…) pasa sin tocar.
-const SHELL_CACHE = 'researchos-shell-v12';
+const SHELL_CACHE = 'researchos-shell-v13';
 const CDN_CACHE   = 'researchos-cdn-v1';
 const SHELL = ['./', 'index.html', 'assets/style.css', 'assets/manifest.webmanifest',
   'src/core/db.js', 'src/core/icons.js', 'src/core/app.js', 'src/core/shell.js',
