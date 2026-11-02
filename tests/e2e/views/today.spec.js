@@ -1,7 +1,7 @@
 // Vista «Hoy», tareas con fecha, captura rápida, contexto por área, menú agrupado,
 // revisión semanal, enlaces [[ ]] y migración de las subtareas antiguas.
 // Cada prueba recorre un tema entero sobre una sola carga de la app.
-const { test, expect, openApp, gotoView, seed } = require('../helpers');
+const { test, expect, openApp, gotoView, seed, openSettingsTab } = require('../helpers');
 
 const iso = n => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + n); const p = x => String(x).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
 const addTask = (page, t) => page.evaluate(async t => Tasks.add(t), t);
@@ -160,7 +160,7 @@ test.describe('Tareas con enlace y notas', () => {
     await expect(link).toHaveAttribute('rel', /noopener/);
     expect(await page.locator('#todayRoot').evaluate(() => App.view)).toBe('dashboard');            // abrir el enlace no abre nada dentro de la app
     await row.hover(); await row.locator('.tw-more').click();
-    await page.locator('.tw-menu-item', { hasText: 'Notas y enlace…' }).click();
+    await page.locator('.tw-menu-item', { hasText: 'Detalles (notas, enlace, dependencias…)' }).click();
     await page.fill('#tdNotes', 'Pide la versión final con las figuras');
     await page.fill('#tdLink', 'ftp://servidor/archivo');
     await page.locator('#tdSave').click();
@@ -175,6 +175,96 @@ test.describe('Tareas con enlace y notas', () => {
     await page.evaluate(() => db.tasks.filter(t => t.title === 'responder a la editora').modify({ link: 'javascript:alert(1)' }));   // un dato que llegó de fuera con un esquema peligroso no se pinta como enlace
     await gotoView(page, 'ideas'); await gotoView(page, 'dashboard');
     await expect(page.locator('.tw-row', { hasText: 'responder a la editora' }).locator('a.tw-link')).toHaveCount(0);
+  });
+});
+
+test.describe('Dependencias, pausa y carga real', () => {
+  test('«yo» no es esperar a nadie; lo que depende de otra tarea se oculta; la pausa saca proyectos de las listas; el tiempo real, el orden manual, los topes y las reuniones ajustan la carga', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    const d = await page.evaluate(async () => {
+      const vega = await db.collaborators.where('name').equals('Dra. Vega').first(), soto = { id: await db.collaborators.add({ name: 'Dr. Soto', createdAt: new Date().toISOString() }) };
+      const alfa = await db.projects.where('title').equals('Paper Alfa').first(), gamma = await db.projects.where('title').equals('Grant Gamma').first(), beta = await db.projects.where('title').equals('Dataset Beta').first();
+      const a = await Tasks.add({ title: 'enviar datos', projectId: alfa.id, due: addDaysISO(1) });
+      await Tasks.add({ title: 'analizar datos', projectId: alfa.id, afterIds: [a] });
+      await Tasks.add({ title: 'asignada a mí', assigneeId: vega.id, due: addDaysISO(1) });
+      await Tasks.add({ title: 'espero a Soto', assigneeId: soto.id, due: addDaysISO(1) });
+      await Tasks.add({ title: 'orden B', due: addDaysISO(2), rank: 1 });                       // mismo día: la posición manual manda sobre el orden de creación
+      await Tasks.add({ title: 'orden A', due: addDaysISO(2), rank: 5 });
+      await Tasks.add({ title: 'orden C', due: addDaysISO(2) });
+      await Tasks.add({ title: 'tarea de gamma', projectId: gamma.id, due: addDaysISO(1) });
+      for (const m of [30, 60, 90]) { const id = await Tasks.add({ title: 'medida ' + m, effort: 30 }); await db.tasks.update(id, { done: true, doneAt: new Date().toISOString(), spent: m }); }      // tiempo real vs estimado: mediana ×2
+      await db.kanbanColumns.update(beta.columnId, { wip: 1 });
+      await db.projects.add({ title: 'Otro en curso', type: 'Análisis', status: 'active', archived: false, starred: false, tags: [], coauthors: [], columnId: beta.columnId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      return { vega: vega.id, a, alfa: alfa.id, gamma: gamma.id };
+    });
+    await gotoView(page, 'dashboard');
+    await expect(page.locator('[data-sec="theirs"]')).toContainText('asignada a mí');            // sin «yo», lo asignado a Vega cuenta como esperarla
+    await page.evaluate(v => Me.set(v), d.vega);                                                  // con «yo» definido, ya no
+    await gotoView(page, 'ideas'); await gotoView(page, 'dashboard');
+    await expect(page.locator('[data-sec="theirs"]')).not.toContainText('asignada a mí');
+    await expect(page.locator('[data-sec="theirs"]')).toContainText('espero a Soto');
+    await expect(page.locator('[data-sec="week"]')).toContainText('asignada a mí');
+    await page.goto('about:blank'); await openApp(page);                                         // y la elección se recuerda
+    await gotoView(page, 'settings'); await openSettingsTab(page, 'prefs');
+    await expect(page.locator('#meSelect')).toHaveValue(String(d.vega));
+
+    await gotoView(page, 'dashboard');
+    await expect(page.locator('[data-sec="blocked"]')).toContainText('analizar datos');           // espera a «enviar datos»: sale de las listas y de la próxima acción
+    await expect(page.locator('[data-sec="blocked"]')).toContainText('después de «enviar datos»');
+    await expect(page.locator('#todayRoot > *:not(aside)').first()).not.toContainText('analizar datos');
+    expect(await page.evaluate(id => Tasks.statsByProject().then(m => m[id].next.title), d.alfa)).toBe('enviar datos');
+    const orden = await page.locator('.tw-row .tw-text').allTextContents();
+    expect(orden.filter(t => t.startsWith('orden'))).toEqual(['orden B', 'orden A', 'orden C']);
+    await page.locator('[data-sec="week"] .tw-row', { hasText: 'enviar datos' }).locator('.tw-check').click();     // al completar la anterior, la dependiente reaparece
+    await expect(page.locator('[data-sec="blocked"]')).toHaveCount(0);
+    await expect(page.locator('.tw-row', { hasText: 'analizar datos' })).toBeVisible();
+    expect(await page.evaluate(id => Tasks.statsByProject().then(m => m[id].next.title), d.alfa)).toBe('analizar datos');
+
+    await page.locator('.tw-row', { hasText: 'orden C' }).hover();                                // detalles de una tarea: responsable, dependencia, posición, tiempo real y privacidad
+    await page.locator('.tw-row', { hasText: 'orden C' }).locator('.tw-more').click();
+    await page.locator('.tw-menu-item', { hasText: 'Detalles (notas, enlace, dependencias…)' }).click();
+    await page.selectOption('#tdOwner', String(d.vega));
+    await page.selectOption('#tdAfter', { label: 'orden A' });
+    await page.fill('#tdSpent', '45'); await page.fill('#tdRank', '2'); await page.check('#tdPrivate');
+    await page.locator('#tdSave').click();
+    await expect(page.locator('.toast.success').last()).toContainText('Guardado');
+    const c = await page.evaluate(() => db.tasks.filter(t => t.title === 'orden C').first());
+    expect(c).toMatchObject({ ownerId: d.vega, spent: 45, rank: 2, private: true });
+    expect(c.afterIds).toHaveLength(1);
+    await expect(page.locator('[data-sec="blocked"]')).toContainText('orden C');                 // ahora espera a «orden A»: sale de las listas
+    await expect(page.locator('[data-sec="week"] .tw-row', { hasText: 'orden C' })).toHaveCount(0);
+
+    await expect(page.locator('[data-sec="rhythm"]')).toContainText('×2');                       // las estimaciones se quedan cortas: lo real es el doble
+    await expect(page.locator('[data-sec="wip"]')).toContainText('2 proyectos en curso para un tope de 1');
+
+    await page.evaluate(id => inspectProject(id), d.gamma);                                       // pausar un proyecto con motivo y fecha de revisión
+    await page.locator('[data-qa="flow"]').click();
+    await page.check('#pf-paused'); await page.fill('#pf-reason', 'Esperando a José'); await page.fill('#pf-until', iso(-1));
+    await page.locator('#pfSave').click();
+    await expect.poll(() => page.evaluate(id => db.projects.get(id).then(p => [p.paused, p.pauseReason]), d.gamma)).toEqual([true, 'Esperando a José']);
+    await gotoView(page, 'dashboard');
+    await expect(page.locator('.tw-row', { hasText: 'tarea de gamma' })).toHaveCount(0);          // sus tareas salen de las listas y de la carga
+    await expect(page.locator('[data-sec="paused"]')).toContainText('Esperando a José');
+    await expect(page.locator('[data-sec="paused"]')).toContainText('revisar');                   // la fecha de revisión ya llegó
+    await gotoView(page, 'kanban');
+    await expect(page.locator('.kanban-card', { hasText: 'Grant Gamma' })).toContainText('⏸');
+    await gotoView(page, 'dashboard');
+    await page.locator('[data-act="resume"]').click();
+    await expect(page.locator('.tw-row', { hasText: 'tarea de gamma' })).toBeVisible();
+    await expect(page.locator('[data-sec="paused"]')).toHaveCount(0);
+
+    // las reuniones con hora descuentan la capacidad: de 6 h, 2 h comprometidas dejan 4 (las de todo el día no restan)
+    const r = await page.evaluate(() => {
+      const busy = Load.busyFrom([{ date: '2026-11-02', time: '10:00', duration: 120 }, { date: '2026-11-02', time: null, duration: null }], '2026-11-01');
+      const base = { tasks: [{ id: 1, title: 'x', done: false, effort: 300, planDate: null, due: '2026-11-02' }], projects: [], today: '2026-11-02', capacity: 360 };
+      return { sin: Load.available('2026-11-02', '2026-11-03', 360), con: Load.available('2026-11-02', '2026-11-03', 360, busy),
+        cabe: Load.analyze(base).violations.length, noCabe: Load.analyze({ ...base, busy }).violations.length, dia: Load.planWeek({ ...base, busy }).days[0].capacity };
+    });
+    expect(r).toEqual({ sin: 720, con: 600, cabe: 0, noCabe: 1, dia: 240 });
+    await page.evaluate(async () => { await Tasks.add({ title: 'plan de hoy', planDate: localDateISO() }); await db.meetings.add({ title: 'Clase', date: localDateISO(), time: '09:00', duration: 120, participants: '', agreements: '', projectId: null, actionItems: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }); });
+    await gotoView(page, 'ideas'); await gotoView(page, 'dashboard');
+    await expect(page.locator('[data-sec="plan"]')).toContainText('tras 2 h de reuniones');
   });
 });
 
@@ -219,6 +309,28 @@ test.describe('Contexto por área', () => {
     await page.locator('#kanbanAddProject').click();
     await page.locator('.template-card[data-tpl="blank"]').click();
     await expect(page.locator('#mp-area')).toHaveValue('1');
+    await page.keyboard.press('Escape');
+
+    // áreas anidadas: elegir «Docencia» incluye sus subáreas; el selector las sangra; el formulario de área ofrece «Dentro de»
+    await page.evaluate(async () => {
+      await _saveAreas([...await _getAreas(), { id: 9, name: 'Posgrado', description: '', color: '#a78bfa', parentId: 2 }]);
+      await db.projects.where('title').equals('Grant Gamma').modify({ areaId: 9 });
+      await Tasks.add({ title: 'tesis de magíster', areaId: 9, due: null });
+    });
+    await expect(page.locator('#ctxSelect option', { hasText: '↳ Posgrado' })).toHaveCount(1);
+    await page.selectOption('#ctxSelect', '2');
+    await gotoView(page, 'kanban');
+    await expect(page.locator('.kanban-card')).toContainText('Grant Gamma');                                  // el proyecto de la subárea cuenta como Docencia
+    await gotoView(page, 'dashboard');
+    await expect(page.locator('#mainContent')).toContainText('tesis de magíster');
+    await page.selectOption('#ctxSelect', '9');
+    await gotoView(page, 'dashboard');
+    await expect(page.locator('#mainContent')).not.toContainText('tarea suelta de gestión');                  // y la subárea sola no trae lo de su madre
+    await page.evaluate(() => showAreaModal({ id: 2, name: 'Docencia', color: '#10b981' }));
+    await expect(page.locator('#am-parent option', { hasText: 'Posgrado' })).toHaveCount(0);                  // no se puede anidar un área dentro de su propia subárea
+    await page.keyboard.press('Escape');
+    await page.evaluate(async () => { const all = await _getAreas(); await _saveAreas(all.filter(a => a.id !== 2).map(a => a.parentId === 2 ? { ...a, parentId: null } : a)); });
+    expect(await page.evaluate(() => _getAreas().then(a => a.find(x => x.id === 9).parentId))).toBeNull();
   });
 
   test('sin áreas definidas el selector invita a crearlas, y el botón crea las sugeridas', async ({ page }) => {

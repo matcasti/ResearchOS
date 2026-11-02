@@ -209,6 +209,20 @@ test.describe('Columnas Kanban', () => {
       return { col: col.title, hist: p.columnHistory.at(-1).colId === p.columnId };
     });
     expect(r).toEqual({ col: 'Ideación', hist: true });
+
+    // columnas por tipo: una columna «solo para» Curso se esconde en la vista de investigación y los cursos nuevos parten en ella
+    await page.locator('#kanbanManageCols').click();
+    await page.locator('.col-manage-typesbox').nth(1).locator('summary').click();
+    await page.locator('.col-manage-typesbox').nth(1).locator('input[value="Curso"]').check();
+    await page.locator('#colManageSave').click();
+    await expect(page.locator('.toast.success').last()).toContainText('Columnas actualizadas');
+    const [nTodas, nInv, nDoc] = await page.evaluate(async () => {
+      const cuenta = async preset => { App.activeColPreset = preset; await renderKanban(); return document.querySelectorAll('.kanban-col').length; };
+      return [await cuenta('all'), await cuenta('research'), await cuenta('teaching')];
+    });
+    expect([nTodas - nInv, nDoc]).toEqual([1, nTodas]);
+    expect(await page.evaluate(() => db.kanbanColumns.orderBy('order').toArray().then(c => columnForType(c, 'Curso') === c[1].id && columnForType(c, 'Paper') === c[0].id))).toBe(true);
+    await page.evaluate(() => { App.activeColPreset = 'all'; });
   });
 
   test('los cambios de nombre no se pierden al añadir o quitar filas', async ({ page }) => {

@@ -164,6 +164,36 @@ Un proyecto de tipo `Paper` aparece en **Submissions**. La IA puede crearlo, mov
 - Los campos de Submissions solo se aceptan en proyectos `Paper`; si no lo es, el error indica que hay que poner `"type": "Paper"`. Los tipos de proyecto válidos están en `projectTypes`.
 - Dentro de un mismo lote no se puede modificar algo que ese mismo lote acaba de crear (no tiene `uid` todavía): crea en un archivo y modifica en otro, o usa `source` en el alta y localízalo después por `source`.
 
+## Varias operaciones relacionadas en un solo archivo
+
+Una operación `add` puede llevar un nombre temporal (`"id": "p1"`) y las siguientes **del mismo archivo** lo usan como `"#p1"` donde iría un nombre o un `uid` (en `project`, `after`, `uid`, `match`…). Define el `id` antes de usarlo:
+
+```json
+{ "ops": [
+  { "op": "add", "id": "p1", "type": "project", "set": { "title": "Curso de estadística", "type": "Curso" } },
+  { "op": "add", "id": "t1", "type": "task", "set": { "title": "Pedir datos", "project": "#p1" } },
+  { "op": "add", "type": "task", "set": { "title": "Analizar", "project": "#p1", "after": ["#t1"] } },
+  { "op": "update", "type": "project", "uid": "#p1", "set": { "paused": true, "pauseReason": "Paro" } }
+] }
+```
+
+## Flujo de trabajo: qué campos usar
+
+- **`owner` y `assignee`** — `owner` es quién *hace* la tarea; `assignee` es de quién *esperas* el resultado. Solo `assignee` cuenta como «esperando a otras personas». Si la persona indicó quién es (`me` en `estado.json`), asignarle algo a ella tampoco es esperar a nadie.
+- **`after`** — tareas que deben completarse antes. La dependiente sale de Hoy, de la carga y de la «próxima acción» hasta entonces (`blockedBy` en el estado). Los ciclos se rechazan.
+- **`rank`** — orden manual (menor = antes), en tareas (desempata dentro del mismo día) y en proyectos (dentro de su columna).
+- **`spent`** — minutos realmente dedicados. Con 3 o más tareas hechas que tengan `minutes` y `spent`, el estado trae `estimateAccuracy` (cuánto se desvían las estimaciones) y Hoy lo muestra.
+- **`event`** — liga una tarea a un bloque del calendario (el `source` de la reunión): el día de la reunión es el `planDate` de la tarea y su duración, los `minutes`, y los cambios se siguen **en los dos sentidos**. Deshacer devuelve también lo ligado.
+- **Proyectos en pausa** — `paused` con `pauseReason` y `pausedUntil` (fecha para revisar): salen de Hoy y de la carga, y Hoy avisa cuando llega la fecha.
+- **Reuniones recurrentes** — `repeat` en una reunión crea sus próximas ocurrencias (unos 4 meses) como reuniones independientes (`series` en el estado).
+- **Áreas anidadas** (con *Ajustes de la app*) — `parent` en un área; elegir un área en el menú incluye sus subáreas. **Columnas por tipo** — `types` en una columna: solo para esos tipos de proyecto (vacío = todos); los proyectos nuevos de ese tipo parten en ella.
+
+## Qué cambió y qué no
+
+- **`recentChanges`** en `estado.json`: lo creado, modificado, completado o borrado en las últimas 48 h, con `by` = `user` o `assistant`. Léelo en lugar de releer todo para ver qué hizo la persona.
+- **Resultados más informativos:** `resultados/<archivo>.json` pasa por `received` en cuanto la app ve el archivo (antes de procesarlo) y trae `warnings` por operación cuando algo no hizo lo que parecía (p. ej. «sin cambios: ya tenía esos valores»).
+- **Privado:** en la app, las fichas de proyectos, personas y tareas tienen una casilla «Privado». Lo privado —y lo que cuelga de ello: sus tareas, ideas, reuniones…— **no aparece** en `estado.json` ni en `pendientes.md`, y si la IA lo nombra la app responde que no existe. La IA tampoco puede marcar ni desmarcar nada como privado.
+
 ## Referencia rápida del formato
 
 - **Operaciones:** `add`, `update`, `complete` (solo tareas), `delete` (según permisos). Tipos: `task`, `idea`, `project`, `meeting`, `person`, `reference`, `snippet`, `collection` y, con «Ajustes de la app», `area`, `column` y `setting` (este último es un único registro: no lleva `uid`).
@@ -174,7 +204,7 @@ Un proyecto de tipo `Paper` aparece en **Submissions**. La IA puede crearlo, mov
 
 ## Si algo no va
 
-- *«No pasa nada con lo que dejó la IA»*: la pestaña de ResearchOS debe estar abierta y visible (revisa cada ~15 s); si el navegador pide permiso para la carpeta, pulsa **Reactivar** en Ajustes.
+- *«No pasa nada con lo que dejó la IA»*: la pestaña de ResearchOS debe estar abierta y visible (revisa cada ~5 s); si el navegador pide permiso para la carpeta, pulsa **Reactivar** en Ajustes.
 - *`estado.json` está viejo*: la app solo lo reescribe mientras está abierta. `researchos.js resumen` avisa si tiene más de 30 minutos.
 - *Un lote aparece con errores*: lee `resultados/<archivo>.json`; cada operación dice qué falló. El resto sí se aplicó.
 - Los archivos de `cambios/` y `resultados/` se limpian solos pasados 60 días.

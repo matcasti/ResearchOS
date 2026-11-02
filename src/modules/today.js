@@ -34,12 +34,28 @@ function _readAreaContext() {
 }
 App.areaContext = _readAreaContext();
 
-/** ¿El proyecto pertenece al contexto de área activo? */
-function inContext(p) {
+/** El área `id` y todas sus subáreas (a cualquier profundidad). */
+function areaWithDescendants(areas, id) {
+  const out = new Set([id]);
+  for (let grew = true; grew;) { grew = false; for (const a of areas) if (a.parentId != null && out.has(a.parentId) && !out.has(a.id)) { out.add(a.id); grew = true; } }
+  return out;
+}
+/** Las áreas en orden de árbol (cada subárea tras su madre) con su profundidad. */
+function areaTree(areas) {
+  const out = [], seen = new Set(), ids = new Set(areas.map(a => a.id));
+  const walk = (parent, depth) => { for (const a of areas.filter(x => (x.parentId != null && ids.has(x.parentId) ? x.parentId : null) === parent)) { if (seen.has(a.id)) continue; seen.add(a.id); out.push({ area: a, depth }); walk(a.id, depth + 1); } };
+  walk(null, 0);
+  return out;
+}
+/** ¿Esta área (o ninguna) entra en el contexto activo? Elegir un área incluye sus subáreas. */
+function inAreaScope(areaId) {
   const c = App.areaContext;
   if (c === 'all') return true;
-  return c === 'none' ? !p.areaId : p.areaId === c;
+  if (c === 'none') return !areaId;
+  return (App._areaScope || new Set([c])).has(areaId);
 }
+/** ¿El proyecto pertenece al contexto de área activo? */
+function inContext(p) { return inAreaScope(p.areaId); }
 
 async function setAreaContext(value) {
   App.areaContext = value === 'all' || value === 'none' ? value : (+value || 'all');
@@ -63,13 +79,14 @@ async function renderContextSwitcher() {
     $('ctxCreate').addEventListener('click', () => navigate('areas'));
     return;
   }
+  App._areaScope = typeof App.areaContext === 'number' ? areaWithDescendants(areas, App.areaContext) : null;
   const cur = areas.find(a => a.id === App.areaContext);
   el.innerHTML = `
     <label class="context-label" for="ctxSelect">Área</label>
     <select id="ctxSelect" class="context-select" aria-label="Ver solo un área"
             style="border-left:3px solid ${cur ? cssColor(cur.color) : 'transparent'}">
       <option value="all">Todas las áreas</option>
-      ${areas.map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}
+      ${areaTree(areas).map(({ area: a, depth }) => `<option value="${esc(a.id)}">${'\u00a0\u00a0'.repeat(depth)}${depth ? '↳ ' : ''}${esc(a.name)}</option>`).join('')}
       <option value="none">Sin área</option>
     </select>`;
   $('ctxSelect').value = String(App.areaContext);
@@ -358,7 +375,7 @@ const _snoozeOptions = (onPick) => [
 //  VISTA «HOY»
 // ==============================================================
 const _prioRank = { Alta: 0, Media: 1, Baja: 2 };
-const _byUrgency = (a, b) => (a.due || '9').localeCompare(b.due || '9') || (a.time && b.time ? a.time.localeCompare(b.time) : 0) || (_prioRank[a.priority] ?? 3) - (_prioRank[b.priority] ?? 3);
+const _byUrgency = (a, b) => (a.due || '9').localeCompare(b.due || '9') || (a.time && b.time ? a.time.localeCompare(b.time) : 0) || (a.rank ?? 1e9) - (b.rank ?? 1e9) || (_prioRank[a.priority] ?? 3) - (_prioRank[b.priority] ?? 3);
 
 async function collectToday() {
   await refreshColumnFlags();
@@ -368,24 +385,33 @@ async function collectToday() {
     db.projects.toArray(), db.tasks.toArray(), db.ideas.toArray(), db.meetings.toArray(), _getAreas(), db.collaborators.toArray()]);
   const projMap = Object.fromEntries(allProjects.map(p => [p.id, p]));
   const areaMap = Object.fromEntries(areas.map(a => [a.id, a]));
+  App._areaScope = typeof App.areaContext === 'number' ? areaWithDescendants(areas, App.areaContext) : null;
   const who     = Object.fromEntries(people.map(c => [c.id, c.name]));
-  const ctxLive = allProjects.filter(p => !p.archived && inContext(p));
+  const ctxLive = allProjects.filter(p => !p.archived && !p.paused && inContext(p));        // un proyecto en pausa sale de las listas hasta que lo reactives
+  const pausedList = allProjects.filter(p => !p.archived && p.paused && inContext(p))
+    .map(p => ({ ...p, review: !!p.pausedUntil && p.pausedUntil <= todayISO })).sort((a, b) => (b.review - a.review) || (a.pausedUntil || '9').localeCompare(b.pausedUntil || '9'));
+  const byTaskId = Tasks.index(allTasks), me = Me.id();
   const ctxIds  = new Set(ctxLive.map(p => p.id));
   const c = App.areaContext;
 
   const taskArea = t => (t.projectId ? projMap[t.projectId]?.areaId : t.areaId) ?? null;
   const taskVisible = t => {
-    if (t.projectId && projMap[t.projectId]?.archived) return false;
-    return c === 'all' || (c === 'none' ? !taskArea(t) : taskArea(t) === c);
+    if (t.projectId && (projMap[t.projectId]?.archived || projMap[t.projectId]?.paused)) return false;
+    return inAreaScope(taskArea(t));
   };
   const chipFor = pid => pid && projMap[pid] ? { projectId: pid, projectTitle: projMap[pid].title,
     color: cssColor(areaMap[projMap[pid].areaId]?.color, 'var(--accent)') } : {};
 
   const mine = [], theirs = [];                       // lo mío / lo que espero de otras personas
-  const push = r => (r.assigneeId ? theirs : mine).push(r);
-  for (const t of allTasks.filter(t => !t.done && taskVisible(t)))
-    push({ kind: 'task', id: t.id, title: t.title, due: t.due, priority: t.priority, ideaId: t.ideaId, rec: !!t.recurrence,
-           assigneeId: t.assigneeId, assignee: who[t.assigneeId], effort: t.effort || null, planDate: t.planDate || null, notes: t.notes || '', link: t.link || null, ...chipFor(t.projectId) });
+  const push = r => (Me.waiting(r.assigneeId) ? theirs : mine).push(r);        // lo asignado a «yo» no es esperar a nadie
+  const blocked = [];                                                          // esperan a otra tarea: no estorban hasta que se complete
+  for (const t of allTasks.filter(t => !t.done && taskVisible(t))) {
+    const row = { kind: 'task', id: t.id, title: t.title, due: t.due, priority: t.priority, ideaId: t.ideaId, rec: !!t.recurrence, rank: t.rank ?? null,
+           assigneeId: me && t.assigneeId === me ? null : t.assigneeId, assignee: who[t.assigneeId], owner: t.ownerId && t.ownerId !== me ? who[t.ownerId] : null, spent: t.spent || null,
+           effort: t.effort || null, planDate: t.planDate || null, notes: t.notes || '', link: t.link || null, ...chipFor(t.projectId) };
+    if (Tasks.isBlocked(t, byTaskId)) { blocked.push({ ...row, blockedBy: (t.afterIds || []).map(i => byTaskId.get(i)).filter(x => x && !x.done).map(x => x.title) }); continue; }
+    push(row);
+  }
   for (const p of ctxLive.filter(p => p.deadline && !isFinished(p)))
     mine.push({ kind: 'deadline', id: p.id, title: p.title, due: p.deadline, type: p.type, priority: p.priority, projectId: p.id,
                 projectTitle: null, color: cssColor(areaMap[p.areaId]?.color, 'var(--accent)') });
@@ -407,20 +433,21 @@ async function collectToday() {
 
   const now   = rest.filter(r => r.due && r.due <= todayISO).sort(_byUrgency);
   const week  = rest.filter(r => r.due && r.due > todayISO && r.due <= weekEnd).sort(_byUrgency);
-  const loose = rest.filter(r => !r.due && (r.kind === 'task' || r.kind === 'action'));
+  const loose = rest.filter(r => !r.due && (r.kind === 'task' || r.kind === 'action')).sort(_byUrgency);
   const later = rest.filter(r => r.due && r.due > weekEnd && r.kind === 'task').sort(_byUrgency);
   theirs.sort(_byUrgency);
   const waiting = ctxLive.filter(isWaiting).sort((a, b) => String(a.updatedAt).localeCompare(String(b.updatedAt)));
   const ideasUnread = allIdeas.filter(i => i.status === 'unread' && (c === 'all' || !i.projectId || ctxIds.has(i.projectId)));
 
   // Proyectos en curso sin ninguna acción propia pendiente → candidatos a «¿cuál es el siguiente paso?»
-  const withNext = new Set(allTasks.filter(t => !t.done && !t.assigneeId && t.projectId).map(t => t.projectId));
-  for (const m of allMeetings) if ((m.actionItems || []).some(a => !a.done && !a.assigneeId) && m.projectId) withNext.add(m.projectId);
+  const withNext = new Set(allTasks.filter(t => !t.done && !Me.waiting(t.assigneeId) && t.projectId && !Tasks.isBlocked(t, byTaskId)).map(t => t.projectId));
+  for (const m of allMeetings) if ((m.actionItems || []).some(a => !a.done && !Me.waiting(a.assigneeId)) && m.projectId) withNext.add(m.projectId);
   const noNext = ctxLive.filter(p => !withNext.has(p.id) && !isWaiting(p) && !isFinished(p)).sort((a, b) => String(a.title).localeCompare(String(b.title)));
 
+  const wipOver = (await db.kanbanColumns.toArray()).filter(c => c.wip).map(c => ({ title: c.title, wip: c.wip, n: ctxLive.filter(p => p.columnId === c.id).length })).filter(x => x.n > x.wip);      // columnas pasadas de su tope
   const lastReview = +localStorage.getItem('ros-last-review') || null;
-  const load = Load.analyze({ tasks: allTasks, projects: allProjects, today: todayISO, capacity: Capacity.get() });      // insights.js: ¿cabe lo que viene?
-  return { todayISO, plan, doneToday, now, week, loose, later, theirs, waiting, noNext, ideasUnread, areas, areaMap, people, ctxLive, lastReview, load,
+  const load = Load.analyze({ tasks: allTasks, projects: allProjects, today: todayISO, capacity: Capacity.get(), busy: Load.busyFrom(allMeetings, todayISO) });      // insights.js: ¿cabe lo que viene? (descontando reuniones con hora)
+  return { todayISO, plan, doneToday, now, week, loose, later, theirs, waiting, noNext, ideasUnread, areas, areaMap, people, ctxLive, lastReview, load, blocked, pausedList, wipOver, accuracy: Tasks.accuracy(allTasks), busyToday: Load.busyFrom(allMeetings, todayISO).get(todayISO) || 0,
            empty: !allProjects.length && !allTasks.length && !allIdeas.length };
 }
 
@@ -444,6 +471,9 @@ function _todayRowHTML(r, todayISO) {
              : r.kind === 'deadline' ? `<span class="tw-sub">${esc(r.type)}${r.priority === 'Alta' ? ' · alta' : ''}</span>` : '';
   const rec  = r.rec ? `<span class="tw-rec" title="Tarea recurrente" aria-label="Se repite">↻</span>` : '';
   const eff  = r.effort ? `<span class="tw-effort" title="Tiempo estimado">⏱ ${esc(fmtEffort(r.effort))}</span>` : '';
+  const spent = r.spent ? `<span class="tw-effort tw-spent" title="Tiempo real dedicado">⏲ ${esc(fmtEffort(r.spent))}</span>` : '';
+  const own = r.owner ? `<span class="tw-sub tw-owner" title="Responsable">👤 ${esc(r.owner)}</span>` : '';
+  const blk = r.blockedBy?.length ? `<span class="tw-sub tw-after" title="Espera a que se complete otra tarea">después de «${esc(r.blockedBy[0])}»${r.blockedBy.length > 1 ? ` +${r.blockedBy.length - 1}` : ''}</span>` : '';
   const carry = r.carried ? `<span class="tw-carry" title="Planificada para un día anterior y sigue pendiente">↪ pendiente de ayer</span>` : '';
   const due  = r.due ? `<span class="tw-due ${overdue ? 'overdue' : r.due === todayISO ? 'today' : ''}">${esc(dueLabel(r.due))}</span>` : '';
   const href = r.kind === 'task' ? Tasks.cleanLink(r.link) : null;           // se vuelve a validar al pintar: el dato pudo venir de fuera
@@ -452,7 +482,7 @@ function _todayRowHTML(r, todayISO) {
   const more = doable ? `<button class="tw-more" data-act="menu" aria-label="Más acciones: posponer, asignar, repetir" title="Más acciones…">⋯</button>` : '';
   return `<div class="tw-row" data-kind="${r.kind}" data-id="${esc(r.id)}" ${r.sub != null ? `data-sub="${esc(r.sub)}"` : ''}
                data-project="${esc(r.projectId ?? '')}" ${r.ideaId ? `data-idea="${esc(r.ideaId)}"` : ''}>
-    ${check}<span class="tw-text">${esc(r.title)}</span>${ext}${rec}${carry}${sub}${chip}${eff}${due}${more}</div>`;
+    ${check}<span class="tw-text">${esc(r.title)}</span>${ext}${rec}${carry}${sub}${own}${blk}${chip}${eff}${spent}${due}${more}</div>`;
 }
 
 function _foldOpen(id, n) {                       // «Sin fecha» y «Más adelante»: abiertas si son pocas; si no, la persona decide y se recuerda
@@ -536,6 +566,34 @@ async function renderToday() {
       ${d.load.guessed ? `<div class="today-wait-note">Incluye ${d.load.guessed} tarea(s) sin estimar (cuentan ${esc(fmtEffort(d.load.typical))} cada una).</div>` : ''}
     </section>` : '';
 
+  const wipHTML = d.wipOver.length ? `
+    <section class="today-sec calm risk" data-sec="wip" aria-label="Topes del tablero">
+      ${d.wipOver.map(x => `<div class="risk-row"><strong>${esc(x.title)}</strong>: ${x.n} proyectos en curso para un tope de ${x.wip} <span class="risk-over">(+${x.n - x.wip})</span></div>`).join('')}
+    </section>` : '';
+  const blockedHTML = d.blocked.length ? `
+    <section class="today-sec calm" data-sec="blocked" aria-labelledby="ts-blocked">
+      <h2 class="today-sec-title" id="ts-blocked">Esperan a otra tarea <span class="today-count">${d.blocked.length}</span></h2>
+      <div class="today-wait-note">Salen de tus listas hasta que completes la anterior.</div>
+      ${d.blocked.slice(0, 5).map(r => _todayRowHTML(r, d.todayISO)).join('')}
+      ${d.blocked.length > 5 ? `<div class="today-empty">…y ${d.blocked.length - 5} más</div>` : ''}
+    </section>` : '';
+  const pausedHTML = d.pausedList.length ? `
+    <section class="today-sec calm" data-sec="paused" aria-labelledby="ts-paused">
+      <h2 class="today-sec-title" id="ts-paused">En pausa <span class="today-count">${d.pausedList.length}</span></h2>
+      <div class="today-wait-note">No cuentan en tus listas ni en la carga. ${d.pausedList.some(p => p.review) ? '<strong>Hay pausas para revisar.</strong>' : ''}</div>
+      ${d.pausedList.slice(0, 6).map(p => `
+        <div class="tw-row" data-kind="paused" data-id="${p.id}" data-project="${p.id}">
+          <span class="tw-icon" aria-hidden="true">⏸</span><span class="tw-text">${esc(p.title)}</span>
+          <span class="tw-sub">${esc(p.pauseReason || 'sin motivo')}</span>
+          ${p.pausedUntil ? `<span class="tw-due ${p.review ? 'overdue' : ''}" title="Fecha para revisar la pausa">${p.review ? 'revisar' : esc(dueLabel(p.pausedUntil))}</span>` : ''}
+          <button class="tw-addnext" data-act="resume" title="Reanudar el proyecto">Reanudar</button>
+        </div>`).join('')}
+    </section>` : '';
+  const rhythmHTML = d.accuracy && Math.abs(d.accuracy.ratio - 1) >= 0.2 ? `
+    <section class="today-sec calm" data-sec="rhythm" aria-label="Tu ritmo">
+      <div class="today-wait-note">⏲ Tus estimaciones ${d.accuracy.ratio > 1 ? 'suelen quedarse cortas' : 'suelen sobrar'}: lo real es <strong>×${String(d.accuracy.ratio).replace('.', ',')}</strong> de lo estimado (${d.accuracy.n} tareas con tiempo real).</div>
+    </section>` : '';
+
   const waitingHTML = d.waiting.length ? `
     <section class="today-sec calm" aria-labelledby="ts-wait">
       <h2 class="today-sec-title" id="ts-wait">Esperando respuesta <span class="today-count">${d.waiting.length}</span></h2>
@@ -608,7 +666,7 @@ async function renderToday() {
       ${d.empty ? firstRunHTML() : `
       <div class="today-grid">
         <div class="today-main">${sections}</div>
-        <aside class="today-side">${riskHTML}${theirsHTML}${noNextHTML}${ideasHTML}${waitingHTML}</aside>
+        <aside class="today-side">${riskHTML}${wipHTML}${theirsHTML}${blockedHTML}${noNextHTML}${ideasHTML}${waitingHTML}${pausedHTML}${rhythmHTML}</aside>
       </div>`}
 
       <details class="panorama" id="panorama" ${localStorage.getItem('ros-panorama-open') === '1' ? 'open' : ''}>
@@ -679,16 +737,33 @@ const TaskOps = {
   },
 };
 
-/** Notas y enlace de una tarea (p. ej. el correo del que salió). */
+/** Detalles de una tarea: notas, enlace, responsable, de qué depende, posición manual, tiempo real y privacidad. */
 async function editTaskDetails(id, reload) {
-  const t = await db.tasks.get(id);
+  const [t, people, all] = await Promise.all([db.tasks.get(id), db.collaborators.orderBy('name').toArray(), db.tasks.filter(x => !x.done).toArray()]);
   if (!t) return;
-  showModal('📝 Notas y enlace', `
+  const byId = Tasks.index(await db.tasks.toArray());
+  const dependsOn = (x, target, seen = new Set()) => (x.afterIds || []).some(i => i === target || (!seen.has(i) && byId.get(i) && (seen.add(i), dependsOn(byId.get(i), target, seen))));      // evita ciclos
+  const others = all.filter(x => x.id !== id && !dependsOn(x, id)).sort((a, b) => String(a.projectId ?? '').localeCompare(String(b.projectId ?? '')) || a.id - b.id).slice(0, 300);
+  showModal('📝 Detalles de la tarea', `
     <div class="modal-body">
       <div class="form-group"><label class="form-label">${esc(t.title)}</label>
         <textarea class="form-textarea" id="tdNotes" rows="4" maxlength="5000" placeholder="Contexto, qué falta, a quién preguntar…">${esc(t.notes || '')}</textarea></div>
       <div class="form-group"><label class="form-label">Enlace <span class="form-hint">(correo, documento, página…)</span></label>
         <input class="form-input" id="tdLink" type="url" placeholder="https://…" value="${esc(t.link || '')}"></div>
+      <div class="form-row-2">
+        <div class="form-group"><label class="form-label">Responsable <span class="form-hint">(quién la hace)</span></label>
+          <select class="form-select" id="tdOwner"><option value="">Sin indicar / yo</option>${people.map(c => `<option value="${c.id}" ${t.ownerId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+        <div class="form-group"><label class="form-label">Posición <span class="form-hint">(menor = antes)</span></label>
+          <input class="form-input" id="tdRank" type="number" step="1" placeholder="—" value="${t.rank ?? ''}"></div>
+      </div>
+      <div class="form-group"><label class="form-label">Después de <span class="form-hint">(se oculta hasta completar estas tareas)</span></label>
+        <select class="form-select" id="tdAfter" multiple size="4">${others.map(x => `<option value="${x.id}" ${(t.afterIds || []).includes(x.id) ? 'selected' : ''}>${esc(x.title)}</option>`).join('')}</select></div>
+      <div class="form-row-2">
+        <div class="form-group"><label class="form-label">Tiempo real <span class="form-hint">(min)</span></label>
+          <input class="form-input" id="tdSpent" type="number" min="1" max="14400" placeholder="${t.effort ? 'estimado ' + t.effort : '—'}" value="${t.spent ?? ''}"></div>
+        <div class="form-group"><label class="form-label">&nbsp;</label>
+          <label class="form-check"><input type="checkbox" id="tdPrivate" ${t.private ? 'checked' : ''}> Privada <span class="form-hint">(la IA no la ve)</span></label></div>
+      </div>
     </div>
     <div class="modal-footer"><button class="btn btn-ghost" id="tdCancel">Cancelar</button><button class="btn btn-primary" id="tdSave">Guardar</button></div>`);
   focusField($('tdNotes'));
@@ -696,7 +771,8 @@ async function editTaskDetails(id, reload) {
   $('tdSave').addEventListener('click', async () => {
     const raw = $('tdLink').value.trim(), link = Tasks.cleanLink(raw);
     if (raw && !link) { showToast('El enlace debe empezar por http:// o https://', 'error'); return; }
-    await dbWrite(() => db.tasks.update(id, { notes: Tasks.cleanNotes($('tdNotes').value), link }));
+    await dbWrite(() => db.tasks.update(id, { notes: Tasks.cleanNotes($('tdNotes').value), link, ownerId: +$('tdOwner').value || null, rank: Tasks.cleanRank($('tdRank').value),
+      afterIds: Tasks.cleanAfter([...$('tdAfter').selectedOptions].map(o => +o.value), id), spent: Tasks.cleanSpent($('tdSpent').value), private: $('tdPrivate').checked, updatedAt: new Date().toISOString() }));
     closeModal(); showToast('Guardado ✓', 'success'); reload?.();
   });
 }
@@ -709,7 +785,7 @@ function _taskMenu(anchor, row, reload) {
   const items = [...snooze,
     { label: 'Esperando a…', action: async () => {
         const people = await db.collaborators.orderBy('name').toArray();
-        openFloatingMenu(anchor, [{ label: 'Yo (quitar responsable)', action: async () => { await dbWrite(() => TaskOps.setAssignee(kind, numId, sub, null)); reload(); } },
+        openFloatingMenu(anchor, [{ label: 'Nadie (quitar)', action: async () => { await dbWrite(() => TaskOps.setAssignee(kind, numId, sub, null)); reload(); } },
           ...people.slice(0, 12).map(c => ({ label: c.name, action: async () => { await dbWrite(() => TaskOps.setAssignee(kind, numId, sub, c.id)); reload(); } }))]);
       } }];
   if (kind === 'task') {
@@ -723,7 +799,7 @@ function _taskMenu(anchor, row, reload) {
       { label: 'Cada semana', action: async () => { await dbWrite(() => Tasks.setRecurrence(numId, { freq: 'weekly', interval: 1 })); reload(); } },
       { label: 'Cada 2 semanas', action: async () => { await dbWrite(() => Tasks.setRecurrence(numId, { freq: 'weekly', interval: 2 })); reload(); } },
       { label: 'Cada mes',   action: async () => { await dbWrite(() => Tasks.setRecurrence(numId, { freq: 'monthly', interval: 1 })); reload(); } }]) });
-    items.push({ label: 'Notas y enlace…', action: () => editTaskDetails(numId, reload) });
+    items.push({ label: 'Detalles (notas, enlace, dependencias…)', action: () => editTaskDetails(numId, reload) });
     items.push({ label: 'Eliminar tarea', danger: true, action: async () => {
       const t = await db.tasks.get(numId);
       await dbWrite(() => Tasks.remove(numId));
@@ -822,7 +898,14 @@ function _wireToday(d, overdueTasks) {
       input2.scrollIntoView({ block: 'center' });
       return;
     }
-    if (act === 'project' || kind === 'deadline' || kind === 'waiting' || kind === 'nonext') return inspectProject(+row.dataset.project);
+    if (act === 'resume') {
+      const pid = +row.dataset.project, before = await db.projects.get(pid);
+      await dbWrite(() => db.projects.update(pid, { paused: false, updatedAt: new Date().toISOString() }));
+      UndoStack.push({ label: 'Reanudar proyecto', undo: async () => { await dbWrite(() => db.projects.update(pid, { paused: true, updatedAt: before.updatedAt })); } });
+      showToastWithUndo(`«${before.title}» reanudado`, 'success');
+      return reload();
+    }
+    if (act === 'project' || kind === 'deadline' || kind === 'waiting' || kind === 'nonext' || kind === 'paused') return inspectProject(+row.dataset.project);
     if (kind === 'meeting') return inspectMeeting(id);
     if (kind === 'action') return inspectMeeting(+row.dataset.sub);
     if (kind === 'idea') return inspectIdea(id);
@@ -1232,7 +1315,7 @@ const NavProfile = {
 function renderProfileSection() {
   const host = $('profileSection');
   if (!host) return;
-  const cur = NavProfile.get();
+  const cur = NavProfile.get(), me = Me.id();
   host.innerHTML = `
     <div class="settings-section-title">🧭 Perfil de uso</div>
     <div class="settings-body"><div class="settings-row">
@@ -1240,8 +1323,20 @@ function renderProfileSection() {
         <div class="settings-row-desc">El menú lateral muestra solo lo que ese perfil suele usar. Lo demás sigue disponible en la paleta (${MOD_KEY} K) y aparece en el menú cuando lo abres.</div></div>
       <select class="form-select" id="profileSelect" aria-label="Perfil de uso" style="max-width:300px">
         ${NAV_PROFILES.map(p => `<option value="${p.key}"${p.key === cur ? ' selected' : ''}>${p.label} — ${p.desc}</option>`).join('')}</select>
+    </div>
+    <div class="settings-row">
+      <div><div class="settings-row-label">¿Quién eres en tu agenda de personas?</div>
+        <div class="settings-row-desc">Lo que se te asigna a ti no cuenta como «esperando a otras personas». Elige tu ficha de Colaboradores (si aún no la tienes, créala).</div></div>
+      <select class="form-select" id="meSelect" aria-label="Quién eres" style="max-width:300px">
+        <option value="">Nadie en particular</option></select>
     </div></div>`;
   $('profileSelect').addEventListener('change', e => { NavProfile.set(e.target.value); showToast('Menú actualizado ✓', 'success'); });
+  $('meSelect').addEventListener('change', e => { Me.set(+e.target.value || null); showToast('Listo ✓', 'success'); });
+  db.collaborators.orderBy('name').toArray().then(people => {                      // las opciones llegan después: el resto del bloque se pinta de inmediato (los Ajustes lo reparten en pestañas según su contenido)
+    const sel = $('meSelect'); if (!sel) return;
+    sel.insertAdjacentHTML('beforeend', people.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join(''));
+    sel.value = me ? String(me) : '';
+  });
 }
 
 /** Abre el grupo que contiene la vista activa (para que nunca quede escondida). */

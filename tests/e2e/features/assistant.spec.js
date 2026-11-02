@@ -659,4 +659,111 @@ test.describe('Asistente de IA', () => {
     for (const n of fs.readdirSync(path.join(dir, 'cambios'))) await dejar(page, n, JSON.parse(fs.readFileSync(path.join(dir, 'cambios', n), 'utf8')));       // y la app los aplica
     expect(await page.evaluate(() => Promise.all([db.projects.where('title').equals('Paper Alfa').count(), db.collaborators.count(), Capacity.get(), NavProfile.get()]))).toEqual([0, 0, 300, 'research']);
   });
+
+  test('un lote puede crear y relacionar (id temporales «#p1»), avisa de lo que no cambió, liga tareas al calendario, anida áreas y muestra qué cambió la persona; lo privado no existe para la IA', async ({ page }) => {
+    await openApp(page);
+    await seed(page);
+    await activar(page);
+    const res = async n => JSON.parse(await leer(page, 'resultados/' + n));
+    await page.evaluate(async () => {
+      Assistant.setMode('auto'); Assistant.setPermission('config', true);
+      const cols = await db.kanbanColumns.orderBy('order').toArray();
+      await db.kanbanColumns.update(cols[1].id, { types: ['Curso'] });                      // una columna solo para cursos
+    });
+    const [d1, d2, d3] = await page.evaluate(() => [addDaysISO(2), addDaysISO(3), addDaysISO(4)]);
+
+    const lote = { format: TIPO, author: 'ia', ops: [
+      { op: 'add', id: 'p1', type: 'project', set: { title: 'Curso de estadística', type: 'Curso' } },
+      { op: 'add', id: 't1', type: 'task', set: { title: 'Pedir datos', project: '#p1', owner: 'Dra. Vega', spent: 20 } },
+      { op: 'add', id: 't2', type: 'task', set: { title: 'Analizar', project: '#p1', after: ['#t1'], rank: 3 } },
+      { op: 'update', type: 'project', uid: '#p1', set: { paused: true, pauseReason: 'Paro', pausedUntil: d3 } },
+      { op: 'update', type: 'task', uid: '#t2', set: { rank: 3 } },
+      { op: 'update', type: 'task', uid: '#nadie', set: { rank: 1 } },
+      { op: 'update', type: 'project', uid: '#t1', set: { rank: 1 } },
+      { op: 'add', id: 'm1', type: 'meeting', set: { title: 'Eureka', date: d1, time: '10:00', duration: 60, source: 'gcal:e1', repeat: 'weekly' } },
+      { op: 'add', type: 'task', set: { title: 'Preparar Eureka', event: 'gcal:e1' } },
+      { op: 'update', type: 'meeting', uid: '#m1', set: { date: d2, duration: 90 } },
+      { op: 'add', id: 'a1', type: 'area', set: { name: 'Docencia' } },
+      { op: 'add', type: 'area', set: { name: 'Posgrado', parent: '#a1' } },
+      { op: 'update', type: 'person', match: 'Dra. Vega', source: 'x', set: { role: 'Postdoc' } },
+    ] };
+    await page.evaluate(async ([n, t]) => {                                                  // sin esperar: la IA ve enseguida que el archivo llegó
+      const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('cambios', { create: true });
+      const w = await (await d.getFileHandle(n, { create: true })).createWritable(); await w.write(t); await w.close();
+      await Assistant.syncNow();
+    }, ['h-1.json', JSON.stringify(lote)]);
+    expect((await res('h-1.json')).status).toBe('received');
+    await page.waitForTimeout(1700); await page.evaluate(() => Assistant.syncNow());
+    const h1 = await res('h-1.json');
+    expect(h1.status).toBe('done');
+    expect(h1.ops.map(o => o.status)).toEqual(['applied', 'applied', 'applied', 'applied', 'applied', 'error', 'error', 'applied', 'applied', 'applied', 'applied', 'applied', 'applied']);
+    expect(h1.ops[4].warnings).toEqual(['sin cambios: ya tenía esos valores']);
+    expect(h1.ops[5].error).toContain('«#nadie» no está definido antes');
+    expect(h1.ops[6].error).toContain('es tarea, no proyecto');
+    expect(h1.ops[12].warnings[0]).toContain('«source» solo sirve para localizar');
+
+    const db_ = (q, a) => page.evaluate(`(${q})(${JSON.stringify(a ?? null)})`);
+    const curso = await db_(async () => db.projects.where('title').equals('Curso de estadística').first());
+    const cols = await db_(async () => db.kanbanColumns.orderBy('order').toArray());
+    expect(curso).toMatchObject({ type: 'Curso', paused: true, pauseReason: 'Paro', pausedUntil: d3, columnId: cols[1].id });   // los cursos parten en su columna
+    const t1 = await tarea(page, 'Pedir datos'), t2 = await tarea(page, 'Analizar');
+    expect(t1).toMatchObject({ projectId: curso.id, spent: 20 }); expect(t1.ownerId).toBeGreaterThan(0); expect(t1.assigneeId).toBeNull();
+    expect(t2).toMatchObject({ afterIds: [t1.id], rank: 3 });
+    const prep = await tarea(page, 'Preparar Eureka');
+    expect(prep).toMatchObject({ planDate: d2, effort: 90, event: 'gcal:e1' });             // la tarea tomó el día y los minutos de la reunión, y los siguió cuando ella cambió
+    expect(await db_(async () => db.meetings.filter(m => m.seriesId).count())).toBeGreaterThan(8);                          // y la reunión semanal tiene sus ocurrencias
+    const areas = await db_(async () => _getAreas());
+    expect(areas.find(a => a.name === 'Posgrado').parentId).toBe(areas.find(a => a.name === 'Docencia').id);
+
+    await dejar(page, 'h-2.json', { format: TIPO, author: 'ia', ops: [
+      { op: 'update', type: 'task', match: 'Preparar Eureka', set: { planDate: d3, minutes: 45 } },                          // al revés: mover la tarea mueve el bloque
+      { op: 'update', type: 'task', match: 'Pedir datos', set: { after: ['Analizar'] } },                                    // un ciclo se rechaza
+      { op: 'update', type: 'area', match: 'Docencia', set: { parent: 'Posgrado' } },
+    ] });
+    const h2 = await res('h-2.json');
+    expect(h2.ops.map(o => o.status)).toEqual(['applied', 'error', 'error']);
+    expect(h2.ops[1].error).toContain('ciclo'); expect(h2.ops[2].error).toContain('subáreas');
+    expect(await db_(async () => db.meetings.where('title').equals('Eureka').filter(m => !m.seriesId).first().then(m => [m.date, m.duration]))).toEqual([d3, 45]);
+    await page.locator('.toast-undo-btn').last().click();                                    // deshacer devuelve también la reunión ligada
+    await expect.poll(() => db_(async () => db.meetings.where('title').equals('Eureka').filter(m => !m.seriesId).first().then(m => [m.date, m.duration]))).toEqual([d2, 90]);
+
+    await page.evaluate(async () => { const t = await db.tasks.filter(x => x.title === 'Pedir datos').first(); await db.tasks.update(t.id, { done: true, doneAt: new Date(Date.now() + 60000).toISOString(), updatedAt: new Date(Date.now() + 60000).toISOString() }); });
+    await page.evaluate(() => Assistant.syncNow());
+    const e = JSON.parse(await leer(page, 'estado.json'));                                   // lo nuevo en el estado
+    const ch = e.recentChanges;
+    expect(ch.find(c => c.title === 'Analizar')).toMatchObject({ type: 'task', change: 'created', by: 'assistant' });
+    expect(ch.find(c => c.title === 'Pedir datos')).toMatchObject({ change: 'completed', by: 'user' });                     // lo que hizo la persona se distingue de lo de la IA
+    expect(e.tasks.find(t => t.title === 'Analizar')).toMatchObject({ after: ['Pedir datos'], rank: 3 });
+    expect(e.tasks.find(t => t.title === 'Analizar').blockedBy ?? []).toEqual([]);          // ya hecha la anterior, no está bloqueada
+    expect(e.tasks.find(t => t.title === 'Pedir datos')).toMatchObject({ owner: 'Dra. Vega', spent: 20 });
+    expect(e.projects.find(p => p.title === 'Curso de estadística')).toMatchObject({ paused: true, pauseReason: 'Paro' });
+    expect(e.areas.find(a => a.name === 'Posgrado').parent).toBe('Docencia');
+    expect(e.columnsInfo[1].types).toEqual(['Curso']);
+    expect(await leer(page, 'AGENTS.md')).toContain('"#p1"');                                // y las instrucciones lo explican
+
+    // «yo» + privacidad: lo asignado a mí no es esperar; lo privado no existe para la IA
+    await page.evaluate(async () => {
+      const vega = await db.collaborators.where('name').equals('Dra. Vega').first(); Me.set(vega.id);
+      const gamma = await db.projects.where('title').equals('Grant Gamma').first(); await db.projects.update(gamma.id, { private: true });
+      await Tasks.add({ title: 'Resultados del paciente', projectId: gamma.id });
+      const soto = await db.collaborators.add({ name: 'Dr. Soto', createdAt: new Date().toISOString(), private: true });
+      await db.meetings.add({ title: 'Visita a domicilio', date: addDaysISO(1), participants: 'Dr. Soto', agreements: '', projectId: null, actionItems: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      await Tasks.add({ title: 'Cosa mía de Vega', assigneeId: vega.id });
+    });
+    await dejar(page, 'h-3.json', { format: TIPO, author: 'ia', ops: [
+      { op: 'add', type: 'task', set: { title: 'Intento', project: 'Grant Gamma' } },
+      { op: 'update', type: 'task', match: 'Resultados del paciente', set: { priority: 'Alta' } },
+      { op: 'update', type: 'person', match: 'Dr. Soto', set: { role: 'x' } },
+    ] });
+    expect((await res('h-3.json')).ops.map(o => o.status)).toEqual(['error', 'error', 'error']);
+    expect((await res('h-3.json')).ops[0].error).toContain('no existe proyecto');
+    const e3 = JSON.parse(await leer(page, 'estado.json'));
+    const texto = JSON.stringify(e3) + await leer(page, 'pendientes.md');
+    for (const secreto of ['Grant Gamma', 'Resultados del paciente', 'Dr. Soto', 'Visita a domicilio']) expect(texto).not.toContain(secreto);
+    expect(e3.privacy).toContain('privados');
+    expect(e3.me).toBe('Dra. Vega');
+    expect(e3.tasks.find(t => t.title === 'Cosa mía de Vega').assignee).toBeUndefined();     // asignada a «yo»: no es esperar a nadie
+    expect(e3.summary.waitingOnOthers).toBe(0);
+    expect((await page.evaluate(() => Promise.all([db.projects.where('title').equals('Grant Gamma').count(), db.collaborators.where('name').equals('Dr. Soto').count()])))).toEqual([1, 1]);       // siguen en la app
+  });
 });

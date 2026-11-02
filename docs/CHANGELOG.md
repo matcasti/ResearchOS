@@ -6,6 +6,21 @@ Todos los cambios relevantes de ResearchOS, de lo más reciente a lo más antigu
 
 ## Sin publicar
 
+### 🧩 Flujo de trabajo más fino (a partir de lo que pidió una IA usando la app)
+
+- **«Yo» y responsable.** Indica quién eres en tu agenda (*Ajustes → Preferencias*): lo asignado a ti deja de aparecer como «esperando a otras personas» (Hoy, planificador, estado de la IA). Las tareas tienen además un **responsable** (quién la hace), distinto de «esperando a» (de quién esperas el resultado).
+- **Dependencias.** «Después de…» en los detalles de la tarea: la dependiente se oculta de Hoy, de la carga y de la próxima acción hasta completar la anterior (sección «Esperan a otra tarea»); los ciclos se rechazan y borrar la anterior la libera.
+- **Orden manual.** Un campo «posición» en tareas (desempata dentro del día, en Hoy, el plan y la próxima acción) y en proyectos (orden dentro de su columna).
+- **Tiempo real.** Anota los minutos que de verdad te llevó una tarea; con tres o más hechas, Hoy te dice si tus estimaciones se quedan cortas o sobran («×1,4»).
+- **Calendario y tareas, en los dos sentidos.** Una tarea ligada a un bloque del calendario (`event`) sigue su día y su duración, y el bloque sigue los cambios de la tarea. La carga y el plan semanal **descuentan las reuniones con hora y duración** (y «Mi día» lo indica: «tras 2 h de reuniones»).
+- **Topes del tablero.** Hoy avisa cuando una columna supera su límite WIP.
+- **Pausa de proyectos** con motivo y fecha de revisión (botón «Estado» del proyecto): salen de las listas y de la carga, el tablero los marca con ⏸ y Hoy los lista con «Reanudar» (y avisa cuando toca revisar).
+- **Columnas por tipo de proyecto.** Cada columna puede ser «solo para» ciertos tipos: se esconde en las vistas que no los incluyen y los proyectos nuevos de ese tipo parten en ella.
+- **Reuniones recurrentes** (cada día, semana, 2 semanas o mes, con fecha final opcional): se crean las ocurrencias de los próximos meses, cada una con sus propios acuerdos; editar la primera actualiza las futuras sin tocar.
+- **Áreas anidadas.** Un área puede estar dentro de otra; elegir la madre incluye sus subáreas y borrarla sube las hijas un nivel.
+- **Privado.** Marca proyectos, personas o tareas como privados: el asistente de IA no los ve (ni lo que cuelga de ellos) ni puede nombrarlos.
+- **Asistente de IA:** referencias temporales dentro de un lote (`"id":"p1"` → `"#p1"`), estado «recibido» en cuanto llega el archivo (y la carpeta se revisa cada 5 s), `warnings` cuando un cambio no hizo nada, `recentChanges` con quién cambió qué, y los campos nuevos (`owner`, `after`, `rank`, `spent`, `event`, `paused`, `repeat` en reuniones, `parent` en áreas, `types` en columnas).
+
 ### 🤖 El asistente de IA llega a más partes de la app
 
 - **Personas editables.** Además de añadirlas, la IA puede modificar el rol, la afiliación, el correo, las notas y cada cuántos días hay que escribirle a cada persona (y la fecha del último contacto).

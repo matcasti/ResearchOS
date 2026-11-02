@@ -173,18 +173,26 @@ test.describe('Reuniones y colaboradores', () => {
     await page.fill('#am-date', '2026-11-05');
     await page.fill('#am-time', '10:00');
     await page.fill('#am-duration', '90');
+    await page.selectOption('#am-repeat', 'weekly:1');                                                                   // se repite cada semana: se crean las próximas ocurrencias
     await page.fill('#am-actions', 'Revisar sección 2\nEnviar datos\n\nPreparar slides');
     await page.locator('#amSave').click();
-    await expect(page.locator('.meeting-card', { hasText: 'Defensa capítulo 3' })).toContainText('10:00–11:30');          // la hora y la duración se ven en la lista
+    await expect(page.locator('.meeting-card', { hasText: 'Defensa capítulo 3' }).first()).toContainText('10:00–11:30');          // la hora y la duración se ven en la lista
     const m = await page.evaluate(() => db.meetings.where('title').equals('Defensa capítulo 3').first());
     expect(m.actionItems.map(a => a.text)).toEqual(['Revisar sección 2', 'Enviar datos', 'Preparar slides']);
     expect([m.time, m.duration]).toEqual(['10:00', 90]);
-    await page.locator('.meeting-card', { hasText: 'Defensa capítulo 3' }).click();
+    const serie = await page.evaluate(() => db.meetings.filter(x => x.seriesId).toArray().then(r => r.filter(x => x.title === 'Defensa capítulo 3')));
+    expect(serie.length).toBeGreaterThan(8);                                                                             // unos 4 meses de martes... de semanas
+    expect(serie[0]).toMatchObject({ time: '10:00', duration: 90, agreements: '', actionItems: [] });                    // cada ocurrencia nace limpia, con la hora de la serie
+    expect(new Set(serie.map(x => x.uid)).size).toBe(serie.length);
+    expect(await page.evaluate(() => Meetings.expandAll())).toBe(0);                                                     // repetirlo no duplica nada (uid por fecha)
+    await page.locator(`.meeting-card[data-inspect-meeting="${m.id}"]`).click();                                           // la primera de la serie
     await expect(page.locator('#inspectorBody')).toContainText('10:00–11:30');
     await page.locator('#meetEditBtn').click();                                                                          // y se editan: quitar la hora quita también la duración
     await page.fill('#em-time', '');
+    await page.selectOption('#em-repeat', '');                                                                           // y dejar de repetirse quita las ocurrencias futuras sin tocar
     await page.locator('#emSave').click();
     await expect.poll(() => page.evaluate(() => db.meetings.where('title').equals('Defensa capítulo 3').first().then(r => [r.time, r.duration]))).toEqual([null, null]);
+    await expect.poll(() => page.evaluate(() => db.meetings.filter(x => x.seriesId).count())).toBe(0);
 
     await page.locator('.meeting-card', { hasText: 'Reunión de avance' }).click();             // marcar una acción como hecha desde el inspector
     await page.locator('[data-toggle-ai]').first().click();

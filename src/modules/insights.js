@@ -140,18 +140,24 @@ const Load = {
   /** Mediana de las estimaciones propias (para las tareas sin estimar); 30 min si hay muy pocas. */
   typical(tasks) { const e = tasks.map(t => t.effort).filter(Boolean); return e.length >= 5 ? _median(e) : 30; },
 
-  /** Minutos de trabajo disponibles entre dos fechas (inclusive), contando solo días laborables. */
-  available(from, to, capacity) {
+  /** Minutos de trabajo disponibles entre dos fechas (inclusive), contando solo días laborables y descontando los compromisos fijos (`busy`: fecha → minutos de reuniones con hora y duración). */
+  available(from, to, capacity, busy = null) {
     let n = 0;
-    for (let d = from; d <= to; d = _addDays(d, 1)) if (_isWeekday(d)) n += capacity;
+    for (let d = from; d <= to; d = _addDays(d, 1)) if (_isWeekday(d)) n += Math.max(0, capacity - (busy?.get(d) || 0));
     return n;
+  },
+  /** Minutos comprometidos cada día por reuniones con hora y duración (los eventos de todo el día no restan). */
+  busyFrom(meetings, from = localDateISO()) {
+    const m = new Map();
+    for (const x of meetings || []) if (x.date >= from && x.time && x.duration) m.set(x.date, (m.get(x.date) || 0) + x.duration);
+    return m;
   },
 
   /** Tareas propias abiertas, con su plazo efectivo (el más cercano entre la tarea y su proyecto) y su duración. */
   _items(tasks, projects, today) {
-    const live = new Map(projects.filter(p => !p.archived).map(p => [p.id, p]));
+    const live = new Map(projects.filter(p => !p.archived && !p.paused).map(p => [p.id, p]));      // un proyecto en pausa no cuenta como carga
     const typical = Load.typical(tasks);
-    return tasks.filter(t => !t.done && !t.assigneeId && !(t.projectId && !live.has(t.projectId))).map(t => {
+    return tasks.filter(t => !t.done && !Me.waiting(t.assigneeId) && !(t.projectId && !live.has(t.projectId))).map(t => {
       const p = t.projectId ? live.get(t.projectId) : null;
       const deadline = [t.due, p?.deadline].filter(Boolean).sort()[0] || null;
       return { t, project: p || null, deadline: deadline && deadline < today ? today : deadline, overdue: !!deadline && deadline < today,
@@ -163,21 +169,21 @@ const Load = {
    * ¿Cabe todo? Para cada fecha límite compara el trabajo que vence en esa fecha o antes con las horas disponibles hasta ella.
    * Devuelve { violations: [{date, demand, available, over, items}], atRisk: [{project, deadline, over}], guessed } (vacío si todo cabe).
    */
-  analyze({ tasks, projects, today = localDateISO(), capacity = Capacity.get() }) {
+  analyze({ tasks, projects, today = localDateISO(), capacity = Capacity.get(), busy = null }) {
     const items = Load._items(tasks, projects, today).filter(x => x.deadline);
     const dates = [...new Set(items.map(x => x.deadline))].sort();
     const violations = [];
     for (const date of dates) {
       const within = items.filter(x => x.deadline <= date);
-      const demand = within.reduce((a, x) => a + x.minutes, 0), available = Load.available(today, date, capacity);
+      const demand = within.reduce((a, x) => a + x.minutes, 0), available = Load.available(today, date, capacity, busy);
       if (demand > available) violations.push({ date, demand, available, over: demand - available, items: within.sort((a, b) => b.minutes - a.minutes) });
     }
     // solo se cuentan los que añaden carga nueva (si el 10 ya va justo, el 11 no repite lo mismo)
     const shown = [];
     for (const v of violations) if (!shown.length || v.over - shown[shown.length - 1].over >= 60) shown.push(v);
-    const atRisk = projects.filter(p => !p.archived && p.deadline && items.some(x => x.project?.id === p.id)).map(p => {
+    const atRisk = projects.filter(p => !p.archived && !p.paused && p.deadline && items.some(x => x.project?.id === p.id)).map(p => {
       const d = p.deadline < today ? today : p.deadline;                    // ¿cabe todo lo que vence hasta el plazo del proyecto?
-      const over = items.filter(x => x.deadline <= d).reduce((a, x) => a + x.minutes, 0) - Load.available(today, d, capacity);
+      const over = items.filter(x => x.deadline <= d).reduce((a, x) => a + x.minutes, 0) - Load.available(today, d, capacity, busy);
       return over > 0 ? { project: p, deadline: p.deadline, over } : null;
     }).filter(Boolean).sort((a, b) => a.deadline.localeCompare(b.deadline));
     return { violations: shown.slice(0, 3), atRisk, guessed: items.filter(x => !x.estimated).length, typical: Load.typical(tasks) };
@@ -188,10 +194,11 @@ const Load = {
    * semanas (por su fecha o la de su proyecto) y las de prioridad alta sin fecha, siempre que aún no tengan día; cada una va al primer día con hueco, sin pasar de su plazo si cabe antes.
    * Devuelve { plan: [{task, project, day, minutes, estimated, late}], unplaced, days: [{day, used, capacity}] }.
    */
-  planWeek({ tasks, projects, today = localDateISO(), capacity = Capacity.get(), horizon = 7 }) {
+  planWeek({ tasks, projects, today = localDateISO(), capacity = Capacity.get(), horizon = 7, busy = null }) {
     const days = []; for (let i = 0; i < horizon; i++) { const d = _addDays(today, i); if (_isWeekday(d)) days.push(d); }
-    const used = new Map(days.map(d => [d, 0]));
-    const all = Load._items(tasks, projects, today);
+    const used = new Map(days.map(d => [d, 0])), cap = d => Math.max(0, capacity - (busy?.get(d) || 0));      // la capacidad de cada día descuenta sus reuniones
+    const byId = Tasks.index(tasks);
+    const all = Load._items(tasks, projects, today).filter(x => !Tasks.isBlocked(x.t, byId));                  // lo que espera a otra tarea no se puede planificar todavía
     for (const x of all) { const d = x.t.planDate || x.t.due; if (d && used.has(d)) used.set(d, used.get(d) + x.minutes); }      // lo que ya tiene día ocupa ese día
     const near = _addDays(today, 14), last = days[days.length - 1];
     const rank = x => (x.overdue ? 0 : x.deadline ? 1 : 2);
@@ -199,10 +206,10 @@ const Load = {
     const candidates = all
       .filter(x => !x.t.planDate && !(x.t.due && x.t.due <= last && !x.overdue)             // con día propio dentro de la semana: ya cuenta como ocupado
         && (x.overdue || (x.deadline ? x.deadline <= near : x.t.priority === 'Alta')))     // atrasadas, con plazo en dos semanas o de prioridad alta sin fecha
-      .sort((a, b) => rank(a) - rank(b) || (a.deadline || '9').localeCompare(b.deadline || '9') || prio(a) - prio(b) || a.t.id - b.t.id);
+      .sort((a, b) => rank(a) - rank(b) || (a.deadline || '9').localeCompare(b.deadline || '9') || (a.t.rank ?? 1e9) - (b.t.rank ?? 1e9) || prio(a) - prio(b) || a.t.id - b.t.id);
     const plan = [], unplaced = [];
     for (const x of candidates) {
-      const fits = d => used.get(d) === 0 || used.get(d) + x.minutes <= capacity;
+      const fits = d => cap(d) > 0 && (used.get(d) === 0 || used.get(d) + x.minutes <= cap(d));
       let day = days.find(d => fits(d) && (!x.deadline || d <= x.deadline));
       let late = false;
       if (!day) { day = days.find(fits); late = !!day && !!x.deadline && day > x.deadline; }
@@ -210,6 +217,6 @@ const Load = {
       used.set(day, used.get(day) + x.minutes);
       plan.push({ task: x.t, project: x.project, day, minutes: x.minutes, estimated: x.estimated, late });
     }
-    return { plan, unplaced, days: days.map(day => ({ day, used: used.get(day), capacity })) };
+    return { plan, unplaced, days: days.map(day => ({ day, used: used.get(day), capacity: cap(day) })) };
   },
 };

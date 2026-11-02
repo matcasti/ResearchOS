@@ -19,8 +19,21 @@ const ASST_MARK = '<!-- researchos-asistente -->';
 const ASST_MAX_OPS = 200;
 
 // -- referencias por uid (completo o prefijo de 8+) o por nombre ---------------------------------------------------------------
+const _asstRepeat = v => {
+  if (_asstEmpty(v)) return { recurrence: null };
+  const r = Tasks.cleanRecurrence(typeof v === 'string' ? { freq: v, interval: 1 } : v);
+  if (!r) throw new Error('repeat no válido: usa {"freq":"daily|weekly|monthly","interval":1,"until":"AAAA-MM-DD"}');
+  return { recurrence: r };
+};
+//  Referencias temporales: una operación «add» lleva "id":"p1" y las siguientes del mismo lote la usan como "#p1" (donde iría un uid o un nombre).
+let _asstTemp = new Map();                                                   // id temporal → { type, uid } del lote que se está aplicando
 function _asstFind(rows, ref, labelOf, what) {
-  const q = String(ref ?? '').trim();
+  let q = String(ref ?? '').trim();
+  if (q[0] === '#') {
+    const hit = _asstTemp.get(q.slice(1));
+    if (!hit) throw new Error(`la referencia «${q}» no está definida: la operación que la crea no se aplicó (o va después)`);
+    q = hit.uid;
+  }
   if (!q) throw new Error(`falta ${what}`);
   const byUid = rows.filter(r => r.uid === q || (q.length >= 8 && String(r.uid || '').startsWith(q)));
   if (byUid.length === 1) return byUid[0];
@@ -84,11 +97,33 @@ const _asstRounds = list => {
   });
 };
 
+//  Lo marcado como privado (proyectos, personas, tareas) y todo lo que cuelga de ello no existe para la IA: ni se publica ni se puede nombrar.
+let _asstPriv = { projects: new Set(), people: new Set(), names: [] };
+async function _asstRefreshPrivacy() {
+  const [projects, people] = await Promise.all([db.projects.toArray(), db.collaborators.toArray()]);
+  const hidden = new Set(projects.filter(p => p.private).map(p => p.id));
+  for (let grew = true; grew;) { grew = false; for (const p of projects) if (!hidden.has(p.id) && p.parentId != null && hidden.has(p.parentId)) { hidden.add(p.id); grew = true; } }     // los subproyectos de uno privado también
+  const priv = people.filter(c => c.private);
+  _asstPriv = { projects: hidden, people: new Set(priv.map(c => c.id)), names: priv.map(c => foldText(c.name)).filter(Boolean) };
+}
+const _asstHidden = (type, r) => {
+  const P = _asstPriv, inP = ids => (ids || []).some(i => P.projects.has(i));
+  switch (type) {
+    case 'project': return P.projects.has(r.id);
+    case 'person': return P.people.has(r.id);
+    case 'task': return !!r.private || P.projects.has(r.projectId) || P.people.has(r.assigneeId) || P.people.has(r.ownerId);
+    case 'idea': case 'reference': case 'snippet': return P.projects.has(r.projectId) || inP(r.projectIds);
+    case 'meeting': return !!r.private || P.projects.has(r.projectId) || P.names.some(n => foldText(r.participants || '').includes(n));      // los participantes son texto libre: se compara por nombre
+    default: return false;
+  }
+};
+
 /** Acceso a las entidades por referencia. Se consulta la BD en cada llamada: un lote puede crear un proyecto y usarlo después. */
 const _asstCx = {
-  project: async ref => _asstFind(await db.projects.toArray(), ref, p => p.title, 'proyecto'),
-  idea:    async ref => _asstFind(await db.ideas.toArray(), ref, i => i.title, 'idea'),
-  person:  async ref => _asstFind(await db.collaborators.toArray(), ref, c => c.name, 'persona'),
+  project: async ref => _asstFind((await db.projects.toArray()).filter(r => !_asstHidden('project', r)), ref, p => p.title, 'proyecto'),
+  idea:    async ref => _asstFind((await db.ideas.toArray()).filter(r => !_asstHidden('idea', r)), ref, i => i.title, 'idea'),
+  person:  async ref => _asstFind((await db.collaborators.toArray()).filter(r => !_asstHidden('person', r)), ref, c => c.name, 'persona'),
+  task:    async ref => _asstFind((await db.tasks.toArray()).filter(r => !_asstHidden('task', r)), ref, t => t.title, 'tarea'),
   column:  async ref => _asstFind(await db.kanbanColumns.toArray(), ref, c => c.title, 'columna'),
   area:    async ref => _asstFind((await _getAreas()).filter(a => a.uid), ref, a => a.name, 'área'),
 };
@@ -108,18 +143,27 @@ const ASST_FIELDS = {
     project:  _asstRef('project', 'projectId', () => ({ areaId: null })),
     idea:     _asstRef('idea', 'ideaId', i => ({ __ideaProject: i?.projectId ?? null })),
     assignee: _asstRef('person', 'assigneeId'),
-    repeat:   v => {
-      if (_asstEmpty(v)) return { recurrence: null };
-      const r = Tasks.cleanRecurrence(typeof v === 'string' ? { freq: v, interval: 1 } : v);
-      if (!r) throw new Error('repeat no válido: usa {"freq":"daily|weekly|monthly","interval":1,"until":"AAAA-MM-DD"}');
-      return { recurrence: r };
-    },
+    repeat:   _asstRepeat,
     minutes:  v => { if (_asstEmpty(v)) return { effort: null }; const m = Tasks.cleanEffort(v); if (m == null) throw new Error('minutes debe ser un número positivo'); return { effort: m }; },
     planDate: v => ({ planDate: _asstDate(v) }),
     area:     _asstRef('area', 'areaId'),
     notes:    v => ({ notes: Tasks.cleanNotes(v) }),
     link:     v => { if (_asstEmpty(v)) return { link: null }; const l = Tasks.cleanLink(v); if (!l) throw new Error('link debe ser una dirección http(s) válida'); return { link: l }; },
     source:   v => ({ source: Tasks.cleanSource(v) }),
+    owner:    _asstRef('person', 'ownerId'),                                   // quién la hace (distinto de «assignee»: de quién esperas el resultado)
+    after:    async (v, existing) => {                                         // se oculta hasta completar estas tareas
+      const refs = _asstEmpty(v) ? [] : Array.isArray(v) ? v : [v], ids = [];
+      for (const r of refs) {
+        const t = await _asstCx.task(r);
+        if (existing && t.id === existing.id) throw new Error('una tarea no puede ir después de sí misma');
+        if (existing) { const byId = Tasks.index(await db.tasks.toArray()), seen = new Set(); const dep = x => (x.afterIds || []).some(i => i === existing.id || (!seen.has(i) && byId.get(i) && (seen.add(i), dep(byId.get(i))))); if (dep(t)) throw new Error(`«${t.title}» ya depende de esta tarea: sería un ciclo`); }
+        ids.push(t.id);
+      }
+      return { afterIds: Tasks.cleanAfter(ids) };
+    },
+    rank:     v => { if (_asstEmpty(v)) return { rank: null }; const r = Tasks.cleanRank(v); if (r === null) throw new Error('rank debe ser un número (menor = antes)'); return { rank: r }; },
+    spent:    v => { if (_asstEmpty(v)) return { spent: null }; const m = Tasks.cleanSpent(v); if (m == null) throw new Error('spent son los minutos realmente dedicados (≥ 1)'); return { spent: m }; },
+    event:    v => ({ event: Tasks.cleanSource(v) }),                          // el «source» de la reunión (bloque del calendario) a la que está ligada
   },
   idea: {
     title:    v => ({ title: _asstText(v, 300, 'title', { required: true }) }),
@@ -148,6 +192,10 @@ const ASST_FIELDS = {
     parent:      _asstRef('project', 'parentId'),
     archived:    v => ({ archived: !!v }),
     starred:     v => ({ starred: !!v }),
+    rank:        v => { if (_asstEmpty(v)) return { rank: null }; const r = Tasks.cleanRank(v); if (r === null) throw new Error('rank debe ser un número (menor = antes en su columna)'); return { rank: r }; },
+    paused:      v => ({ paused: !!v }),                                       // en pausa: sale de Hoy y de la carga hasta que se reanude
+    pauseReason: v => ({ pauseReason: _asstText(v, 300, 'pauseReason') }),
+    pausedUntil: v => ({ pausedUntil: _asstDate(v) }),                         // fecha para revisar la pausa
     coauthors:   async v => {                                                  // personas de la agenda (con su id) o nombres sueltos
       const names = (Array.isArray(v) ? v : String(v ?? '').split(/[,;]/)).map(x => String(x).trim()).filter(Boolean).slice(0, 30), people = await db.collaborators.toArray();
       const hit = names.map(n => people.find(c => foldText(c.name) === foldText(n)));
@@ -190,6 +238,7 @@ const ASST_FIELDS = {
     duration:     v => { if (_asstEmpty(v)) return { duration: null }; const d = durationOrNull(v); if (d == null) throw new Error('duration son minutos (5 o más)'); return { duration: d }; },
     source:       v => ({ source: Tasks.cleanSource(v) }),
     project:      _asstRef('project', 'projectId'),
+    repeat:       _asstRepeat,                                                 // reunión que se repite: se crean sus próximas ocurrencias
     participants: v => ({ participants: _asstText(v, 500, 'participants') }),
     agreements:   v => ({ agreements: _asstText(v, 20000, 'agreements') }),
     actionItems:  async v => ({ actionItems: await _asstActionItems(v) }),
@@ -245,12 +294,19 @@ const ASST_FIELDS = {
     name:        v => ({ name: _asstText(v, 100, 'name', { required: true }) }),
     description: v => ({ description: _asstText(v, 500, 'description') }),
     color:       v => ({ color: cssColor(v, AREA_COLORS[0]) }),
+    parent:      async (v, existing) => {                                      // áreas anidadas
+      if (_asstEmpty(v)) return { parentId: null };
+      const a = await _asstCx.area(v);
+      if (existing && areaWithDescendants(await _getAreas(), existing.id).has(a.id)) throw new Error('un área no puede estar dentro de sí misma ni de sus subáreas');
+      return { parentId: a.id };
+    },
   },
   column: {
     title:    v => ({ title: _asstText(v, 60, 'title', { required: true }) }),
     color:    v => ({ color: cssColor(v, '#38bdf8') }),
     wip:      v => { if (_asstEmpty(v)) return { wip: null }; const n = +v; if (!Number.isInteger(n) || n < 1) throw new Error('wip es el límite de proyectos en la columna (entero ≥ 1, o null)'); return { wip: n }; },
     position: v => { const n = +v; if (!Number.isInteger(n) || n < 1) throw new Error('position es el lugar en el tablero (1 = la primera columna)'); return { __position: n }; },
+    types:    v => ({ types: (_asstEmpty(v) ? [] : Array.isArray(v) ? v : String(v).split(/[,;]/)).map(x => _asstProjectType(String(x).trim())) }),      // columna solo para estos tipos de proyecto ([] = todos)
   },
   setting: {
     dailyMinutes: v => { const n = +v; if (!Number.isFinite(n) || n < 30 || n > 960) throw new Error('dailyMinutes son los minutos útiles al día (30–960)'); return { dailyMinutes: Math.round(n) }; },
@@ -337,7 +393,7 @@ const _asstAreaStore = {
   get: async id => (await _getAreas()).find(a => a.id === id),
   add: async o => { const all = await _getAreas(), id = Math.max(Date.now(), ...all.map(a => +a.id || 0)) + 1; all.push({ ...o, id }); await _saveAreas(all); return id; },
   update: async (id, patch) => { const all = await _getAreas(), i = all.findIndex(a => a.id === id); if (i < 0) throw new Error('área ya no existe'); all[i] = { ...all[i], ...patch }; await _saveAreas(all); },
-  delete: async id => { await _saveAreas((await _getAreas()).filter(a => a.id !== id)); },
+  delete: async id => { const all = await _getAreas(), gone = all.find(a => a.id === id); await _saveAreas(all.filter(a => a.id !== id).map(a => a.parentId === id ? { ...a, parentId: gone?.parentId ?? null } : a)); },
 };
 /** Los ajustes de la app son un único registro: cada clave se lee y se escribe donde la app la guarda. */
 const _asstSettingsRow = { id: 1, uid: 'app-settings', name: 'ajustes' };
@@ -409,12 +465,13 @@ async function _asstDelete(type, row, table) {
     }
     case 'area': {
       const projs = await db.projects.filter(p => p.areaId === row.id).toArray(), tasks = await db.tasks.filter(t => t.areaId === row.id).toArray();
+      const kids = (await _getAreas()).filter(a => a.parentId === row.id).map(a => a.id);        // sus subáreas suben un nivel (y vuelven si se deshace)
       for (const p of projs) await db.projects.update(p.id, { areaId: null });
       for (const t of tasks) await db.tasks.update(t.id, { areaId: null });
       await table.delete(row.id);
       return { uid: row.uid, undo: async () => {
         await db.tombstones.where('uid').equals(row.uid).delete();                         // si no, la lápida del borrado lo volvería a quitar al sincronizar
-        await _saveAreas([...await _getAreas(), row]);
+        await _saveAreas([...(await _getAreas()).map(a => kids.includes(a.id) ? { ...a, parentId: row.id } : a), row]);
         for (const p of projs) await db.projects.update(p.id, { areaId: row.id });
         for (const t of tasks) await db.tasks.update(t.id, { areaId: row.id });
       } };
@@ -432,7 +489,15 @@ async function _asstDelete(type, row, table) {
   }
 }
 
-/** Pone en marcha una operación ya validada. Devuelve { uid, undo }. */
+/** Una tarea nueva ligada a un bloque del calendario: lo que no fijó lo toma de la reunión, y si fijó algo, la reunión lo sigue. */
+async function _asstLinkTask(id) {
+  const t = await db.tasks.get(id), m = await db.meetings.filter(x => x.source === t.event).first();
+  if (!m) return;
+  await db.tasks.update(id, { planDate: t.planDate ?? m.date, effort: t.effort ?? m.duration ?? null });
+  await EventLinks.fromTask(await db.tasks.get(id));
+}
+
+/** Pone en marcha una operación ya validada. Devuelve { uid, undo, warnings? }. */
 async function _asstRun(it) {
   const { type, op } = it, T = ASST_TYPES[type], table = _asstTable(T), now = new Date().toISOString();
   if (op === 'add') {
@@ -446,15 +511,18 @@ async function _asstRun(it) {
       const { __done, __ideaProject, ...f } = c;
       if (__ideaProject != null && f.projectId === undefined) f.projectId = __ideaProject;
       id = await Tasks.add({ title: f.title, due: f.due, projectId: f.projectId, ideaId: f.ideaId, areaId: f.areaId, priority: f.priority,
-        assigneeId: f.assigneeId, recurrence: f.recurrence, effort: f.effort, planDate: f.planDate, notes: f.notes, link: f.link, source: f.source });
+        assigneeId: f.assigneeId, recurrence: f.recurrence, effort: f.effort, planDate: f.planDate, notes: f.notes, link: f.link, source: f.source,
+        ownerId: f.ownerId, afterIds: f.afterIds, rank: f.rank, spent: f.spent, event: f.event });
       if (__done) await Tasks.setDone(id, true);
+      if (f.event) await _asstLinkTask(id);
     } else if (type === 'idea') {
       id = await table.add({ title: '', content: '', status: 'unread', projectId: null, projectIds: [], tags: [], subtasks: [], starred: false, deadline: null, createdAt: now, updatedAt: now, ...c });
     } else if (type === 'project') {
-      const col = c.columnId ?? (await db.kanbanColumns.orderBy('order').first())?.id ?? null;
+      const col = c.columnId ?? columnForType(await db.kanbanColumns.orderBy('order').toArray(), c.type || 'Proyecto');       // las columnas pensadas para ese tipo, si las hay
       id = await table.add({ status: 'active', archived: false, starred: false, tags: [], coauthors: [], type: 'Proyecto', priority: 'Media', responsible: '', deadline: null, description: '', createdAt: now, updatedAt: now, ...c, columnId: col });
     } else if (type === 'meeting') {
       id = await table.add({ title: '', date: localDateISO(), participants: '', agreements: '', projectId: null, actionItems: [], createdAt: now, updatedAt: now, ...c });
+      if (c.recurrence) await Meetings.expandSeries(id);
     } else if (type === 'reference') {
       id = await table.add({ title: '', authors: '', year: null, journal: '', doi: '', url: '', projectId: null, notes: '', tags: [], createdAt: now, updatedAt: now, ...c });
     } else if (type === 'snippet') {
@@ -472,9 +540,21 @@ async function _asstRun(it) {
       id = await table.add({ email: '', role: '', affiliation: '', notes: '', createdAt: now, ...c });
     }
     if (type === 'project' && c.submissionStatus && c.columnId === undefined) await _syncPaperColumn(id, c.submissionStatus);      // el tablero sigue al pipeline si la persona lo activó
-    return { uid: (await table.get(id)).uid, undo: async () => { await placeUndo?.(); await table.delete(id); } };
+    const created = await table.get(id);
+    return { uid: created.uid, undo: async () => {
+      await placeUndo?.();
+      if (type === 'meeting' && c.recurrence) await db.meetings.where('seriesId').equals(created.uid).delete().catch(async () => { for (const x of await db.meetings.filter(m => m.seriesId === created.uid).toArray()) await db.meetings.delete(x.id); });
+      await table.delete(id);
+    } };
   }
 
+  if (it.deferred) {                                                           // «#p1»: el registro lo crea una operación anterior del mismo lote
+    const hit = _asstTemp.get(it.deferred.slice(1));
+    if (!hit) throw new Error(`la referencia «${it.deferred}» no está definida: la operación que la crea no se aplicó`);
+    const found = (await table.toArray()).find(r => r.uid === hit.uid);
+    if (!found) throw new Error(`${T.noun} «${it.deferred}» ya no existe`);
+    it.id = found.id; it.uid = found.uid;
+  }
   const row = await table.get(it.id);
   if (!row) throw new Error(`${T.noun} ya no existe`);
   if (op === 'delete') return _asstDelete(type, row, table);
@@ -491,6 +571,11 @@ async function _asstRun(it) {
   if (type === 'column' && c.__position !== undefined) { position = c.__position; delete c.__position; }
   const keys = Object.keys(c);
   const before = Object.fromEntries(keys.map(k => [k, row[k]]));
+  const warnings = [];
+  if (keys.length && keys.every(k => JSON.stringify(row[k] ?? null) === JSON.stringify(c[k] ?? null))) warnings.push('sin cambios: ya tenía esos valores');
+  const linked = [];                                                           // tareas y reuniones ligadas por «event»/«source»: se guardan para poder deshacer
+  if (type === 'meeting' && row.source) linked.push(...(await db.tasks.filter(t => t.event === row.source).toArray()).map(r => ['tasks', r]));
+  if (type === 'task' && (row.event || c.event)) linked.push(...(await db.meetings.filter(m => m.source === (c.event ?? row.event)).toArray()).map(r => ['meetings', r]));
   if (type === 'project' && 'columnId' in c) {
     before.columnHistory = row.columnHistory; before.columnId = row.columnId;
     const { columnId, ...rest } = c;
@@ -504,13 +589,18 @@ async function _asstRun(it) {
     } else await table.update(row.id, c);
   }
   const placeUndo = position ? await _asstPlaceColumn(row.id, position) : null;
+  if (type === 'meeting' && ('recurrence' in c)) await Meetings.expandSeries(row.id);
+  if (type === 'meeting' && (c.date || c.time !== undefined || c.duration !== undefined)) await EventLinks.fromMeeting(await table.get(row.id));
+  if (type === 'task' && ('planDate' in c || 'effort' in c || 'event' in c)) await EventLinks.fromTask(await table.get(row.id));
   return {
-    uid: row.uid,
+    uid: row.uid, warnings,
     undo: async () => {
+      for (const [t, r] of linked) await db[t].put(r);
       if (spawned) await db.tasks.delete(spawned);
       if (type === 'task' && 'done' in set) await db.tasks.update(row.id, { done: !!row.done, doneAt: row.doneAt ?? null });
       await placeUndo?.();
       if (Object.keys(before).length) await table.update(row.id, before);
+      if (type === 'meeting' && 'recurrence' in c) await Meetings.expandSeries(row.id);
     },
   };
 }
@@ -536,6 +626,9 @@ const Assistant = {
   // con el segundo llega a los ajustes de la app (áreas, columnas del tablero, etapas de Submissions, campos por tipo, horas útiles…).
   fullControl: () => { try { return localStorage.getItem('ros-assistant-full') === '1'; } catch { return false; } },
   appSettings: () => { try { return localStorage.getItem('ros-assistant-config') === '1'; } catch { return false; } },
+  /** Qué registros tocó la IA y cuándo (para distinguir en `recentChanges` lo que hizo ella de lo que hizo la persona). */
+  touch(uid) { try { const m = this.touched(); m[uid] = new Date().toISOString(); const cut = Date.now() - 4 * 86400000; for (const k of Object.keys(m)) if (new Date(m[k]) < cut) delete m[k]; localStorage.setItem('ros-asst-touched', JSON.stringify(m)); } catch {} },
+  touched() { try { return JSON.parse(localStorage.getItem('ros-asst-touched') || '{}') || {}; } catch { return {}; } },
   setPermission(which, on) { try { localStorage.setItem(which === 'full' ? 'ros-assistant-full' : 'ros-assistant-config', on ? '1' : '0'); } catch {} },
   lastRun:   () => +localStorage.getItem('ros-assistant-last') || null,
   async handle() { return (await db.settings.get(this.KEY))?.value || null; },
@@ -565,26 +658,38 @@ const Assistant = {
   /** Estado para el LLM: nombres en vez de ids, sin campos vacíos. */
   async state() {
     const today = localDateISO(), cut = addDaysISO(-30), recent = new Date(Date.now() - 14 * 86400000).toISOString();
-    const [projects, tasks, ideas, meetings, people, columns, references, snippets, collections] = await Promise.all([
+    await _asstRefreshPrivacy();
+    const [rawProjects, rawTasks, rawIdeas, rawMeetings, rawPeople, columns, rawRefs, rawSnippets, collections, tombstones] = await Promise.all([
       db.projects.toArray(), db.tasks.toArray(), db.ideas.toArray(), db.meetings.toArray(), db.collaborators.toArray(), db.kanbanColumns.orderBy('order').toArray(),
-      db.references.toArray(), db.snippets.toArray(), db.snippetCollections.toArray()]);
+      db.references.toArray(), db.snippets.toArray(), db.snippetCollections.toArray(), db.tombstones.toArray()]);
+    const vis = (type, rows) => rows.filter(r => !_asstHidden(type, r));                 // lo privado (y lo que cuelga de ello) no se publica
+    const projects = vis('project', rawProjects), tasks = vis('task', rawTasks), ideas = vis('idea', rawIdeas), meetings = vis('meeting', rawMeetings),
+          people = vis('person', rawPeople), references = vis('reference', rawRefs), snippets = vis('snippet', rawSnippets);
+    const hiddenCount = rawProjects.length - projects.length + rawTasks.length - tasks.length + rawPeople.length - people.length;
     const full = Assistant.fullControl(), cap = n => full ? Infinity : n;                // con el control total la IA ve todo, sin recortes
     const areas = await _getAreas();
     const name = (rows, key) => new Map(rows.map(r => [r.id, r[key]]));
     const P = name(projects, 'title'), I = name(ideas, 'title'), C = name(people, 'name'), K = name(columns, 'title'), A = name(areas, 'name');
     const clean = o => Object.fromEntries(Object.entries(o).filter(([, v]) => !(v === null || v === undefined || v === '' || v === false || (Array.isArray(v) && !v.length))));
     const cut_ = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; };
-    const open = tasks.filter(t => !t.done);
+    const open = tasks.filter(t => !t.done), byTaskId = Tasks.index(rawTasks), me = Me.id();
+    const T = new Map(rawTasks.map(t => [t.id, t.title]));
+    const blockedBy = t => Tasks.isBlocked(t, byTaskId) ? (t.afterIds || []).map(i => byTaskId.get(i)).filter(x => x && !x.done && !_asstHidden('task', x)).map(x => x.title) : [];
     const state = {
       format: ASST_STATE_FORMAT, today, weekday: new Date(today + 'T12:00:00').toLocaleDateString('es', { weekday: 'long' }),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, generated: new Date().toISOString(),
       note: 'Fechas AAAA-MM-DD en hora local. Los campos ausentes están vacíos o en falso. Para cambiar algo lee AGENTS.md y deja un archivo en cambios/.',
       summary: { openTasks: open.length, overdueTasks: open.filter(t => t.due && t.due < today).length, dueToday: open.filter(t => t.due === today).length,
-        dueNext7Days: open.filter(t => t.due > today && t.due <= addDaysISO(7)).length, waitingOnOthers: open.filter(t => t.assigneeId).length,
+        dueNext7Days: open.filter(t => t.due > today && t.due <= addDaysISO(7)).length, waitingOnOthers: open.filter(t => Me.waiting(t.assigneeId)).length,
+        blockedTasks: open.filter(t => Tasks.isBlocked(t, byTaskId)).length, pausedProjects: projects.filter(p => p.paused && !p.archived).length,
         activeProjects: projects.filter(p => !p.archived).length, archivedProjects: projects.filter(p => p.archived).length, unreadIdeas: ideas.filter(i => i.status === 'unread').length },
       permissions: { fullControl: full, appSettings: Assistant.appSettings() },
-      columns: columns.map(c => c.title), columnsInfo: columns.map(c => clean({ uid: c.uid, title: c.title, color: c.color, wip: c.wip, order: c.order })),
-      areas: areas.map(a => clean({ uid: a.uid, name: a.name, description: a.description, color: a.color })),
+      me: me && C.get(me) ? C.get(me) : null,                                                // «yo» en la agenda de personas: lo asignado a esta persona no es esperar a nadie
+      ...(hiddenCount ? { privacy: 'Hay registros marcados como privados por la persona: no aparecen aquí y no puedes referirte a ellos.' } : {}),
+      estimateAccuracy: Tasks.accuracy(rawTasks.filter(t => !_asstHidden('task', t))),
+      recentChanges: Assistant._recentChanges({ projects, tasks, ideas, meetings, people, references, snippets, tombstones }),
+      columns: columns.map(c => c.title), columnsInfo: columns.map(c => clean({ uid: c.uid, title: c.title, color: c.color, wip: c.wip, order: c.order, types: c.types, count: projects.filter(p => !p.archived && p.columnId === c.id).length, overWip: !!c.wip && projects.filter(p => !p.archived && !p.paused && p.columnId === c.id).length > c.wip })),
+      areas: areas.map(a => clean({ uid: a.uid, name: a.name, description: a.description, color: a.color, parent: A.get(a.parentId) })),
       collections: collections.map(c => clean({ uid: c.uid, name: c.name, color: c.color })),
       settings: await (async () => { const r = await _asstSettingsRead(); return { ...r, submissionStages: r.submissionStages.map(x => ({ key: x.key, label: x.label })),
         submissionColumnMap: Object.fromEntries(Object.entries(r.submissionColumnMap).map(([k, id]) => [k, K.get(+id)]).filter(([, v]) => v)) }; })(),
@@ -592,17 +697,18 @@ const Assistant = {
       projectTypes: ASST_PROJECT_TYPES, submissionStages: SUB_STATUSES.map(x => ({ key: x.key, label: x.label })),
       people: people.map(c => clean({ uid: c.uid, name: c.name, role: c.role, affiliation: c.affiliation, email: c.email, followUpDays: c.followUpDays, lastContact: c.lastContact, notes: cut_(c.notes, 300) })),
       projects: projects.filter(p => !p.archived).map(p => clean({ uid: p.uid, title: p.title, type: p.type, column: K.get(p.columnId), priority: p.priority, deadline: p.deadline,
-        responsible: p.responsible || C.get(p.responsibleId), area: A.get(p.areaId), parent: P.get(p.parentId), tags: p.tags, starred: p.starred, coauthors: p.coauthors, submissionStatus: p.submissionStatus, targetVenue: p.targetVenue, submittedAt: p.submittedAt,
+        responsible: p.responsible || C.get(p.responsibleId), area: A.get(p.areaId), parent: P.get(p.parentId), rank: p.rank, paused: p.paused, pauseReason: p.pauseReason, pausedUntil: p.pausedUntil, tags: p.tags, starred: p.starred, coauthors: p.coauthors, submissionStatus: p.submissionStatus, targetVenue: p.targetVenue, submittedAt: p.submittedAt,
         customFields: p.customFields, submissionNotes: cut_(p.submissionNotes, 300), submissionRounds: (p.submissionRounds || []).map(r => clean({ submittedAt: r.submittedAt, decision: r.decision, decisionDate: r.decisionDate, venue: r.venue, notes: cut_(r.notes, 200) })),
         description: cut_(p.description, 400) })),
       tasks: tasks.filter(t => !t.done || full || (t.doneAt || '') > recent).sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999')).slice(0, cap(600)).map(t => clean({
         uid: t.uid, title: t.title, done: t.done, doneAt: t.done ? t.doneAt : null, due: t.due, late: !t.done && t.due && t.due < today, priority: t.priority,
         notes: cut_(t.notes, 300), link: t.link, source: t.source,
-        project: P.get(t.projectId), idea: I.get(t.ideaId), assignee: C.get(t.assigneeId), repeat: t.recurrence, minutes: t.effort, planDate: t.planDate, area: A.get(t.areaId) })),
+        project: P.get(t.projectId), idea: I.get(t.ideaId), assignee: me && t.assigneeId === me ? null : C.get(t.assigneeId), owner: C.get(t.ownerId), repeat: t.recurrence, minutes: t.effort, spent: t.spent, rank: t.rank,
+        after: (t.afterIds || []).map(i => T.get(i)).filter(Boolean), blockedBy: blockedBy(t), event: t.event, planDate: t.planDate, area: A.get(t.areaId) })),
       ideas: ideas.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, cap(200)).map(i => clean({
         uid: i.uid, title: i.title, status: i.status, project: P.get(i.projectId), tags: i.tags, deadline: i.deadline, starred: i.starred, source: i.source, content: cut_(i.content, 500) })),
       meetings: meetings.filter(m => full || (m.date || '') >= cut).sort((a, b) => (a.date || '').localeCompare(b.date || '')).slice(0, cap(60)).map(m => clean({
-        uid: m.uid, title: m.title, date: m.date, time: m.time, duration: m.duration, source: m.source, project: P.get(m.projectId), participants: m.participants, agreements: cut_(m.agreements, 400),
+        uid: m.uid, title: m.title, date: m.date, time: m.time, duration: m.duration, source: m.source, repeat: m.recurrence, series: m.seriesId, project: P.get(m.projectId), participants: m.participants, agreements: cut_(m.agreements, 400),
         actionItems: (m.actionItems || []).map(a => clean({ text: a.text, done: a.done, due: a.due, assignee: C.get(a.assigneeId) })) })),
       references: references.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, cap(300)).map(r => clean({
         uid: r.uid, title: r.title, authors: r.authors, year: r.year, journal: r.journal, doi: r.doi, url: r.url, project: P.get(r.projectId), tags: r.tags,
@@ -613,11 +719,31 @@ const Assistant = {
     return state;
   },
 
+  /** Lo que cambió en las últimas 48 h y quién lo hizo: la persona o la propia IA (por lo que ella marcó como tocado). Sirve para no releer todo. */
+  _recentChanges({ projects, tasks, ideas, meetings, people, references, snippets, tombstones }) {
+    const since = Date.now() - 48 * 3600000, touched = this.touched(), out = [];
+    const by = (uid, at) => touched[uid] && new Date(touched[uid]) >= new Date(at) - 5000 ? 'assistant' : 'user';       // si la última modificación es posterior a lo que tocó la IA, fue la persona
+    const add = (type, key, rows) => {
+      for (const r of rows) {
+        const done = type === 'task' && r.done && r.doneAt && new Date(r.doneAt) >= since;
+        const at = done ? r.doneAt : (r.updatedAt || r.createdAt);
+        if (!at || new Date(at) < since) continue;
+        const created = !done && r.createdAt && Math.abs(new Date(r.createdAt) - new Date(at)) < 3000;
+        out.push({ type, uid: r.uid, title: r[key], change: done ? 'completed' : created ? 'created' : 'updated', at, by: by(r.uid, at) });
+      }
+    };
+    add('task', 'title', tasks); add('project', 'title', projects); add('idea', 'title', ideas); add('meeting', 'title', meetings);
+    add('person', 'name', people); add('reference', 'title', references); add('snippet', 'title', snippets);
+    const kinds = { tasks: 'task', projects: 'project', ideas: 'idea', meetings: 'meeting', collaborators: 'person', references: 'reference', snippets: 'snippet' };
+    for (const t of tombstones) if (kinds[t.table] && t.deletedAt && new Date(t.deletedAt) >= since) out.push({ type: kinds[t.table], uid: t.uid, change: 'deleted', at: t.deletedAt, by: by(t.uid, t.deletedAt) });
+    return out.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 100);
+  },
+
   /** La misma información como agenda en Markdown (las referencias a registros usan los 8 primeros caracteres del uid). */
   markdown(s) {
     const short = u => '`' + String(u).slice(0, 8) + '`';
-    const line = t => `- [${t.done ? 'x' : ' '}] ${t.title}${t.project ? ` — ${t.project}` : ''}${t.due ? ` · ${t.due}` : ''}${t.priority ? ` · ${t.priority}` : ''}${t.assignee ? ` · esperando a ${t.assignee}` : ''}${t.repeat ? ` · ↻ ${t.repeat.freq}` : ''} ${short(t.uid)}`;
-    const open = s.tasks.filter(t => !t.done);
+    const line = t => `- [${t.done ? 'x' : ' '}] ${t.title}${t.project ? ` — ${t.project}` : ''}${t.due ? ` · ${t.due}` : ''}${t.priority ? ` · ${t.priority}` : ''}${t.assignee ? ` · esperando a ${t.assignee}` : ''}${t.owner ? ` · responsable ${t.owner}` : ''}${t.blockedBy?.length ? ` · después de «${t.blockedBy[0]}»` : ''}${t.repeat ? ` · ↻ ${t.repeat.freq}` : ''} ${short(t.uid)}`;
+    const open = s.tasks.filter(t => !t.done && !t.blockedBy?.length);              // lo que espera a otra tarea tiene su propia sección
     const sect = (title, list) => list.length ? `\n## ${title} (${list.length})\n\n${list.map(line).join('\n')}\n` : '';
     return `${ASST_MARK}\n# Pendientes — ${s.today} (${s.weekday})\n\n` +
       `> Generado por ResearchOS. **No lo edites**: para cambiar algo deja un archivo en \`cambios/\` (ver AGENTS.md). Los códigos entre acentos graves son el comienzo del uid.\n` +
@@ -628,8 +754,9 @@ const Assistant = {
       sect('Más adelante', open.filter(t => t.due > addDaysISO(7) && !t.assignee)) +
       sect('Sin fecha', open.filter(t => !t.due && !t.assignee)) +
       sect('Esperando a otras personas', open.filter(t => t.assignee)) +
+      sect('Esperan a otra tarea', s.tasks.filter(t => !t.done && t.blockedBy?.length)) +
       (s.meetings.filter(m => m.date >= s.today).length ? `\n## Reuniones próximas\n\n${s.meetings.filter(m => m.date >= s.today).map(m => `- ${m.date} · ${m.title}${m.project ? ` — ${m.project}` : ''} ${short(m.uid)}`).join('\n')}\n` : '') +
-      `\n## Proyectos activos (${s.projects.length})\n\n${s.projects.map(p => `- **${p.title}** · ${p.column || '—'}${p.deadline ? ` · vence ${p.deadline}` : ''}${p.priority ? ` · ${p.priority}` : ''} ${short(p.uid)}`).join('\n') || '_ninguno_'}\n` +
+      `\n## Proyectos activos (${s.projects.length})\n\n${s.projects.map(p => `- **${p.title}**${p.paused ? ' ⏸ en pausa' + (p.pauseReason ? ` (${p.pauseReason})` : '') : ''} · ${p.column || '—'}${p.deadline ? ` · vence ${p.deadline}` : ''}${p.priority ? ` · ${p.priority}` : ''} ${short(p.uid)}`).join('\n') || '_ninguno_'}\n` +
       (s.ideas.filter(i => i.status === 'unread').length ? `\n## Ideas sin leer\n\n${s.ideas.filter(i => i.status === 'unread').map(i => `- ${i.title}${i.project ? ` — ${i.project}` : ''} ${short(i.uid)}`).join('\n')}\n` : '');
   },
 
@@ -685,18 +812,19 @@ Crea un archivo nuevo en \`cambios/\` (nombre único, p. ej. \`2026-11-01T10-30-
 
 ### Campos de \`set\` por tipo
 
-- **task**: ${f('task')}. \`repeat\`: \`{"freq":"daily|weekly|monthly","interval":1,"until":"AAAA-MM-DD"}\` (o solo \`"weekly"\`). \`minutes\`: tiempo estimado. \`planDate\`: el día en que la harás. \`assignee\`: persona de la que esperas la tarea.
+- **task**: ${f('task')}. \`repeat\`: \`{"freq":"daily|weekly|monthly","interval":1,"until":"AAAA-MM-DD"}\` (o solo \`"weekly"\`). \`minutes\`: tiempo estimado. \`planDate\`: el día en que la harás. \`assignee\`: persona de la que esperas la tarea. \`owner\`: quién la hace (**no** cuenta como espera; para una tarea tuya o de la persona usa \`owner\`, no \`assignee\`). Si en \`estado.json\` aparece \`me\`, asignarle una tarea a esa persona tampoco es «esperar a nadie». \`after\`: lista de tareas (nombre, uid o \`#id\`) que deben completarse antes: la tarea queda oculta de Hoy y de la carga hasta entonces (\`blockedBy\` en el estado). \`rank\`: orden manual, menor = antes (desempata dentro del mismo día). \`spent\`: minutos realmente dedicados (la app compara con \`minutes\` en \`estimateAccuracy\`). \`event\`: el \`source\` de la reunión (bloque del calendario) a la que está ligada: el día de la reunión es el \`planDate\` de la tarea y su duración, los \`minutes\`, y se siguen en los dos sentidos.
 - **idea**: ${f('idea')}. \`status\`: \`unread\` o \`reviewed\`.
 - **project**: ${f('project')}. \`column\`: nombre de la columna del tablero (ver \`columns\`). \`type\` es uno de \`projectTypes\` (\`Proyecto\`, \`Grant\`, \`Paper\`…).
   - **Submissions:** un proyecto de \`type\` \`Paper\` aparece en la vista *Submissions*. Su etapa es \`submissionStatus\` (una clave de \`submissionStages\` en \`estado.json\`; por defecto \`preparacion\`, \`enviado\`, \`en_revision\`, \`revision_solicitada\`, \`aceptado\`, \`rechazado\`). Al pasar a \`enviado\` se anota la fecha de envío, y si la persona activó la sincronización con el tablero, la columna se mueve sola. \`targetVenue\`: revista o fondo objetivo; \`submittedAt\`: fecha de envío; \`submissionNotes\`: notas. \`submissionRounds\` reemplaza las rondas de revisión y \`addSubmissionRounds\` añade: lista de \`{"submittedAt","decision","decisionDate","venue","notes"}\` con \`decision\` = \`major\`, \`minor\`, \`reject\`, \`accept\` o \`pending\`. Estos campos solo se aceptan en proyectos Paper (pon \`"type":"Paper"\` en el mismo \`set\` si hace falta).
   - \`coauthors\`: nombres separados por coma o lista; los que coincidan con una persona se enlazan a ella.
-- **meeting**: ${f('meeting')}. \`addActionItems\`: lista de \`{"text","due","assignee","done"}\` que se añade a los acuerdos.
+  - \`rank\`: posición manual en su columna (menor = antes). \`paused\`: en pausa (sale de Hoy y de la carga), con \`pauseReason\` y \`pausedUntil\` (fecha para revisar la pausa).
+- **meeting**: ${f('meeting')}. \`addActionItems\`: lista de \`{"text","due","assignee","done"}\` que se añade a los acuerdos. \`repeat\` (igual que en las tareas) crea las próximas ocurrencias (unos 4 meses) como reuniones independientes; en el estado traen \`series\`.
 - **person**: ${f('person')}. \`followUpDays\`: cada cuántos días hay que escribirle (7, 14, 30, 90 o 180; \`null\` para quitarlo); \`lastContact\`: última vez que se hablaron.
 - **reference** (bibliografía): ${f('reference')}. \`readStatus\`: \`toread\`, \`reading\` o \`read\`. \`doi\` sin la URL; \`url\` solo http(s).
 - **snippet** (código): ${f('snippet')}. Para añadir hacen falta \`title\` y \`code\`; \`language\` es R, Python, Bash, SQL u Other.
 - **collection** (colección de snippets): ${f('collection')}.${Assistant.appSettings() ? `
-- **area** (frentes de trabajo, p. ej. Investigación o Docencia): ${f('area')}. Borrar un área deja sin área a sus proyectos y tareas.
-- **column** (columnas del tablero): ${f('column')}. \`position\` es el lugar (1 = la primera); al borrar una columna sus proyectos pasan a la anterior (o a la siguiente). Siempre queda al menos una.
+- **area** (frentes de trabajo, p. ej. Investigación o Docencia): ${f('area')}. Borrar un área deja sin área a sus proyectos y tareas. \`parent\`: área en la que se anida (elegir un área en el menú incluye sus subáreas).
+- **column** (columnas del tablero): ${f('column')}. \`position\` es el lugar (1 = la primera); al borrar una columna sus proyectos pasan a la anterior (o a la siguiente). Siempre queda al menos una. \`types\`: lista de tipos de proyecto para los que existe la columna (vacía = todos); los proyectos de ese tipo empiezan en ella.
 - **setting** (un único registro, sin \`uid\`: \`{"op":"update","type":"setting","set":{…}}\`): ${f('setting')}. \`dailyMinutes\`: minutos útiles al día (30–960) para la carga y el plan semanal; \`submissionStages\`: lista \`[{"key","label","shortLabel","color","icon"}]\` que **reemplaza** las etapas de Submissions (no se pueden quitar las que usa algún paper); \`projectFields\`: \`{"Paper":[{"key","label","type":"text|number","placeholder"}]}\` define los campos extra de cada tipo de proyecto, que luego se rellenan con \`customFields\` en el proyecto; \`submissionColumnMap\`: \`{"enviado":"Nombre de columna"}\`; \`syncPaperColumn\`: si el tablero sigue al pipeline; \`profile\`: \`all\`, \`research\`, \`teaching\` o \`management\`; \`theme\`: \`dark\`/\`light\`; \`accent\`: \`blue\`/\`green\`/\`purple\`. Los valores actuales están en \`settings\` de \`estado.json\`.` : ''}
 
 ## Permisos
@@ -705,14 +833,33 @@ La persona decide hasta dónde llegas (Ajustes → Asistente de IA). Ahora mismo
 
 - **Control total de los datos: ${Assistant.fullControl() ? 'ACTIVADO' : 'desactivado'}.** ${Assistant.fullControl() ? 'Puedes borrar cualquier dato (proyectos, personas, reuniones, colecciones, tareas, ideas, referencias y snippets) y `estado.json` trae todo sin recortes. Borrar un proyecto deja sus tareas, ideas y reuniones sueltas; borrar una persona la quita de responsables y coautores. Úsalo con criterio: aunque se pueda deshacer, no borres por tu cuenta lo que la persona no haya pedido.' : 'No puedes borrar proyectos, personas, reuniones ni colecciones, y los borrados de tareas, ideas, referencias y snippets los revisa la persona. `estado.json` recorta lo antiguo (tareas hechas hace más de 14 días, reuniones de hace más de 30 días…).'}
 - **Ajustes de la app: ${Assistant.appSettings() ? 'ACTIVADOS' : 'desactivados'}.** ${Assistant.appSettings() ? 'Puedes tocar áreas, columnas del tablero y los ajustes (`setting`). Cambia solo lo que la persona pida.' : 'Los tipos `area`, `column` y `setting` se rechazan. Si la persona te pide algo de eso, dile que lo active.'}
+- **Privado:** la persona puede marcar proyectos, personas y tareas como privados. No aparecen en \`estado.json\` ni en \`pendientes.md\` (ni lo que cuelga de ellos: sus tareas, ideas, reuniones…), y si los nombras la app responde que no existen. No intentes adivinarlos.
 - Nunca están a tu alcance: restaurar o vaciar datos, la sincronización, las copias de seguridad, las carpetas vinculadas, los permisos del navegador y estos mismos permisos.
+
+
+## Varias operaciones relacionadas en un mismo lote
+
+Una operación \`add\` puede llevar un nombre temporal (\`"id": "p1"\`) y las siguientes del **mismo archivo** lo usan como \`"#p1"\` donde iría un nombre o un uid (\`project\`, \`after\`, \`uid\`, \`match\`…). Así creas y modificas en un solo paso y el orden importa: define el \`id\` antes de usarlo.
+
+\`\`\`json
+{ "ops": [
+  { "op": "add", "id": "p1", "type": "project", "set": { "title": "Tesis cap. 3", "type": "Paper" } },
+  { "op": "add", "id": "t1", "type": "task", "set": { "title": "Pedir datos", "project": "#p1" } },
+  { "op": "add", "type": "task", "set": { "title": "Analizar", "project": "#p1", "after": ["#t1"] } },
+  { "op": "update", "type": "project", "uid": "#p1", "set": { "submissionStatus": "preparacion" } }
+] }
+\`\`\`
+
+## Lo que cambió desde la última vez
+
+\`estado.json\` trae \`recentChanges\`: lo creado, modificado, completado o borrado en las últimas 48 h, con \`by\` = \`user\` o \`assistant\`. Léelo en vez de releer todo para enterarte de lo que hizo la persona. También trae \`estimateAccuracy\` (cuánto se desvían sus estimaciones) y, en cada columna, \`overWip\` si se pasó de su tope.
 
 
 ## Qué pasa después
 
 1. La app (debe estar abierta en el navegador) lee \`cambios/\` cada pocos segundos.
 2. Por defecto **la persona revisa y acepta** tus cambios; ${Assistant.fullControl() ? 'con el **control total** activado, los borrados siguen el mismo modo que el resto (en automático se aplican enseguida y se pueden deshacer)' : 'los borrados **siempre** se revisan'}. Si activó «aplicar automáticamente», ${Assistant.fullControl() ? 'todo se aplica enseguida y se puede deshacer' : 'lo que no es un borrado se aplica enseguida y se puede deshacer'}.
-3. La app escribe \`resultados/<mismo nombre>.json\` con \`status\` (\`pending\` mientras espera revisión, luego \`done\`) y, por operación, \`applied\`, \`rejected\` o \`error\` (con el motivo y el \`uid\` creado). **Léelo** y corrige lo que haya fallado en un archivo nuevo.
+3. La app escribe \`resultados/<mismo nombre>.json\`: primero \`status: "received"\` en cuanto ve el archivo, luego \`pending\` (espera revisión) o \`done\` y, por operación, \`applied\`, \`rejected\`, \`skipped\` o \`error\` (con el motivo y el \`uid\` creado), más \`warnings\` cuando algo no hizo lo que parecía (p. ej. «sin cambios: ya tenía esos valores»). **Léelo** y corrige lo que haya fallado en un archivo nuevo.
 4. \`estado.json\` se actualiza con lo aplicado.
 
 ## Buenas prácticas
@@ -772,15 +919,18 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
     if (change.format && change.format !== ASST_CHANGES_FORMAT) throw new Error(`formato «${change.format}» no reconocido (se espera ${ASST_CHANGES_FORMAT})`);
     if (change.ops.length > ASST_MAX_OPS) throw new Error(`demasiadas operaciones (${change.ops.length}; máximo ${ASST_MAX_OPS})`);
     const items = [];
+    await _asstRefreshPrivacy();
+    const tempTypes = new Map();                                                           // «id» temporales declarados por los «add» de este lote
     for (const [i, raw] of change.ops.entries()) {
-      const it = { i, op: raw?.op, type: raw?.type, status: 'pending', label: '', set: null, id: null, destructive: false };
+      const it = { i, op: raw?.op, type: raw?.type, status: 'pending', label: '', set: null, id: null, destructive: false, warnings: [] };
       try {
         const T = ASST_TYPES[raw?.type];
         if (!T) throw new Error(`type «${raw?.type}» no existe (${Object.keys(ASST_TYPES).join(', ')})`);
         if (T.config && !Assistant.appSettings()) throw new Error(`«${raw.type}» es parte de los ajustes de la app: la persona debe activar «Ajustes de la app» en Ajustes → Asistente de IA`);
         const allowed = _asstOps(T);
         if (!allowed.includes(raw.op)) throw new Error(`«${raw.op}» no está permitido para ${T.noun} (admite: ${allowed.join(', ')})${T.full?.includes(raw.op) ? '. Para borrar la persona debe activar «Control total de los datos» en Ajustes → Asistente de IA' : ''}`);
-        const reserved = new Set(['op', 'type', 'uid', 'match', 'note', ...(raw.op === 'add' ? [] : ['source'])]);     // fuera de «add», «source» solo localiza el registro
+        const reserved = new Set(['op', 'type', 'uid', 'match', 'note', ...(raw.op === 'add' ? ['id'] : ['source'])]);     // fuera de «add», «source» solo localiza el registro; «id» es un nombre temporal para el lote
+        if (raw.op !== 'add' && raw.source !== undefined && (raw.uid !== undefined || raw.match !== undefined)) it.warnings.push('«source» solo sirve para localizar el registro (ya lo señalaste con uid/match): no se modifica');
         it.set = raw.set && typeof raw.set === 'object' && !Array.isArray(raw.set) ? raw.set
           : Object.fromEntries(Object.entries(raw).filter(([k]) => !reserved.has(k)));
         if (raw.op !== 'complete' && raw.op !== 'delete') {
@@ -792,6 +942,11 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
           if (raw.op === 'update' && !Object.keys(it.set).length) throw new Error('«set» está vacío');
         }
         if (raw.op === 'add') {
+          if (raw.id !== undefined) {
+            if (!/^[\w-]{1,40}$/.test(String(raw.id))) throw new Error('«id» (nombre temporal) debe tener letras, números, _ o - (máx. 40)');
+            if (tempTypes.has(String(raw.id))) throw new Error(`el «id» «${raw.id}» está repetido en este lote`);
+            tempTypes.set(String(raw.id), raw.type); it.tempId = String(raw.id);
+          }
           const s = it.set, bits = [s.due && `vence ${s.due}`, (s.project) && `proyecto ${s.project}`, s.assignee && `esperando a ${s.assignee}`, s.date && s.date].filter(Boolean);
           it.label = `Añadir ${T.noun} «${s.title ?? s.name}»${bits.length ? ' · ' + bits.join(' · ') : ''}`;
           const src = s.source != null ? Tasks.cleanSource(s.source) : '';                      // lo que ya entró desde ese origen (o que descartaste) no se vuelve a proponer
@@ -800,10 +955,18 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
             if (dup) { it.status = 'skipped'; it.reason = 'ya existe (mismo origen)'; it.uid = dup.uid; }
             else if (Assistant.isIgnored(src)) { it.status = 'skipped'; it.reason = 'la descartaste antes'; }
           }
+        } else if (!T.singleton && typeof (raw.uid ?? raw.match) === 'string' && String(raw.uid ?? raw.match)[0] === '#') {      // «#p1»: lo crea una operación anterior de este lote
+          const ref = String(raw.uid ?? raw.match), name = ref.slice(1);
+          if (!tempTypes.has(name)) throw new Error(`«${ref}» no está definido antes en este lote (crea el registro con "id":"${name}" en una operación anterior)`);
+          if (tempTypes.get(name) !== raw.type) throw new Error(`«${ref}» es ${ASST_TYPES[tempTypes.get(name)].noun}, no ${T.noun}`);
+          it.deferred = ref;
+          const fmt = v => v === null ? 'vacío' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+          it.label = raw.op === 'delete' ? `Eliminar ${T.noun} «${ref}»` : raw.op === 'complete' ? `Completar tarea «${ref}»` : `Modificar ${T.noun} «${ref}»: ${Object.entries(it.set).map(([k, v]) => `${k} → ${fmt(v)}`).join(', ')}`;
+          it.destructive = raw.op === 'delete';
         } else {
           const bySource = !T.singleton && _asstEmpty(raw.uid) && _asstEmpty(raw.match) && !_asstEmpty(raw.source);
           if (!T.singleton && _asstEmpty(raw.uid) && _asstEmpty(raw.match) && !bySource) throw new Error('falta «uid» (o «match» con el título exacto, o «source» con el origen)');
-          const rows = await _asstTable(T).toArray();
+          const rows = (await _asstTable(T).toArray()).filter(r => !_asstHidden(raw.type, r));      // lo privado no existe para la IA
           let row;
           if (T.singleton) row = rows[0];
           else if (bySource) {
@@ -826,17 +989,26 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
 
   async _result(batch) {
     const pending = batch.items.some(i => i.status === 'pending');
-    const text = JSON.stringify({ format: 'researchos-result/1', file: batch.name, status: pending ? 'pending' : 'done', mode: this.mode(), at: new Date().toISOString(),
+    const text = JSON.stringify({ format: 'researchos-result/1', file: batch.name, status: batch.received ? 'received' : pending ? 'pending' : 'done', mode: this.mode(), at: new Date().toISOString(),
       ...(batch.error ? { error: batch.error } : {}),
-      ops: batch.items.map(({ i, op, type, status, label, uid, error, reason }) => ({ index: i, op, type, status, label, ...(uid ? { uid } : {}), ...(error ? { error } : {}), ...(reason ? { reason } : {}) })) }, null, 1);
+      ops: batch.items.map(({ i, op, type, status, label, uid, error, reason, warnings }) => ({ index: i, op, type, status, label, ...(uid ? { uid } : {}), ...(error ? { error } : {}), ...(reason ? { reason } : {}),
+        ...(warnings?.length ? { warnings } : {}) })) }, null, 1);
     try { await this._write(await batch.dir.getDirectoryHandle('resultados', { create: true }), batch.name, text); } catch (e) { console.warn('Asistente: no se pudo escribir el resultado', e); }
   },
 
   /** Ejecuta en orden las operaciones indicadas. Cada una es independiente: si una falla, las demás siguen. */
   async _apply(batch, items) {
     const undos = [];
+    await _asstRefreshPrivacy();
+    _asstTemp = batch.refs || (batch.refs = new Map());                                   // los «id» temporales del lote sobreviven a una revisión por partes
     for (const it of items) {
-      try { const r = await _asstRun(it); it.status = r.skipped ? 'skipped' : 'applied'; it.reason = r.skipped; it.uid = r.uid || it.uid; undos.push(r.undo); }
+      try {
+        const r = await _asstRun(it);
+        it.status = r.skipped ? 'skipped' : 'applied'; it.reason = r.skipped; it.uid = r.uid || it.uid; undos.push(r.undo);
+        if (r.warnings?.length) it.warnings = [...(it.warnings || []), ...r.warnings];
+        if (it.tempId) _asstTemp.set(it.tempId, { type: it.type, uid: r.uid });
+        if (it.status === 'applied' && r.uid) Assistant.touch(r.uid);
+      }
       catch (e) { it.status = 'error'; it.error = e.message; }
     }
     await this._result(batch);
@@ -859,18 +1031,21 @@ Si hay un archivo \`researchos.js\` en esta carpeta (Node 18+, sin dependencias)
       const prev = await this._read(resultados, name);
       if (prev) {
         let st = null; try { st = JSON.parse(prev).status; } catch {}
-        if (st !== 'pending') {
+        if (st !== 'pending' && st !== 'received') {
           this._handled.add(name);
           if (Date.now() - file.lastModified > 60 * 86400000) { await cambios.removeEntry(name).catch(() => {}); await resultados.removeEntry(name).catch(() => {}); }   // limpieza de lo viejo
           continue;
         }
       }
-      if (Date.now() - file.lastModified < 1500) continue;                    // todavía se está escribiendo: se lee en la siguiente vuelta
+      if (Date.now() - file.lastModified < 1500) {                            // todavía se está escribiendo: se lee en la siguiente vuelta
+        if (!prev) await this._result({ name, dir, items: [], received: true });          // pero la IA ya sabe que lo vimos
+        continue;
+      }
       const batch = { name, dir, author: 'asistente', note: '', items: [], error: null };
       let change;
       try { change = JSON.parse(await file.text()); }
       catch (e) {
-        if (Date.now() - file.lastModified < 15000) continue;                 // puede estar a medias: se espera un poco antes de darlo por inválido
+        if (Date.now() - file.lastModified < 15000) { if (!prev) await this._result({ name, dir, items: [], received: true }); continue; }      // puede estar a medias: se espera un poco antes de darlo por inválido
         batch.error = 'JSON no válido: ' + e.message; await this._result(batch); this._handled.add(name); continue;
       }
       try { Object.assign(batch, await this.plan(change)); }
@@ -970,7 +1145,7 @@ async function initAssistant() {
     if ((await Assistant.permission(handle)) !== 'granted') { Assistant.paused = true; return; }
     await Assistant.syncNow();
     clearInterval(Assistant._poll);
-    Assistant._poll = setInterval(() => { if (document.visibilityState === 'visible' && !Assistant.paused) Assistant.syncNow().catch(() => {}); }, 15_000);
+    Assistant._poll = setInterval(() => { if (document.visibilityState === 'visible' && !Assistant.paused) Assistant.syncNow().catch(() => {}); }, 5_000);       // la IA espera la respuesta: se mira la carpeta cada pocos segundos
   } catch (e) { console.warn('Asistente: no disponible', e); }
 }
 

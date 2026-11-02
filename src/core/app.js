@@ -1358,16 +1358,20 @@ async function renderKanban() {
       ? cards
       : cards.filter(p => activePreset.types.includes(p.type))).filter(inContext);
 
+  // Una columna «solo para» ciertos tipos se esconde cuando la vista activa no incluye ninguno de ellos (p. ej. «Corrección» en la vista de docencia).
+  const colApplies = c => !c.types?.length || !activePreset || App.activeColPreset === 'all' || c.types.some(t => activePreset.types.includes(t));
+  const shownData = kanbanData.filter(colApplies);
+
   // -- Contar visibles para el subtitle ---------------------
-  const totalVisible = kanbanData.reduce((s, c) =>
+  const totalVisible = shownData.reduce((s, c) =>
     s + filterByPreset(c.cards).filter(p =>
       App.filterResponsible === 'all' || (p.responsible || '') === App.filterResponsible
     ).length, 0);
 
   // -- Generar board (estándar o swimlane) -------------------
   const boardHTML = App.kanbanGroupBy === 'none'
-    ? _kanbanBoardHTML(kanbanData, filterByPreset, unreadByProject, activeSubByProject, pendingAIByProject)
-    : _kanbanSwimlaneHTML(kanbanData, filterByPreset, unreadByProject, activeSubByProject, pendingAIByProject, App.kanbanGroupBy, areaMap);
+    ? _kanbanBoardHTML(shownData, filterByPreset, unreadByProject, activeSubByProject, pendingAIByProject)
+    : _kanbanSwimlaneHTML(shownData, filterByPreset, unreadByProject, activeSubByProject, pendingAIByProject, App.kanbanGroupBy, areaMap);
 
   mainContent.innerHTML = `
     <div class="kanban-view-header">
@@ -1530,6 +1534,10 @@ async function showManageColumnsModal() {
       const col = cols.find(c => c._k === inp.dataset.colId);
       if (col) col.wip = +inp.value || null;
     });
+    document.querySelectorAll('.col-manage-types').forEach(box => {
+      const col = cols.find(c => c._k === box.dataset.colId);
+      if (col) col.types = [...box.querySelectorAll('input:checked')].map(i => i.value);
+    });
   };
 
   const renderRows = () => cols.map((c, i) => `
@@ -1547,6 +1555,12 @@ async function showManageColumnsModal() {
              title="Límite de trabajo en curso (dejar vacío = sin límite)">
       <button class="btn btn-ghost btn-sm col-manage-del" data-col-id="${c._k}" aria-label="Eliminar columna"
               style="color:var(--red)" ${cols.length <= 1 ? 'disabled' : ''}>✕</button>
+      <details class="col-manage-typesbox" style="flex-basis:100%">
+        <summary style="font-size:.7rem;color:var(--text-3);cursor:pointer">Solo para: ${(c.types || []).length ? esc((c.types || []).join(', ')) : 'todos los tipos'}</summary>
+        <div class="col-manage-types" data-col-id="${c._k}" style="display:flex;flex-wrap:wrap;gap:4px 12px;padding:6px 2px">
+          ${['Proyecto', 'Grant', 'Paper', 'Análisis', 'Dataset', 'Presentación', 'Curso'].map(t => `<label style="font-size:.74rem"><input type="checkbox" value="${t}" ${(c.types || []).includes(t) ? 'checked' : ''}> ${t}</label>`).join('')}
+        </div>
+      </details>
     </div>`).join('');
 
   showModal('⚙ Gestionar columnas Kanban', `
@@ -1570,7 +1584,7 @@ async function showManageColumnsModal() {
     syncFromInputs();
     cols.push({
       id: null, _k: `new${++_newSeq}`, title: 'Nueva columna',
-      order: cols.length, color: '#38bdf8', wip: null
+      order: cols.length, color: '#38bdf8', wip: null, types: []
     });
     $('colManageList').innerHTML = renderRows();
     attachColRowHandlers();
@@ -1646,9 +1660,9 @@ async function showManageColumnsModal() {
         const c = cols[i];
         c.order = i;
         if (c.id) {
-          await db.kanbanColumns.update(c.id, { title: c.title, color: c.color, order: c.order, wip: c.wip });
+          await db.kanbanColumns.update(c.id, { title: c.title, color: c.color, order: c.order, wip: c.wip, types: c.types || [] });
         } else {
-          c.id = await db.kanbanColumns.add({ title: c.title, color: c.color, order: c.order, wip: c.wip, isDefault: false });
+          c.id = await db.kanbanColumns.add({ title: c.title, color: c.color, order: c.order, wip: c.wip, types: c.types || [], isDefault: false });
         }
       }
 
@@ -1783,6 +1797,7 @@ function kanbanCardHTML(p, unreadCount = 0, activeSub = null, pendingAIs = 0) {
           <span class="kanban-card-title-text"
                 data-inline-rename="${p.id}"
                 data-inline-rename-value="${esc(p.title)}">${esc(p.title)}</span>
+          ${p.paused ? `<span class="kanban-card-star" title="En pausa${p.pauseReason ? ': ' + esc(p.pauseReason) : ''}" role="img" aria-label="En pausa">⏸</span>` : ''}
           ${p.starred ? '<span class="kanban-card-star" title="Favorito" role="img" aria-label="Favorito">★</span>' : ''}
           ${unreadCount > 0
             ? `<span style="font-size:.55rem;font-family:var(--font-mono);color:var(--amber);
@@ -1827,7 +1842,7 @@ function kanbanCardHTML(p, unreadCount = 0, activeSub = null, pendingAIs = 0) {
     <div class="kanban-card${staleClass}" draggable="true" data-project-id="${p.id}"${staleTip}>
       <div class="kanban-card-title-text" data-inline-rename="${p.id}"
            data-inline-rename-value="${esc(p.title)}"
-           title="Doble clic para renombrar">${esc(p.title)}</div>
+           title="Doble clic para renombrar">${p.paused ? '⏸ ' : ''}${esc(p.title)}</div>
       ${badgesRow ? `<div class="kanban-card-badges" style="display:flex;gap:3px;flex-wrap:wrap;align-items:center;margin-bottom:4px">${badgesRow}</div>` : ''}
       <div class="kanban-card-meta">
         <span class="badge ${typeBadgeClass(p.type)}">${esc(p.type)}</span>
@@ -4189,8 +4204,7 @@ async function renderWeeklyAgenda() {
   const projById = new Map(projects.map(p => [p.id, p]));
   const taskShown = t => {                                         // como en Hoy: sin tareas de proyectos archivados y respetando el área activa
     if (t.projectId && !projById.has(t.projectId)) return false;
-    const area = (t.projectId ? projById.get(t.projectId).areaId : t.areaId) ?? null, c = App.areaContext;
-    return c === 'all' || (c === 'none' ? !area : area === c);
+    return inAreaScope((t.projectId ? projById.get(t.projectId).areaId : t.areaId) ?? null);
   };
 
   const isoDay = d =>
@@ -5127,6 +5141,12 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
         <div class="form-group"><label class="form-label">Duración (min)</label>
           <input class="form-input" type="number" id="am-duration" min="5" max="1440" step="5" placeholder="60"></div>
       </div>
+      <div class="form-row-2">
+        <div class="form-group"><label class="form-label">Se repite</label>
+          <select class="form-select" id="am-repeat">${_repeatOptionsHTML(null)}</select></div>
+        <div class="form-group"><label class="form-label">Hasta <span class="form-hint">(opcional)</span></label>
+          <input class="form-input" type="date" id="am-until" value="${esc(null?.recurrence?.until || '')}"></div>
+      </div>
       <div class="form-group">
         <label class="form-label">Participantes</label>
         <input class="form-input" id="am-participants" placeholder="Dr. García, Dr. Vega…">
@@ -5171,15 +5191,19 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
       .map(s => s.trim()).filter(Boolean)
       .map(line => { const c = parseCapture(line, [], new Date(), people);
         return { id: Date.now() + Math.random(), text: c.title || line, done: false, due: c.due, assigneeId: c.assigneeId }; });
-    const now = new Date().toISOString();
-    await dbWrite(() => db.meetings.add({
-      title, date, time: timeOrNull($('am-time').value), duration: $('am-time').value ? durationOrNull($('am-duration').value) : null,
-      participants: $('am-participants').value.trim(),
-      projectId:    +$('am-project').value || null,
-      agreements:   $('am-agreements').value.trim(),
-      actionItems,
-      createdAt: now, updatedAt: now
-    }));
+    const now = new Date().toISOString(), recurrence = _repeatFromForm('am');
+    const { id: newId } = await dbWrite(async () => {
+      const id = await db.meetings.add({
+        title, date, time: timeOrNull($('am-time').value), duration: $('am-time').value ? durationOrNull($('am-duration').value) : null,
+        participants: $('am-participants').value.trim(),
+        projectId:    +$('am-project').value || null,
+        agreements:   $('am-agreements').value.trim(),
+        actionItems, ...(recurrence ? { recurrence } : {}),
+        createdAt: now, updatedAt: now
+      });
+      if (recurrence) await Meetings.expandSeries(id);
+      return { id };
+    });
     closeModal();
     showToast('Reunión guardada ✓', 'success');
     if (App.view === 'meetings')     renderMeetings();
@@ -5187,6 +5211,14 @@ async function showAddMeetingModal(prefillDate = null, preProjectId = null) {
     if (App.view === 'project-hub')  renderProjectHub();
   });
 }
+
+const _REPEATS = [['', 'No se repite'], ['daily:1', 'Cada día'], ['weekly:1', 'Cada semana'], ['weekly:2', 'Cada 2 semanas'], ['monthly:1', 'Cada mes']];
+const _repeatOptionsHTML = m => _REPEATS.map(([k, l]) => `<option value="${k}" ${m?.recurrence && `${m.recurrence.freq}:${m.recurrence.interval}` === k ? 'selected' : ''}>${l}</option>`).join('');
+/** Regla de repetición de un formulario de reunión (prefijo «am» o «em»), o null. */
+const _repeatFromForm = pre => {
+  const [freq, interval] = ($(`${pre}-repeat`)?.value || '').split(':');
+  return freq ? Tasks.cleanRecurrence({ freq, interval: +interval, until: $(`${pre}-until`)?.value || null }) : null;
+};
 
 async function inspectMeeting(id) {
   const m = await db.meetings.get(id);
@@ -5295,6 +5327,13 @@ async function inspectMeeting(id) {
           <div class="form-group"><label class="form-label">Duración (min)</label>
             <input class="form-input" type="number" id="em-duration" min="5" max="1440" step="5" value="${esc(m.duration || '')}" placeholder="60"></div>
         </div>
+        ${m.seriesId ? `<div class="form-hint" style="margin-bottom:10px">↻ Esta reunión forma parte de una serie: para cambiar cuándo se repite, edita la primera.</div>` : `
+        <div class="form-row-2">
+          <div class="form-group"><label class="form-label">Se repite</label>
+            <select class="form-select" id="em-repeat">${_repeatOptionsHTML(m)}</select></div>
+          <div class="form-group"><label class="form-label">Hasta <span class="form-hint">(opcional)</span></label>
+            <input class="form-input" type="date" id="em-until" value="${esc(m.recurrence?.until || '')}"></div>
+        </div>`}
         <div class="form-group">
           <label class="form-label">Participantes</label>
           <input class="form-input" id="em-participants" value="${esc(m.participants||'')}">
@@ -5320,13 +5359,18 @@ async function inspectMeeting(id) {
     $('emSave').addEventListener('click', async () => {
       const title = $('em-title').value.trim();
       if (!title) { showToast('Título requerido', 'error'); return; }
-      await dbWrite(() => db.meetings.update(id, {
-        title, date: $('em-date').value, time: timeOrNull($('em-time').value), duration: $('em-time').value ? durationOrNull($('em-duration').value) : null,
-        participants: $('em-participants').value.trim(),
-        projectId:    +$('em-project').value || null,
-        agreements:   $('em-agreements').value.trim(),
-        updatedAt:    new Date().toISOString()
-      }));
+      await dbWrite(async () => {
+        await db.meetings.update(id, {
+          title, date: $('em-date').value, time: timeOrNull($('em-time').value), duration: $('em-time').value ? durationOrNull($('em-duration').value) : null,
+          participants: $('em-participants').value.trim(),
+          projectId:    +$('em-project').value || null,
+          agreements:   $('em-agreements').value.trim(),
+          ...(m.seriesId ? {} : { recurrence: _repeatFromForm('em') }),
+          updatedAt:    new Date().toISOString()
+        });
+        if (!m.seriesId) await Meetings.expandSeries(id);                       // crea las que falten, actualiza las futuras sin tocar o quita las intactas si ya no se repite
+        await EventLinks.fromMeeting(await db.meetings.get(id));                // las tareas ligadas a este bloque siguen su día y su duración
+      });
       closeModal(); showToast('Reunión actualizada ✓', 'success');
       inspectMeeting(id);
       if (App.view === 'meetings') renderMeetings();
@@ -6159,6 +6203,7 @@ async function inspectCollaborator(id) {
           <input class="form-input" type="email" id="ec-email" value="${esc(c.email||'')}"></div>
         <div class="form-group"><label class="form-label">Notas</label>
           <textarea class="form-textarea" id="ec-notes" rows="2">${esc(c.notes||'')}</textarea></div>
+        <label class="form-check"><input type="checkbox" id="ec-private" ${c.private ? 'checked' : ''}> Privada <span class="form-hint">(la IA no ve esta persona ni lo que la menciona)</span></label>
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost" id="ecCancel">Cancelar</button>
@@ -6172,7 +6217,8 @@ async function inspectCollaborator(id) {
         name, role: $('ec-role').value.trim(),
         affiliation: $('ec-affiliation').value.trim(),
         email: $('ec-email').value.trim(),
-        notes: $('ec-notes').value.trim()
+        notes: $('ec-notes').value.trim(),
+        private: $('ec-private').checked
       }));
       closeModal(); showToast('Colaborador actualizado ✓', 'success');
       inspectCollaborator(id);
@@ -8586,6 +8632,8 @@ async function showAddProjectModal(defaultColId, defaultParentId = null) {
   $('mp-type')?.addEventListener('change', e => {
     const cf = $('mpCFContainer');
     if (cf) cf.innerHTML = _customFieldsFormHTML(e.target.value, _addSchemas);
+    const col = columnForType(cols, e.target.value);                           // si hay columnas pensadas para este tipo, parte en la primera de ellas
+    if (col && $('mp-col')) $('mp-col').value = String(col);
   });
   focusField($('mp-title'));
 
@@ -9621,6 +9669,7 @@ async function inspectProject(id) {
         <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="meeting">+ Reunión</button>
         <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="reference">+ Referencia</button>
         ${p.type==='Paper'?`<button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="submission">📤</button>`:''}
+        <button class="btn btn-ghost btn-sm insp-qa-btn" data-qa="flow" title="Pausa, posición en su columna y privacidad">${p.paused ? '⏸' : '⚙'} Estado</button>
       </div>
 
       ${p.type==='Paper' ? _inspSectionHTML('p-sub', '📤 Submission', subHTML) : ''}
@@ -9756,6 +9805,29 @@ async function inspectProject(id) {
   inspectorBody.querySelectorAll('.insp-qa-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       switch (btn.dataset.qa) {
+        case 'flow': {
+          showModal(`⚙ ${p.title}`, `
+            <div class="modal-body">
+              <label class="form-check"><input type="checkbox" id="pf-paused" ${p.paused ? 'checked' : ''}> <strong>En pausa</strong> <span class="form-hint">(sale de Hoy, del tablero de urgencias y de la carga hasta que lo reanudes)</span></label>
+              <div class="form-row-2" style="margin-top:8px">
+                <div class="form-group"><label class="form-label">Motivo</label>
+                  <input class="form-input" id="pf-reason" maxlength="300" placeholder="Esperando a José, paro…" value="${esc(p.pauseReason || '')}"></div>
+                <div class="form-group"><label class="form-label">Revisar el</label>
+                  <input class="form-input" type="date" id="pf-until" value="${esc(p.pausedUntil || '')}"></div>
+              </div>
+              <div class="form-group"><label class="form-label">Posición en su columna <span class="form-hint">(menor = antes)</span></label>
+                <input class="form-input" type="number" id="pf-rank" step="1" placeholder="—" value="${p.rank ?? ''}"></div>
+              <label class="form-check"><input type="checkbox" id="pf-private" ${p.private ? 'checked' : ''}> Privado <span class="form-hint">(la IA no ve este proyecto ni sus tareas, ideas, reuniones…)</span></label>
+            </div>
+            <div class="modal-footer"><button class="btn btn-ghost" id="pfCancel">Cancelar</button><button class="btn btn-primary" id="pfSave">Guardar</button></div>`);
+          $('pfCancel').addEventListener('click', closeModal);
+          $('pfSave').addEventListener('click', async () => {
+            await dbWrite(() => db.projects.update(p.id, { paused: $('pf-paused').checked, pauseReason: $('pf-reason').value.trim().slice(0, 300), pausedUntil: isoDateOrNull($('pf-until').value),
+              rank: Tasks.cleanRank($('pf-rank').value), private: $('pf-private').checked, updatedAt: new Date().toISOString() }));
+            closeModal(); showToast('Guardado ✓', 'success'); inspectProject(p.id);
+          });
+          break;
+        }
         case 'idea': {
           showModal(`+ Idea → ${p.title}`, `
             <div class="modal-body">
@@ -11843,6 +11915,7 @@ async function init() {
   if (typeof Dexie === 'undefined') { _showBootError(); return; }
   _wireDbEvents();                                      // aviso si otra pestaña actualiza la base de datos
   _wireLive();                                          // refresco inmediato de la vista ante cualquier cambio de datos
+  Meetings.expandAll().catch(() => {});                // reuniones que se repiten: crea las ocurrencias que falten
 
   // Librerías opcionales: la app funciona sin ellas, con menos funciones.
   const _optional = [['marked', 'Markdown']]
@@ -12182,7 +12255,7 @@ async function renderAreas() {
           return `
             <div class="area-card" style="border-top:3px solid ${cssColor(area.color)}">
               <div class="area-card-header">
-                <span class="area-card-title">${esc(area.name)}</span>
+                <span class="area-card-title">${esc(area.name)}${area.parentId && areas.find(a => a.id === area.parentId) ? ` <span class="form-hint">↳ ${esc(areas.find(a => a.id === area.parentId).name)}</span>` : ''}</span>
                 <span class="area-card-count">${count} proyecto(s)</span>
               </div>
               ${area.description ? `<div class="area-card-desc">${esc(area.description)}</div>` : ''}
@@ -12214,7 +12287,8 @@ async function renderAreas() {
     btn.addEventListener('click', async () => {
       if (!(await askConfirm('Los proyectos vinculados quedarán sin área.', { title: '¿Eliminar esta área?', confirmLabel: 'Eliminar', danger: true }))) return;
       const id = +btn.dataset.delArea;
-      await _saveAreas((await _getAreas()).filter(a => a.id !== id));
+      const all = await _getAreas(), gone = all.find(a => a.id === id);
+      await _saveAreas(all.filter(a => a.id !== id).map(a => a.parentId === id ? { ...a, parentId: gone?.parentId ?? null } : a));       // las subáreas suben un nivel
       const linked = await db.projects.filter(p => p.areaId === id).toArray();
       await Promise.all(linked.map(p => db.projects.update(p.id, { areaId: null })));
       showToast('Área eliminada', 'info');
@@ -12233,8 +12307,10 @@ async function renderAreas() {
   });
 }
 
-function showAreaModal(area = null) {
+async function showAreaModal(area = null) {
   const isEdit = !!area;
+  const all = await _getAreas(), blocked = isEdit ? areaWithDescendants(all, area.id) : new Set();          // una subárea no puede ser madre de su propia madre
+  const parents = areaTree(all).filter(({ area: a }) => !blocked.has(a.id));
   showModal(isEdit ? 'Editar Área' : 'Nueva Área', `
     <div class="modal-body">
       <div class="form-group">
@@ -12245,6 +12321,11 @@ function showAreaModal(area = null) {
       <div class="form-group">
         <label class="form-label">Descripción (opcional)</label>
         <input class="form-input" id="am-desc" value="${esc(area?.description||'')}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Dentro de <span class="form-hint">(opcional: para anidar áreas)</span></label>
+        <select class="form-select" id="am-parent"><option value="">— Es un área principal —</option>${parents.map(({ area: a, depth }) =>
+          `<option value="${a.id}" ${a.id === area?.parentId ? 'selected' : ''}>${'\u00a0\u00a0'.repeat(depth)}${depth ? '↳ ' : ''}${esc(a.name)}</option>`).join('')}</select>
       </div>
       <div class="form-group">
         <label class="form-label">Color</label>
@@ -12276,10 +12357,10 @@ function showAreaModal(area = null) {
     if (isEdit) {
       const idx = fresh.findIndex(a => a.id === area.id);
       if (idx >= 0) fresh[idx] = { ...fresh[idx], name,
-        description: $('am-desc').value.trim(), color: $('am-color').value };
+        description: $('am-desc').value.trim(), color: $('am-color').value, parentId: +$('am-parent').value || null };
     } else {
       fresh.push({ id: Date.now(), name,
-        description: $('am-desc').value.trim(), color: $('am-color').value });
+        description: $('am-desc').value.trim(), color: $('am-color').value, parentId: +$('am-parent').value || null });
     }
     await _saveAreas(fresh);
     closeModal();

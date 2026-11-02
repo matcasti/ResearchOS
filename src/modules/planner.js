@@ -19,11 +19,11 @@ const Capacity = {
 // ==============================================================
 function planSectionHTML(d) {
   if (!d.plan.length && !d.doneToday) return '';
-  const cap = Capacity.get();
+  const cap = Math.max(30, Capacity.get() - (d.busyToday || 0));                 // las reuniones de hoy con hora y duración ya ocupan parte del día
   const total = d.plan.reduce((s, r) => s + (r.effort || 0), 0);
   const unest = d.plan.filter(r => !r.effort).length;
   const over = total > cap;
-  const bits = [`${esc(fmtEffort(total) || '0 min')} de ${esc(fmtEffort(cap))}`];
+  const bits = [`${esc(fmtEffort(total) || '0 min')} de ${esc(fmtEffort(cap))}${d.busyToday ? ` (tras ${esc(fmtEffort(d.busyToday))} de reuniones)` : ''}`];
   if (unest) bits.push(`${unest} sin estimar`);
   if (over) bits.push(`<strong>te pasas por ${esc(fmtEffort(total - cap))}</strong>`);
   if (d.doneToday) bits.push(`✓ ${d.doneToday} hecha${d.doneToday > 1 ? 's' : ''} hoy`);
@@ -43,18 +43,18 @@ async function dayCandidates() {
   const proj = Object.fromEntries(projects.map(p => [p.id, p]));
   const rank = t => t.planDate && t.planDate <= todayISO ? 0 : t.due && t.due < todayISO ? 1 : t.due === todayISO ? 2 : t.due && t.due <= soon ? 3 : 4;
   return tasks
-    .filter(t => !t.done && !t.assigneeId && !(t.projectId && proj[t.projectId]?.archived) && (!t.projectId || inContext(proj[t.projectId] || {})))
+    .filter(t => !t.done && !Me.waiting(t.assigneeId) && !(t.projectId && (proj[t.projectId]?.archived || proj[t.projectId]?.paused)) && !Tasks.isBlocked(t, Tasks.index(tasks)) && (!t.projectId || inContext(proj[t.projectId] || {})))
     .filter(t => rank(t) < 4 || t.priority === 'Alta')
-    .map(t => ({ ...t, projectTitle: proj[t.projectId]?.title || '', planned: !!(t.planDate && t.planDate <= todayISO), rank: rank(t) }))
-    .sort((a, b) => a.rank - b.rank || _byUrgency(a, b))
+    .map(t => ({ ...t, projectTitle: proj[t.projectId]?.title || '', planned: !!(t.planDate && t.planDate <= todayISO), bucket: rank(t) }))
+    .sort((a, b) => a.bucket - b.bucket || _byUrgency(a, b))
     .slice(0, 40);
 }
 
 /** «Planificar la semana»: propone un día para lo atrasado, lo que vence en dos semanas y lo importante sin fecha (insights.js → Load.planWeek). */
 async function openWeekPlanner() {
-  const [tasks, projects] = await Promise.all([db.tasks.toArray(), db.projects.toArray()]);
+  const [tasks, projects, meetings] = await Promise.all([db.tasks.toArray(), db.projects.toArray(), db.meetings.toArray()]);
   const cap = Capacity.get();
-  const r = Load.planWeek({ tasks, projects, today: localDateISO(), capacity: cap });
+  const r = Load.planWeek({ tasks, projects, today: localDateISO(), capacity: cap, busy: Load.busyFrom(meetings) });
   if (!r.plan.length) { showToast(r.unplaced.length ? `${r.unplaced.length} tarea(s) pendientes no caben esta semana: revisa tu capacidad o sus plazos` : 'Lo urgente ya tiene día ✓', 'info'); return; }
   const byDay = new Map(r.days.map(d => [d.day, []]));
   for (const p of r.plan) byDay.get(p.day).push(p);
@@ -64,7 +64,7 @@ async function openWeekPlanner() {
       <p class="settings-row-desc">Propongo un día para lo atrasado, lo que vence en dos semanas y lo importante sin fecha, sin pasar de tus ${esc(fmtEffort(cap))} por día laborable. Desmarca lo que no quieras: se guarda como «el día en que lo haré» y aparece en Mi día.</p>
       ${r.days.map(d => `
         <div class="wp-day">
-          <div class="today-day">${esc(dayLabel(d.day))} · ${esc(fmtEffort(d.used) || '0 min')} de ${esc(fmtEffort(cap))}</div>
+          <div class="today-day">${esc(dayLabel(d.day))} · ${esc(fmtEffort(d.used) || '0 min')} de ${esc(fmtEffort(d.capacity))}${d.capacity < cap ? ' (tras reuniones)' : ''}</div>
           ${byDay.get(d.day).map(p => `
             <label class="dp-row">
               <input type="checkbox" class="wp-check" data-id="${p.task.id}" data-day="${d.day}" checked aria-label="Hacer ${esc(dayLabel(d.day))}: ${esc(p.task.title)}">
@@ -92,6 +92,7 @@ async function openDayPlanner() {
   const todayISO = localDateISO();
   const list = await dayCandidates();
   const DEFAULT_MIN = 30;
+  const dayCap = Math.max(30, Capacity.get() - (Load.busyFrom(await db.meetings.toArray(), todayISO).get(todayISO) || 0));
   const rows = list.map(t => `
     <label class="dp-row" data-id="${t.id}">
       <input type="checkbox" class="dp-check" ${t.planned ? 'checked' : ''} aria-label="Hacer hoy: ${esc(t.title)}">
@@ -104,7 +105,7 @@ async function openDayPlanner() {
     <div class="modal-body">
       <div class="dp-top">
         <label class="dp-cap">Tiempo disponible hoy
-          <input class="form-input" id="dpCap" type="number" min="0.5" max="16" step="0.5" value="${(Capacity.get() / 60).toFixed(1).replace(/\.0$/, '')}"> h</label>
+          <input class="form-input" id="dpCap" type="number" min="0.5" max="16" step="0.5" value="${(dayCap / 60).toFixed(1).replace(/\.0$/, '')}"> h</label>
         <button type="button" class="btn btn-ghost btn-sm" id="dpSuggest" title="Marca lo más urgente hasta llenar tu tiempo">✨ Sugerir</button>
       </div>
       <div class="dp-meter"><span id="dpBar"></span></div>
@@ -137,7 +138,7 @@ async function openDayPlanner() {
   $('dpCancel').addEventListener('click', closeModal);
   $('dpWeek').addEventListener('click', () => { closeModal(); openWeekPlanner(); });
   $('dpSave').addEventListener('click', async () => {
-    Capacity.set(capacity());
+    if (capacity() !== Math.round(parseFloat((dayCap / 60).toFixed(1)) * 60)) Capacity.set(capacity());       // solo si la persona cambió el tiempo: el valor de partida ya descuenta las reuniones de hoy
     let n = 0, total = 0;
     await dbWrite(async () => {
       for (const r of rowsEl) {
@@ -309,7 +310,7 @@ const Reminders = {
   /** Texto del aviso de hoy: tareas del día y atrasadas (sin tocar la interfaz). */
   async summary() {
     const todayISO = localDateISO();
-    const tasks = (await db.tasks.toArray()).filter(t => !t.done && !t.assigneeId);
+    const tasks = (await db.tasks.toArray()).filter(t => !t.done && !Me.waiting(t.assigneeId));
     const planned = tasks.filter(t => t.planDate && t.planDate <= todayISO);
     const due = tasks.filter(t => t.due && t.due <= todayISO && !(t.planDate && t.planDate <= todayISO));
     const late = tasks.filter(t => t.due && t.due < todayISO);

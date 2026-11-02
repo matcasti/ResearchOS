@@ -232,6 +232,14 @@ async function seedDefaults() {
 // -- Tareas ----------------------------------------------------
 // { id, title, done, doneAt, due:'YYYY-MM-DD'|null, projectId|null, ideaId|null, areaId|null (solo sueltas), priority, effort (minutos)|null,
 //   planDate:'YYYY-MM-DD'|null (día en que la haré), createdAt, updatedAt }
+/** «Yo»: la persona de la agenda que eres tú en este equipo. Lo que otras personas te asignan a ti no es «esperar a nadie». */
+const Me = {
+  id() { try { return +localStorage.getItem('ros-me') || null; } catch { return null; } },
+  set(id) { try { id ? localStorage.setItem('ros-me', String(id)) : localStorage.removeItem('ros-me'); } catch {} },
+  /** ¿Estoy esperando a otra persona? (asignar la tarea a «yo» no cuenta). */
+  waiting(assigneeId) { return !!assigneeId && assigneeId !== Me.id(); },
+};
+
 const Tasks = {
   /** Valida una regla de repetición: { freq: 'daily'|'weekly'|'monthly', interval >= 1, until: 'YYYY-MM-DD'|null } o null. */
   cleanRecurrence(r) {
@@ -260,7 +268,14 @@ const Tasks = {
   cleanLink(v) { const s = String(v ?? '').trim(); try { const u = new URL(s); return /^https?:$/.test(u.protocol) && s.length <= 2000 ? u.href : null; } catch { return null; } },
   /** Identificador del origen de un dato traído de fuera («gmail:18c3…», «gcal:abc»): sirve para no duplicarlo si se vuelve a proponer. */
   cleanSource(v) { return String(v ?? '').trim().replace(/\s+/g, ' ').slice(0, 200); },
-  async add({ title, due = null, projectId = null, ideaId = null, areaId = null, priority = null, assigneeId = null, recurrence = null, effort = null, planDate = null, notes = '', link = null, source = '' }) {
+  /** Lista de ids de tareas de las que depende (sin repetir ni a sí misma). */
+  cleanAfter(v, self = null) { return [...new Set((Array.isArray(v) ? v : []).map(Number).filter(n => Number.isInteger(n) && n > 0 && n !== self))].slice(0, 20); },
+  /** Posición manual (número finito; menor = antes) o null. */
+  cleanRank(v) { return v === null || v === undefined || v === '' || !Number.isFinite(+v) ? null : Math.round(+v * 1000) / 1000; },
+  /** Minutos realmente dedicados (1–14 400) o null. */
+  cleanSpent(m) { const n = Math.round(+m); return Number.isFinite(n) && n >= 1 ? Math.min(14400, n) : null; },
+  async add({ title, due = null, projectId = null, ideaId = null, areaId = null, priority = null, assigneeId = null, recurrence = null, effort = null, planDate = null, notes = '', link = null, source = '',
+              ownerId = null, afterIds = [], rank = null, spent = null, event = '', private: priv = false }) {
     const text = String(title ?? '').trim();
     if (!text) return null;
     const now = new Date().toISOString();
@@ -268,7 +283,9 @@ const Tasks = {
     return db.tasks.add({ title: text, done: false, doneAt: null, due: isoDateOrNull(due) || (rec ? localDateISO() : null),
       projectId: projectId ?? null, ideaId: ideaId ?? null, areaId: projectId ? null : (areaId ?? null),
       priority: priority || null, assigneeId: assigneeId ?? null, recurrence: rec, effort: Tasks.cleanEffort(effort), planDate: isoDateOrNull(planDate),
-      notes: Tasks.cleanNotes(notes), link: Tasks.cleanLink(link), source: Tasks.cleanSource(source), createdAt: now, updatedAt: now });
+      notes: Tasks.cleanNotes(notes), link: Tasks.cleanLink(link), source: Tasks.cleanSource(source),
+      ownerId: ownerId ?? null, afterIds: Tasks.cleanAfter(afterIds), rank: Tasks.cleanRank(rank), spent: Tasks.cleanSpent(spent), event: Tasks.cleanSource(event), private: !!priv,
+      createdAt: now, updatedAt: now });
   },
   /**
    * Marca como hecha (o reabre). Si la tarea es recurrente, al completarla nace la siguiente ocurrencia.
@@ -285,7 +302,7 @@ const Tasks = {
       // se descartan las que ya pasaron y la siguiente es la primera que no ha vencido (conserva el día de la semana / del mes).
       const today = localDateISO();
       for (let n = 0; next && next < today && n < 2000; n++) next = Tasks.nextDue(next, t.recurrence);
-      if (next) { const { id: _drop, ...rest } = t; return db.tasks.add({ ...rest, done: false, doneAt: null, due: next, planDate: null, createdAt: now, updatedAt: now }); }
+      if (next) { const { id: _drop, ...rest } = t; return db.tasks.add({ ...rest, done: false, doneAt: null, due: next, planDate: null, spent: null, afterIds: [], createdAt: now, updatedAt: now }); }
     }
     return null;
   },
@@ -296,9 +313,22 @@ const Tasks = {
     await db.tasks.update(id, { recurrence: clean, due: t.due || (clean ? localDateISO() : null), updatedAt: new Date().toISOString() });
   },
   async setDue(id, due)   { await db.tasks.update(id, { due: isoDateOrNull(due), updatedAt: new Date().toISOString() }); },
-  async setEffort(id, minutes) { await db.tasks.update(id, { effort: Tasks.cleanEffort(minutes), updatedAt: new Date().toISOString() }); },
-  async setPlan(id, date) { await db.tasks.update(id, { planDate: isoDateOrNull(date), updatedAt: new Date().toISOString() }); },
-  async remove(id)        { const t = await db.tasks.get(id); await db.tasks.delete(id); if (t?.source) window.Assistant?.rememberSource(t.source); },   // lo borrado a mano no se vuelve a proponer
+  async setEffort(id, minutes) { await db.tasks.update(id, { effort: Tasks.cleanEffort(minutes), updatedAt: new Date().toISOString() }); await EventLinks.fromTask(await db.tasks.get(id)); },
+  async setPlan(id, date) { await db.tasks.update(id, { planDate: isoDateOrNull(date), updatedAt: new Date().toISOString() }); await EventLinks.fromTask(await db.tasks.get(id)); },
+  async remove(id)        {
+    const t = await db.tasks.get(id); await db.tasks.delete(id); if (t?.source) window.Assistant?.rememberSource(t.source);
+    for (const o of await db.tasks.filter(x => (x.afterIds || []).includes(id)).toArray()) await db.tasks.update(o.id, { afterIds: o.afterIds.filter(x => x !== id) });      // nada queda esperando a una tarea que ya no existe
+  },
+  async setSpent(id, minutes) { await db.tasks.update(id, { spent: Tasks.cleanSpent(minutes), updatedAt: new Date().toISOString() }); },
+  /** ¿Sigue bloqueada? Una tarea con «después de» queda oculta mientras alguna de esas tareas esté abierta. */
+  isBlocked(t, byId) { return !t.done && (t.afterIds || []).some(i => byId.get(i) && !byId.get(i).done); },
+  /** Mapa id → tarea, para isBlocked. */
+  index(tasks) { return new Map(tasks.map(t => [t.id, t])); },
+  /** Cuánto se desvían tus estimaciones: mediana de (real ÷ estimado) en tareas hechas con ambos datos; null si hay menos de 3. */
+  accuracy(tasks) {
+    const r = tasks.filter(t => t.done && t.effort && t.spent).map(t => t.spent / t.effort).sort((a, b) => a - b);
+    return r.length >= 3 ? { ratio: Math.round(r[Math.floor((r.length - 1) / 2)] * 100) / 100, n: r.length } : null;
+  },   // lo borrado a mano no se vuelve a proponer
   /** Tareas de un proyecto (type='project') o de una idea (type='idea'), en orden de creación. */
   async forEntity(type, id) {
     const col = type === 'project' ? 'projectId' : 'ideaId';
@@ -308,14 +338,16 @@ const Tasks = {
   },
   /** Mapa projectId → {total, done, late} (late = vencidas sin completar). Para las insignias de las tarjetas. */
   async statsByProject() {
-    const today = localDateISO(), map = {};
-    for (const t of await db.tasks.filter(t => t.projectId != null && !t.ideaId).toArray()) {
-      const c = map[t.projectId] || (map[t.projectId] = { total: 0, done: 0, late: 0, next: null });
+    const today = localDateISO(), map = {}, all = await db.tasks.toArray(), byId = Tasks.index(all), me = Me.id();
+    for (const t of all.filter(t => t.projectId != null && !t.ideaId)) {
+      const c = map[t.projectId] || (map[t.projectId] = { total: 0, done: 0, late: 0, next: null, blocked: 0 });
       c.total++; if (t.done) c.done++; else if (t.due && t.due < today) c.late++;
-      // «Próxima acción»: la tarea abierta propia con fecha más cercana (las sin fecha, después)
-      if (!t.done && !t.assigneeId) {
-        const better = !c.next || (t.due || '9999') < (c.next.due || '9999') || ((t.due || '9999') === (c.next.due || '9999') && t.id < c.next.id);
-        if (better) c.next = { id: t.id, title: t.title, due: t.due || null };
+      // «Próxima acción»: la tarea abierta propia que toca primero (su posición manual, luego la fecha más cercana; las sin fecha, después). Las bloqueadas esperan.
+      if (!t.done && (!t.assigneeId || t.assigneeId === me)) {
+        if (Tasks.isBlocked(t, byId)) { c.blocked++; continue; }
+        const key = x => [x.rank ?? 1e9, x.due || '9999', x.id];
+        const better = !c.next || (() => { const a = key(t), b = key(c.next); return a[0] - b[0] || a[1].localeCompare(b[1]) || a[2] - b[2]; })() < 0;
+        if (better) c.next = { id: t.id, title: t.title, due: t.due || null, rank: t.rank ?? null };
       }
     }
     return map;
@@ -331,6 +363,78 @@ const Tasks = {
   },
 };
 
+/**
+ * Tareas ligadas a un bloque del calendario (la tarea guarda en `event` el `source` de la reunión). Los cambios se siguen en los dos sentidos:
+ * el día de la reunión es el día en que haré la tarea (`planDate`) y su duración, el tiempo estimado (`effort`).
+ * Cada función solo escribe si algo cambió, así que nunca se encadenan.
+ */
+const EventLinks = {
+  async fromMeeting(m) {
+    if (!m?.source) return 0;
+    let n = 0;
+    for (const t of await db.tasks.filter(t => !t.done && t.event === m.source).toArray()) {
+      const patch = {};
+      if (m.date && t.planDate !== m.date) patch.planDate = m.date;
+      if (m.duration && t.effort !== m.duration) patch.effort = m.duration;
+      if (Object.keys(patch).length) { await db.tasks.update(t.id, patch); n++; }
+    }
+    return n;
+  },
+  async fromTask(t) {
+    if (!t?.event) return 0;
+    let n = 0;
+    for (const m of await db.meetings.filter(m => m.source === t.event).toArray()) {
+      const patch = {};
+      if (t.planDate && m.date !== t.planDate) patch.date = t.planDate;
+      if (t.effort && m.time && m.duration !== t.effort) patch.duration = t.effort;           // solo las reuniones con hora tienen duración
+      if (Object.keys(patch).length) { await db.meetings.update(m.id, patch); n++; }
+    }
+    return n;
+  },
+};
+
+/**
+ * Reuniones que se repiten. La «madre» guarda la regla (`recurrence`); las ocurrencias son reuniones normales con `seriesId` = uid de la madre,
+ * creadas con un uid derivado de la fecha para que dos dispositivos no las dupliquen al sincronizar. Cada ocurrencia tiene sus propios acuerdos.
+ */
+const Meetings = {
+  HORIZON_DAYS: 120, MAX_PER_RUN: 80,
+  _fields: m => ({ title: m.title, time: m.time ?? null, duration: m.duration ?? null, participants: m.participants || '', projectId: m.projectId ?? null }),
+  /** Crea las ocurrencias que faltan hasta el horizonte y pone al día las futuras que nadie ha tocado. Sin regla, quita las futuras intactas. */
+  async expandSeries(masterId) {
+    const m = await db.meetings.get(masterId);
+    if (!m?.uid) return 0;
+    const today = localDateISO(), mine = await db.meetings.filter(x => x.seriesId === m.uid).toArray();
+    const untouched = x => x.date > today && !x.agreements && !(x.actionItems || []).length;
+    const rec = Tasks.cleanRecurrence(m.recurrence);
+    if (!rec) { for (const x of mine.filter(untouched)) await db.meetings.delete(x.id); return 0; }
+    const limit = addDaysISO(Meetings.HORIZON_DAYS), have = new Map(mine.map(x => [x.date, x]));
+    let n = 0, d = m.date;
+    for (let i = 0; i < 400 && n < Meetings.MAX_PER_RUN; i++) {
+      d = Tasks.nextDue(d, rec);
+      if (!d || d > limit) break;
+      const cur = have.get(d), now = new Date().toISOString();
+      if (!cur) { await db.meetings.add({ ...Meetings._fields(m), date: d, agreements: '', actionItems: [], seriesId: m.uid, uid: `${m.uid}:${d}`, createdAt: now, updatedAt: now }); n++; }
+      else if (untouched(cur)) {
+        const f = Meetings._fields(m);
+        if (Object.keys(f).some(k => (cur[k] ?? null) !== (f[k] ?? null))) await db.meetings.update(cur.id, f);
+      }
+    }
+    return n;
+  },
+  async expandAll() {
+    let n = 0;
+    for (const m of await db.meetings.filter(m => m.recurrence && !m.seriesId).toArray()) n += await Meetings.expandSeries(m.id);
+    return n;
+  },
+};
+
+/** La columna de partida de un proyecto de este tipo: la primera pensada para él; si no hay, la primera de uso general. */
+function columnForType(cols, type) {
+  const own = c => (c.types || []).includes(type), general = c => !(c.types || []).length;
+  return (cols.find(own) || cols.find(general) || cols[0])?.id ?? null;
+}
+
 // -- Query helpers --------------------------------------------
 
 async function getKanbanData() {
@@ -338,9 +442,10 @@ async function getKanbanData() {
     db.kanbanColumns.orderBy('order').toArray(),
     db.projects.filter(p => !p.archived).toArray()
   ]);
+  const byRank = (a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9);               // la posición manual manda; sin ella, el orden de siempre (sort estable)
   return cols.map(col => ({
     ...col,
-    cards: projects.filter(p => p.columnId === col.id)
+    cards: projects.filter(p => p.columnId === col.id).sort(byRank)
   }));
 }
 
@@ -543,18 +648,24 @@ function sanitizeBackup(raw) {
   const out = {};
   out.kanbanColumns = rows('kanbanColumns').map((r, i) => withId({
     ...r, title: str(r.title) || 'Columna', color: cssColor(r.color, '#38bdf8'),
-    order: num(r.order) ?? i, wip: num(r.wip) || null }));
+    order: num(r.order) ?? i, wip: num(r.wip) || null,
+    ...(r.types !== undefined ? { types: strs(r.types).filter(t => ['Proyecto', 'Grant', 'Paper', 'Análisis', 'Dataset', 'Presentación', 'Curso'].includes(t)) } : {}) }));
   out.snippetCollections = rows('snippetCollections').map(r => withId({
     ...r, name: str(r.name) || 'Colección', color: cssColor(r.color, '#38bdf8') }));
   out.collaborators = rows('collaborators').map(r => withId({ ...r, name: str(r.name) || '?', createdAt: str(r.createdAt) || now,
     lastContact: isoDateOrNull(r.lastContact), followSnoozeUntil: isoDateOrNull(r.followSnoozeUntil),
-    followUpDays: [7, 14, 30, 90, 180].includes(+r.followUpDays) ? +r.followUpDays : null }));
+    followUpDays: [7, 14, 30, 90, 180].includes(+r.followUpDays) ? +r.followUpDays : null,
+    ...(r.private !== undefined ? { private: !!r.private } : {}) }));
   out.projects = rows('projects').map(r => withId({
     ...r, ...stamps(r), title: str(r.title), tags: strs(r.tags), coauthors: strs(r.coauthors),
     deadline: isoDateOrNull(r.deadline), columnId: num(r.columnId), parentId: num(r.parentId),
     areaId: num(r.areaId), responsibleId: num(r.responsibleId), coauthorIds: nums(r.coauthorIds),
     archived: !!r.archived, starred: !!r.starred,
     ...(r.submittedAt !== undefined ? { submittedAt: isoDateOrNull(r.submittedAt) } : {}),
+    ...(r.rank !== undefined ? { rank: Tasks.cleanRank(r.rank) } : {}),
+    ...(r.paused !== undefined ? { paused: !!r.paused } : {}),
+    ...(r.pausedUntil !== undefined || r.pauseReason !== undefined ? { pausedUntil: isoDateOrNull(r.pausedUntil), pauseReason: str(r.pauseReason).slice(0, 300) } : {}),
+    ...(r.private !== undefined ? { private: !!r.private } : {}),
     ...(Array.isArray(r.submissionRounds) ? { submissionRounds: r.submissionRounds.filter(isObj).map(x => ({
         ...x, submittedAt: isoDateOrNull(x.submittedAt), decisionDate: isoDateOrNull(x.decisionDate),
         decision: ['major', 'minor', 'reject', 'accept', 'pending'].includes(x.decision) ? x.decision : 'pending' })) } : {}),
@@ -571,7 +682,10 @@ function sanitizeBackup(raw) {
   out.meetings = rows('meetings').map(r => withId({
     ...r, ...stamps(r), title: str(r.title), date: isoDateOrNull(r.date) || localDateISO(),
     time: timeOrNull(r.time), duration: durationOrNull(r.duration), source: Tasks.cleanSource(r.source),
-    projectId: num(r.projectId), actionItems: items(r.actionItems) }));
+    projectId: num(r.projectId), actionItems: items(r.actionItems),
+    ...(r.recurrence !== undefined ? { recurrence: Tasks.cleanRecurrence(r.recurrence) } : {}),
+    ...(r.seriesId !== undefined ? { seriesId: str(r.seriesId).slice(0, 80) } : {}),
+    ...(r.private !== undefined ? { private: !!r.private } : {}) }));
   out.references = rows('references').map(r => withId({
     ...r, ...stamps(r), title: str(r.title), tags: strs(r.tags), projectId: num(r.projectId),
     year: Number.isInteger(+r.year) && +r.year > 0 ? +r.year : null,
@@ -582,6 +696,7 @@ function sanitizeBackup(raw) {
     due: isoDateOrNull(t.due), projectId: null, ideaId: null, areaId: num(t.areaId),
     assigneeId: num(t.assigneeId), recurrence: Tasks.cleanRecurrence(t.recurrence), effort: Tasks.cleanEffort(t.effort), planDate: isoDateOrNull(t.planDate),
     notes: Tasks.cleanNotes(t.notes), link: Tasks.cleanLink(t.link), source: Tasks.cleanSource(t.source),
+    ownerId: num(t.ownerId), afterIds: Tasks.cleanAfter(t.afterIds), rank: Tasks.cleanRank(t.rank), spent: Tasks.cleanSpent(t.spent), event: Tasks.cleanSource(t.event), private: !!t.private,
     priority: ['Alta', 'Media', 'Baja'].includes(t.priority) ? t.priority : null, ...(t.uid !== undefined ? { uid: t.uid } : {}), ...stamps(t), ...extra });
   if (Array.isArray(raw.tasks)) {
     out.tasks = rows('tasks').map(r => withId(mkTask(r, { projectId: num(r.projectId), ideaId: num(r.ideaId) })));
