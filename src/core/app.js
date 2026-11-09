@@ -646,27 +646,43 @@ function attachBreadcrumbHandlers() {
 //  PROYECTOS: una sola pantalla con pestañas (Tablero · Lista · Línea de tiempo · Jerarquía)
 // ==============================================================
 const PROJECT_TABS = [
-  { view: 'kanban',   label: 'Tablero' },
-  { view: 'projects', label: 'Lista' },
-  { view: 'timeline', label: 'Línea de tiempo' },
-  { view: 'nested',   label: 'Jerarquía' },
+  { view: 'kanban',      label: 'Tablero' },
+  { view: 'projects',    label: 'Lista' },
+  { view: 'timeline',    label: 'Línea de tiempo' },
+  { view: 'nested',      label: 'Jerarquía' },
+  { view: 'submissions', label: 'Submissions', badge: 'subActive' },        // los papers también son proyectos: se ven como un flujo de envíos
+];
+// Revisar: la revisión semanal y el informe de avance comparten una sola entrada del menú
+const REVIEW_TABS = [
+  { view: 'review', label: 'Revisión semanal' },
+  { view: 'report', label: 'Informe de avance' },
+];
+const TAB_GROUPS = [
+  { tabs: PROJECT_TABS, aria: 'Vistas de proyectos' },
+  { tabs: REVIEW_TABS,  aria: 'Revisión e informe' },
 ];
 
-/** Inserta (o repone) la barra de pestañas al principio del contenido cuando la vista activa es de proyectos. */
+/** Inserta (o repone) la barra de pestañas al principio del contenido cuando la vista activa pertenece a un grupo de pestañas. */
 function ensureProjectTabs() {
-  const isTab = PROJECT_TABS.some(t => t.view === App.view);
+  const group = TAB_GROUPS.find(g => g.tabs.some(t => t.view === App.view));
   const existing = mainContent.querySelector(':scope > .proj-tabs');
-  if (!isTab) { existing?.remove(); return; }
+  if (!group) { existing?.remove(); return; }
   if (existing?.dataset.active === App.view) return;
   existing?.remove();
+  const hidden = typeof NavProfile !== 'undefined' ? new Set(NavProfile.hidden()) : new Set();      // el perfil de uso oculta también las pestañas que no usas (salvo la abierta)
+  const tabs = group.tabs.filter(t => t.view === App.view || !hidden.has(t.view));
   const bar = document.createElement('nav');
   bar.className = 'proj-tabs';
   bar.dataset.active = App.view;
-  bar.setAttribute('aria-label', 'Vistas de proyectos');
-  bar.innerHTML = PROJECT_TABS.map(t =>
-    `<button class="proj-tab ${t.view === App.view ? 'active' : ''}" data-tab="${t.view}" ${t.view === App.view ? 'aria-current="page"' : ''}>${t.label}</button>`).join('');
+  bar.setAttribute('aria-label', group.aria);
+  bar.innerHTML = tabs.map(t => {
+    const n = t.badge ? App._tabCounts?.[t.badge] : 0;
+    return `<button class="proj-tab ${t.view === App.view ? 'active' : ''}" data-tab="${t.view}" ${t.view === App.view ? 'aria-current="page"' : ''}>${t.label}${n ? ` <span class="proj-tab-count" data-count="${t.badge}">${n}</span>` : ''}</button>`;
+  }).join('');
   bar.addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b && b.dataset.tab !== App.view) navigate(b.dataset.tab); });
   mainContent.insertBefore(bar, mainContent.firstChild);
+  const active = bar.querySelector('.proj-tab.active');                              // en pantallas estrechas la barra se desliza: la pestaña abierta no puede quedar fuera de vista
+  if (active && bar.scrollWidth > bar.clientWidth) bar.scrollLeft = Math.max(0, active.offsetLeft - (bar.clientWidth - active.offsetWidth) / 2);
 }
 new MutationObserver(ensureProjectTabs).observe(mainContent, { childList: true });
 
@@ -10735,11 +10751,11 @@ async function updateBadges() {
   ).length;
   const badge = $('ideasBadge');
   if (badge) { badge.textContent = unread; badge.classList.toggle('visible', unread > 0); }
-  const subBadge = $('submissionsBadge');
-  if (subBadge) {
-    subBadge.textContent = subActive;
-    subBadge.classList.toggle('visible', subActive > 0);   // el CSS oculta .nav-badge salvo con .visible
-  }
+  App._tabCounts = { ...App._tabCounts, subActive };                                          // contador de la pestaña «Submissions» de Proyectos
+  document.querySelectorAll('.proj-tab[data-tab="submissions"]').forEach(b => {
+    b.querySelector('.proj-tab-count')?.remove();
+    if (subActive > 0) b.insertAdjacentHTML('beforeend', ` <span class="proj-tab-count" data-count="subActive">${subActive}</span>`);
+  });
   const abadge = $('archivedBadge');
   if (abadge) { abadge.textContent = archived; abadge.classList.toggle('visible', archived > 0); }
   const sbadge = $('starredBadge');

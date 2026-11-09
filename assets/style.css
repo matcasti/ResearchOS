@@ -4149,6 +4149,7 @@ body.sidebar-collapsed .nav-group-body { display: flex !important; }
   padding: 6px 12px 8px; cursor: pointer; margin-bottom: -1px; }
 .proj-tab:hover { color: var(--text-1); }
 .proj-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.proj-tab-count { display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 4px; border-radius: 8px; background: var(--bg-elevated); color: var(--text-2); font-size: .68rem; font-weight: 600; line-height: 16px; text-align: center; }
 .proj-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
 @media (max-width: 600px) { .proj-tabs { padding: 8px 12px 0; overflow-x: auto; } .proj-tab { white-space: nowrap; } }
 
@@ -4391,11 +4392,8 @@ button, input, select, textarea, summary { font-family: inherit; }
   .view-toggle-btn, .kanban-add-btn, .resp-chip, .today-more, .tw-addnext { min-height: 36px; }
 }
 
-/* En el móvil la guía de sintaxis de la captura solo aparece al escribir */
-@media (max-width: 600px) {
-  .capture-bar:not(:focus-within) + .capture-preview .capture-hint { display: none; }
-}
-
+/* La guía de sintaxis de la captura solo aparece al escribir (el placeholder ya da un ejemplo): menos texto fijo en Hoy */
+.capture-bar:not(:focus-within) + .capture-preview .capture-hint { display: none; }
 /* Quien pide menos movimiento, lo tiene */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }

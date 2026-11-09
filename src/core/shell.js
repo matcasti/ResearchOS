@@ -54,7 +54,7 @@ async function openQuickCapture() {
 // ==============================================================
 const MOBILE_TABS = [
   { view: 'dashboard', views: ['dashboard', 'focus'], icon: uiIcon('today', 21), label: 'Hoy' },
-  { view: 'kanban', views: ['kanban', 'projects', 'timeline', 'nested', 'project-hub'], icon: uiIcon('projects', 21), label: 'Proyectos' },
+  { view: 'kanban', views: ['kanban', 'projects', 'timeline', 'nested', 'submissions', 'project-hub'], icon: uiIcon('projects', 21), label: 'Proyectos' },
   { capture: true, icon: uiIcon('plus', 24), label: 'Capturar' },
   { view: 'ideas', views: ['ideas', 'triage'], icon: uiIcon('ideas', 21), label: 'Ideas' },
   { more: true, icon: uiIcon('menu', 21), label: 'Más' },

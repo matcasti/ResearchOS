@@ -59,7 +59,7 @@ test.describe('Cómo funciona', () => {
     await goTo(page, 'tablero');
     expect(await page.evaluate(() => [!Tour.steps.find(s => s.id === 'abrir').needs(), !Tour.steps.find(s => s.id === 'ficha').needs()])).toEqual([true, true]);
     await page.evaluate(() => Tour.next());                                               // y al avanzar de verdad no se detiene en ellos
-    await expect(title(page)).toHaveText('Cuatro formas de ver lo mismo', { timeout: 8000 });
+    await expect(title(page)).toHaveText('Varias formas de ver tus proyectos', { timeout: 8000 });
 
     await goTo(page, 'captura');                                                          // «Saltar este paso» no obliga a hacerlo
     await page.locator('[data-tour="next"]').click();

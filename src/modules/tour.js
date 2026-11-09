@@ -486,9 +486,9 @@ function _tourSteps(mobile) {
       body: `<p>Aquí está todo: tareas, ideas, reuniones y referencias del proyecto. <strong>Haz clic en cualquier dato</strong> (título, prioridad, fecha…) para editarlo al instante.</p>
              <p><kbd>Esc</kbd> cierra la ficha.</p>` },
 
-    { id: 'pestanas', view: 'kanban', title: 'Cuatro formas de ver lo mismo', target: '.proj-tabs', placement: 'bottom',
+    { id: 'pestanas', view: 'kanban', title: 'Varias formas de ver tus proyectos', target: '.proj-tabs', placement: 'bottom',
       onEnter: () => closeInspector(),
-      body: `<p><strong>Tablero</strong> para el flujo, <strong>Lista</strong> para filtrar y guardar vistas, <strong>Línea de tiempo</strong> para los plazos y <strong>Jerarquía</strong> para proyectos «paraguas» con subproyectos.</p>` },
+      body: `<p><strong>Tablero</strong> para el flujo, <strong>Lista</strong> para filtrar y guardar vistas, <strong>Línea de tiempo</strong> para los plazos, <strong>Jerarquía</strong> para proyectos «paraguas» con subproyectos y <strong>Submissions</strong> para seguir tus papers desde el borrador hasta la revista.</p>` },
 
     { id: 'ideas', view: 'ideas', title: 'Ideas: anótalas y decide después', placement: 'bottom',
       target: () => document.querySelector('#ideaTitleInput')?.closest('.inbox-card, .inbox, .card') || $('ideaTitleInput'),

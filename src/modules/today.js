@@ -489,6 +489,14 @@ function _foldOpen(id, n) {                       // «Sin fecha» y «Más adel
   try { const v = localStorage.getItem('ros-today-fold-' + id); if (v !== null) return v === '1'; } catch {}
   return n <= 3;
 }
+/** Secciones de la columna lateral: abiertas si son pocas (≤3); con más elementos empiezan plegadas y se recuerda la elección.
+    Así la columna muestra de un vistazo qué hay (título + cantidad) sin alargarse con listas que hoy no requieren acción. */
+function _sideSection(id, title, n, note, body) {
+  return `<details class="today-sec calm today-fold" data-sec="${id}" data-fold="${id}" ${_foldOpen(id, n) ? 'open' : ''}>
+      <summary class="today-sec-title" id="ts-${id}">${title} <span class="today-count">${n}</span></summary>
+      ${note ? `<div class="today-wait-note">${note}</div>` : ''}${body}
+    </details>`;
+}
 function _todaySection(id, title, rows, todayISO, { limit = 6, empty = '', tone = '', byDay = false, fold = false } = {}) {
   if (!rows.length && !empty) return '';
   const open = !!App._todayExpanded?.[id];
@@ -546,10 +554,8 @@ async function renderToday() {
   const theirsHTML = d.theirs.length ? (() => {
     const groups = new Map();
     for (const r of d.theirs) { const k = r.assignee || 'Alguien'; (groups.get(k) || groups.set(k, []).get(k)).push(r); }
-    return `<section class="today-sec calm" data-sec="theirs" aria-labelledby="ts-theirs">
-      <h2 class="today-sec-title" id="ts-theirs">Esperando a otras personas <span class="today-count">${d.theirs.length}</span></h2>
-      ${[...groups].map(([name, rows]) => `<div class="today-day">${esc(name)}</div>${rows.slice(0, 4).map(r => _todayRowHTML(r, d.todayISO)).join('')}${rows.length > 4 ? `<div class="today-empty">…y ${rows.length - 4} más</div>` : ''}`).join('')}
-    </section>`;
+    return _sideSection('theirs', 'Esperando a otras personas', d.theirs.length, '',
+      [...groups].map(([name, rows]) => `<div class="today-day">${esc(name)}</div>${rows.slice(0, 4).map(r => _todayRowHTML(r, d.todayISO)).join('')}${rows.length > 4 ? `<div class="today-empty">…y ${rows.length - 4} más</div>` : ''}`).join(''));
   })() : '';
 
   const riskHTML = d.load.violations.length ? `
@@ -570,62 +576,44 @@ async function renderToday() {
     <section class="today-sec calm risk" data-sec="wip" aria-label="Topes del tablero">
       ${d.wipOver.map(x => `<div class="risk-row"><strong>${esc(x.title)}</strong>: ${x.n} proyectos en curso para un tope de ${x.wip} <span class="risk-over">(+${x.n - x.wip})</span></div>`).join('')}
     </section>` : '';
-  const blockedHTML = d.blocked.length ? `
-    <section class="today-sec calm" data-sec="blocked" aria-labelledby="ts-blocked">
-      <h2 class="today-sec-title" id="ts-blocked">Esperan a otra tarea <span class="today-count">${d.blocked.length}</span></h2>
-      <div class="today-wait-note">Salen de tus listas hasta que completes la anterior.</div>
-      ${d.blocked.slice(0, 5).map(r => _todayRowHTML(r, d.todayISO)).join('')}
-      ${d.blocked.length > 5 ? `<div class="today-empty">…y ${d.blocked.length - 5} más</div>` : ''}
-    </section>` : '';
-  const pausedHTML = d.pausedList.length ? `
-    <section class="today-sec calm" data-sec="paused" aria-labelledby="ts-paused">
-      <h2 class="today-sec-title" id="ts-paused">En pausa <span class="today-count">${d.pausedList.length}</span></h2>
-      <div class="today-wait-note">No cuentan en tus listas ni en la carga. ${d.pausedList.some(p => p.review) ? '<strong>Hay pausas para revisar.</strong>' : ''}</div>
-      ${d.pausedList.slice(0, 6).map(p => `
+  const blockedHTML = d.blocked.length ? _sideSection('blocked', 'Esperan a otra tarea', d.blocked.length, 'Salen de tus listas hasta que completes la anterior.',
+    `${d.blocked.slice(0, 5).map(r => _todayRowHTML(r, d.todayISO)).join('')}
+      ${d.blocked.length > 5 ? `<div class="today-empty">…y ${d.blocked.length - 5} más</div>` : ''}`) : '';
+  const pausedHTML = d.pausedList.length ? _sideSection('paused', 'En pausa', d.pausedList.length,
+    `No cuentan en tus listas ni en la carga. ${d.pausedList.some(p => p.review) ? '<strong>Hay pausas para revisar.</strong>' : ''}`,
+    d.pausedList.slice(0, 6).map(p => `
         <div class="tw-row" data-kind="paused" data-id="${p.id}" data-project="${p.id}">
           <span class="tw-icon" aria-hidden="true">⏸</span><span class="tw-text">${esc(p.title)}</span>
           <span class="tw-sub">${esc(p.pauseReason || 'sin motivo')}</span>
           ${p.pausedUntil ? `<span class="tw-due ${p.review ? 'overdue' : ''}" title="Fecha para revisar la pausa">${p.review ? 'revisar' : esc(dueLabel(p.pausedUntil))}</span>` : ''}
           <button class="tw-addnext" data-act="resume" title="Reanudar el proyecto">Reanudar</button>
-        </div>`).join('')}
-    </section>` : '';
+        </div>`).join('')) : '';
   const rhythmHTML = d.accuracy && Math.abs(d.accuracy.ratio - 1) >= 0.2 ? `
     <section class="today-sec calm" data-sec="rhythm" aria-label="Tu ritmo">
       <div class="today-wait-note">⏲ Tus estimaciones ${d.accuracy.ratio > 1 ? 'suelen quedarse cortas' : 'suelen sobrar'}: lo real es <strong>×${String(d.accuracy.ratio).replace('.', ',')}</strong> de lo estimado (${d.accuracy.n} tareas con tiempo real).</div>
     </section>` : '';
 
-  const waitingHTML = d.waiting.length ? `
-    <section class="today-sec calm" aria-labelledby="ts-wait">
-      <h2 class="today-sec-title" id="ts-wait">Esperando respuesta <span class="today-count">${d.waiting.length}</span></h2>
-      <div class="today-wait-note">No requieren acción tuya: se muestran para que no se pierdan de vista.</div>
-      ${d.waiting.slice(0, 5).map(p => `
+  const waitingHTML = d.waiting.length ? _sideSection('waiting', 'Esperando respuesta', d.waiting.length, 'No requieren acción tuya: se muestran para que no se pierdan de vista.',
+    d.waiting.slice(0, 5).map(p => `
         <div class="tw-row" data-kind="waiting" data-id="${p.id}" data-project="${p.id}">
           <span class="tw-icon" aria-hidden="true">⏳</span><span class="tw-text">${esc(p.title)}</span>
           <span class="tw-sub">${esc((SUB_STATUSES.find(s => s.key === p.submissionStatus)?.label) || 'en revisión')}${p.targetVenue ? ' · ' + esc(p.targetVenue) : ''}</span>
           <span class="tw-due">desde hace ${Math.max(0, Math.floor((Date.now() - new Date(p.updatedAt || Date.now())) / 86400000))} d</span>
-        </div>`).join('')}
-    </section>` : '';
+        </div>`).join('')) : '';
 
-  const noNextHTML = d.noNext.length ? `
-    <section class="today-sec calm" aria-labelledby="ts-nonext">
-      <h2 class="today-sec-title" id="ts-nonext">Sin próxima acción <span class="today-count">${d.noNext.length}</span></h2>
-      <div class="today-wait-note">Proyectos en curso sin ninguna tarea pendiente: ¿cuál es el siguiente paso?</div>
-      ${d.noNext.slice(0, 5).map(p => `
+  const noNextHTML = d.noNext.length ? _sideSection('nonext', 'Sin próxima acción', d.noNext.length, 'Proyectos en curso sin ninguna tarea pendiente: ¿cuál es el siguiente paso?',
+    `${d.noNext.slice(0, 5).map(p => `
         <div class="tw-row" data-kind="nonext" data-id="${p.id}" data-project="${p.id}">
           <span class="tw-icon" aria-hidden="true">◌</span><span class="tw-text">${esc(p.title)}</span>
           <button class="tw-addnext" data-act="addnext" title="Añadir una tarea a este proyecto">+ tarea</button>
         </div>`).join('')}
-      ${d.noNext.length > 5 ? `<div class="today-empty">…y ${d.noNext.length - 5} más</div>` : ''}
-    </section>` : '';
+      ${d.noNext.length > 5 ? `<div class="today-empty">…y ${d.noNext.length - 5} más</div>` : ''}`) : '';
 
-  const ideasHTML = d.ideasUnread.length ? `
-    <section class="today-sec calm" aria-labelledby="ts-ideas">
-      <h2 class="today-sec-title" id="ts-ideas">Ideas por revisar <span class="today-count">${d.ideasUnread.length}</span></h2>
-      ${d.ideasUnread.slice(0, 3).map(i => `
+  const ideasHTML = d.ideasUnread.length ? _sideSection('ideas', 'Ideas por revisar', d.ideasUnread.length, '',
+    `${d.ideasUnread.slice(0, 3).map(i => `
         <div class="tw-row" data-kind="idea" data-id="${i.id}"><span class="tw-icon" aria-hidden="true">◎</span>
           <span class="tw-text">${esc(i.title)}</span><span class="tw-due">${esc(relativeDate(i.createdAt))}</span></div>`).join('')}
-      ${d.ideasUnread.length > 1 ? `<button class="today-more" data-act-triage>Revisar las ${d.ideasUnread.length} en modo rápido →</button>` : ''}
-    </section>` : '';
+      ${d.ideasUnread.length > 1 ? `<button class="today-more" data-act-triage>Revisar las ${d.ideasUnread.length} en modo rápido →</button>` : ''}`) : '';
 
   mainContent.innerHTML = `
     <div class="view today-view" id="todayRoot">
@@ -1305,8 +1293,9 @@ const NAV_PROFILES = [
 const NavProfile = {
   get() { try { const k = localStorage.getItem('ros-profile'); return NAV_PROFILES.some(p => p.key === k) ? k : 'all'; } catch { return 'all'; } },
   set(key) { try { localStorage.setItem('ros-profile', key); } catch {} document.querySelectorAll('.nav-item.profile-peek').forEach(a => a.classList.remove('profile-peek')); this.apply(); },
+  hidden() { return NAV_PROFILES.find(p => p.key === this.get()).hide; },
   apply() {
-    const hide = new Set(NAV_PROFILES.find(p => p.key === this.get()).hide);
+    const hide = new Set(this.hidden());
     document.querySelectorAll('.sidebar .nav-item[data-view]').forEach(a => a.classList.toggle('profile-hidden', hide.has(a.dataset.view) && !a.classList.contains('profile-peek')));
     document.querySelectorAll('.nav-group').forEach(g => g.classList.toggle('profile-hidden', ![...g.querySelectorAll('.nav-item')].some(a => !a.classList.contains('profile-hidden'))));
     if (typeof updateNavGroupDots === 'function') updateNavGroupDots();
@@ -1341,7 +1330,7 @@ function renderProfileSection() {
 
 /** Abre el grupo que contiene la vista activa (para que nunca quede escondida). */
 function revealNavItem(view) {
-  const item = document.querySelector(`.nav-item[data-view="${view}"]`);
+  const item = document.querySelector(`.nav-item[data-view="${view}"]`) || document.querySelector(`.nav-item[data-views~="${view}"]`);      // una vista sin entrada propia (p. ej. «Informe de avance») abre el grupo de la entrada que la agrupa
   if (item?.classList.contains('profile-hidden')) { item.classList.add('profile-peek'); NavProfile.apply(); }     // una vista que el perfil oculta, pero se abrió: no puede quedar invisible
   const g = item?.closest('.nav-group');
   if (g && !g.classList.contains('open')) {

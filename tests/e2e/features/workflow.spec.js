@@ -223,7 +223,7 @@ test.describe('Plantillas, ideas y pestañas', () => {
     await openApp(page);
     await seed(page);
     await page.locator('.nav-item[data-view="kanban"]').click();
-    await expect(page.locator('.proj-tabs .proj-tab')).toHaveText(['Tablero', 'Lista', 'Línea de tiempo', 'Jerarquía']);
+    await expect(page.locator('.proj-tabs .proj-tab')).toHaveText(['Tablero', 'Lista', 'Línea de tiempo', 'Jerarquía', /^Submissions/]);
     await expect(page.locator('.proj-tab.active')).toHaveText('Tablero');
     await page.locator('.proj-tab', { hasText: 'Línea de tiempo' }).click();
     await expect(page.locator('#mainContent')).toHaveAttribute('data-view', 'timeline');
